@@ -1,0 +1,24 @@
+# Runtime data — never commit. Holds the browser profile, the DPAPI-encrypted
+# session cookie, and the scraped database.
+data/
+output/
+
+# The Chromium profile contains a live LSM session. Treat it like a password.
+profile/
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# PyInstaller
+# build/ is its scratch directory; the .spec in packaging/ is source.
+build/
+dist/
+
+# Logs
+*.log
+
+.env
+.env.*
+!.env.example

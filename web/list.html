@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rotman Room Bookings — List</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4f6f9;--sf:#fff;--sf2:#f0f3f8;--sf3:#e4e9f0;--bd:#dce2ea;--bd2:#bfc8d4;--tx:#1a2133;--tx2:#4a5568;--tx3:#8896a6;--ac:#3b82f6;--ac2:#6099f8;--acg:#eff6ff;--gn:#10b981;--gn2:#059669;--rd:#ef4444;--og:#f59e0b;--r:12px;--rs:8px;--sh:0 1px 3px rgba(0,0,0,.06);--sh2:0 8px 24px rgba(0,0,0,.08)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:16px}
+.bar{background:var(--sf);border-bottom:1px solid var(--bd);padding:0 20px;height:54px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:var(--sh)}
+.bar-l{display:flex;align-items:center;gap:12px}
+.logo{font-size:1.1rem;font-weight:700;display:flex;align-items:center;gap:8px}
+.bar-r{display:flex;align-items:center;gap:8px}
+.tab{padding:6px 14px;border-radius:6px;font-size:.88rem;font-weight:500;color:var(--tx2);cursor:pointer;border:none;background:none;text-decoration:none;transition:.15s}
+.tab:hover{color:var(--tx)}.tab.on{background:var(--ac);color:#fff}
+.badge{padding:4px 10px;border-radius:99px;font-size:.8rem;font-weight:600}
+.bg-gn{background:rgba(16,185,129,.1);color:var(--gn2)}.bg-bl{background:var(--acg);color:var(--ac)}.bg-gr{background:var(--sf2);color:var(--tx2)}
+.btn{padding:7px 14px;border-radius:var(--rs);font-size:.88rem;font-weight:500;cursor:pointer;border:1px solid var(--bd);background:var(--sf);color:var(--tx2);display:inline-flex;align-items:center;gap:5px;transition:.15s;text-decoration:none}
+.btn:hover{background:var(--sf2);color:var(--tx)}.btn-g{background:var(--gn2);border-color:var(--gn2);color:#fff}
+
+.container{max-width:1100px;margin:0 auto;padding:20px 28px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+.stat{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh)}
+.stat-l{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);margin-bottom:4px;font-weight:600}
+.stat-v{font-size:1.5rem;font-weight:800;font-family:'JetBrains Mono',monospace}
+.sv-ac{color:var(--ac)}.sv-gn{color:var(--gn2)}.sv-og{color:var(--og)}
+
+/* Search + Groups */
+.ctrls{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.sbox{position:relative;width:280px;flex-shrink:0}
+.sbox input{width:100%;padding:9px 14px 9px 36px;border-radius:var(--r);background:var(--sf);border:1px solid var(--bd);color:var(--tx);font-size:.92rem;outline:none;box-shadow:var(--sh)}
+.sbox input:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(59,130,246,.1)}
+.sbox .si{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--tx3);font-size:.92rem}
+.sdrop{position:absolute;top:100%;left:0;right:0;background:var(--sf);border:1px solid var(--bd2);border-radius:var(--rs);box-shadow:var(--sh2);z-index:50;max-height:280px;overflow-y:auto;display:none;margin-top:2px}
+.sdrop.show{display:block}
+.sdrop-section{padding:6px 10px 3px;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3)}
+.sdrop-item{padding:7px 10px;font-size:.88rem;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--tx2)}
+.sdrop-item:hover{background:var(--sf2);color:var(--tx)}
+.rm-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.tag{padding:4px 10px;border-radius:99px;font-size:.8rem;font-weight:500;display:flex;align-items:center;gap:4px}
+.tag-rm{background:var(--acg);color:var(--ac);border:1px solid rgba(59,130,246,.2)}
+.tag-grp{background:rgba(245,158,11,.08);color:var(--og);border:1px solid rgba(245,158,11,.2)}
+.tag-q{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd)}
+.tag-x{cursor:pointer;opacity:.6;font-size:.78rem;margin-left:2px}.tag-x:hover{opacity:1}
+
+.gbar{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
+.gb{padding:5px 12px;border-radius:5px;font-size:.82rem;font-weight:500;cursor:pointer;border:1px solid var(--bd);background:var(--sf);color:var(--tx2);transition:.12s;user-select:none}
+.gb:hover{color:var(--tx);background:var(--sf2)}.gb.on{background:var(--ac);border-color:var(--ac);color:#fff}
+
+.sort-btn{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border:1px solid var(--bd);color:var(--tx2);font-size:.85rem;cursor:pointer;font-weight:500;box-shadow:var(--sh)}
+.sort-btn:hover{background:var(--sf2);color:var(--tx)}.sort-btn.on{background:var(--ac);border-color:var(--ac);color:#fff}
+select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border:1px solid var(--bd);color:var(--tx);font-size:.85rem;outline:none;box-shadow:var(--sh)}
+
+.daysep{padding:12px 18px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);font-weight:700;font-size:.92rem;color:var(--tx);display:flex;align-items:center;gap:10px;margin-top:16px;margin-bottom:6px;box-shadow:var(--sh)}
+.daysep:first-child{margin-top:0}
+.daysep .dc{font-size:.78rem;color:var(--tx3);font-weight:500}
+
+/* Copyable event cards */
+.evcard{background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);padding:14px 18px;margin-bottom:8px;user-select:text;transition:.1s;border-left:4px solid var(--ac);position:relative}
+.evcard:hover{box-shadow:0 2px 8px rgba(0,0,0,.05)}
+.evcard .etitle{font-weight:600;font-size:.98rem;color:var(--tx);margin-bottom:4px;word-break:break-word;padding-right:28px}
+.evcard .etime{font-family:'JetBrains Mono',monospace;font-size:.88rem;color:var(--ac);margin-bottom:3px;white-space:nowrap}
+.evcard .eroom{font-size:.88rem;color:var(--tx2);display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.evcard .eroom .rd{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.evcard .edesc{font-size:.85rem;color:var(--tx3);margin-top:5px;line-height:1.4;word-break:break-word}
+.evcard .ecopy{position:absolute;top:10px;right:10px;cursor:pointer;font-size:.88rem;color:var(--tx3);opacity:0;transition:.15s;padding:4px 8px;border-radius:4px;background:var(--sf2)}
+.evcard:hover .ecopy{opacity:.6}.evcard .ecopy:hover{opacity:1!important}
+
+.pgn{display:flex;align-items:center;justify-content:center;gap:8px;padding:16px}
+.pb{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border:1px solid var(--bd);color:var(--tx2);font-size:.82rem;cursor:pointer}
+.pb:hover{background:var(--sf2);border-color:var(--bd2)}.pb.on{background:var(--ac);border-color:var(--ac);color:#fff}
+.pb:disabled{opacity:.3;cursor:default}
+.empty{padding:60px 20px;text-align:center;color:var(--tx3)}
+
+@media(max-width:768px){.container{padding:14px}}
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div class="bar-l">
+    <div class="logo">📋 Rotman Room Bookings</div>
+    <span class="badge bg-gn">● Live</span>
+    <span class="badge bg-gr" id="evcnt">— events</span>
+  </div>
+  <div class="bar-r">
+    <a class="tab" href="/">📅 Calendar</a>
+    <a class="tab on" href="/list">📋 List</a>
+    <a class="btn btn-g" href="/download/ics">⬇ .ics</a>
+    <a class="btn" href="/download/json">⬇ JSON</a>
+  </div>
+</div>
+
+<div class="container">
+  <div class="stats" id="stats"></div>
+  <div class="ctrls">
+    <div class="sbox">
+      <span class="si">🔍</span>
+      <input type="text" id="search" placeholder="Search rooms, events..." autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="setTimeout(()=>closeDrop(),200)">
+      <div class="sdrop" id="sdrop"></div>
+      <div class="tags" id="tags"></div>
+    </div>
+  </div>
+  <div class="gbar" id="gbar">
+    <button class="gb on" data-g="" onclick="toggleGroup('')">All</button>
+    <button class="gb" data-g="Classroom" onclick="toggleGroup('Classroom')">🏫 Classroom</button>
+    <button class="gb" data-g="North" onclick="toggleGroup('North')">North</button>
+    <button class="gb" data-g="South" onclick="toggleGroup('South')">South</button>
+    <button class="gb" data-g="Events" onclick="toggleGroup('Events')">Events</button>
+    <button class="gb" data-g="Self Serve" onclick="toggleGroup('Self Serve')">Self Serve</button>
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+    <button class="sort-btn on" onclick="setSort('time')" id="s-time">⏰ Time</button>
+    <button class="sort-btn" onclick="setSort('room')" id="s-room">🏠 Room</button>
+    <button class="sort-btn" onclick="setSort('title')" id="s-title">📝 Title</button>
+    <select class="fsel" id="roomFilter" onchange="render()"><option value="all">All Rooms</option></select>
+  </div>
+  <div id="list"></div>
+  <div class="pgn" id="pgn"></div>
+</div>
+
+<script>
+// Populated from /api/bootstrap on startup.
+let EVENTS=[],ROOMS=[],GROUPS={};
+const PAL=["#3b82f6","#ef4444","#10b981","#f59e0b","#8b5cf6","#ec4899","#06b6d4","#f97316","#14b8a6","#6366f1","#84cc16","#d946ef","#0ea5e9","#22c55e","#eab308","#64748b"];
+function rcol(r){let i=ROOMS.indexOf(r);return PAL[(i<0?r.charCodeAt(0):i)%PAL.length];}
+
+let sortKey='time',page=0,PER=50,activeGroups=new Set();
+const tags=[];
+
+function buildRoomFilter(){
+  const rCnt={};EVENTS.forEach(e=>{rCnt[e.room]=(rCnt[e.room]||0)+1;});
+  const sel=document.getElementById('roomFilter');
+  Object.keys(rCnt).sort().forEach(r=>{const o=document.createElement('option');o.value=r;o.textContent=r+' ('+rCnt[r]+')';sel.appendChild(o);});
+}
+
+(function(){
+  const ur=new Set(EVENTS.map(e=>e.room)),days=new Set(EVENTS.map(e=>(e.start||'').slice(0,10)));
+  const hrs=EVENTS.reduce((a,e)=>{if(e.start&&e.end)return a+(new Date(e.end)-new Date(e.start))/36e5;return a;},0);
+  document.getElementById('stats').innerHTML=
+    '<div class="stat"><div class="stat-l">Events</div><div class="stat-v sv-ac">'+EVENTS.length+'</div></div>'+
+    '<div class="stat"><div class="stat-l">Rooms</div><div class="stat-v sv-gn">'+ur.size+'</div></div>'+
+    '<div class="stat"><div class="stat-l">Hours</div><div class="stat-v sv-og">'+hrs.toFixed(0)+'</div></div>'+
+    '<div class="stat"><div class="stat-l">Days</div><div class="stat-v">'+days.size+'</div></div>';
+})();
+
+function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtT(iso){if(!iso)return'?';const d=new Date(iso);return d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',hour12:true});}
+function fmtDur(s,e){if(!s||!e)return'—';const ms=new Date(e)-new Date(s);const h=Math.floor(ms/36e5);const m=Math.round((ms%36e5)/6e4);return h>0?(m>0?h+'h'+m+'m':h+'h'):(m+'m');}
+function fmtDay(iso){if(!iso)return'';return new Date(iso+'T12:00:00').toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
+
+function mergeEvts(evts){const m=new Map();evts.forEach(e=>{const k=(e.start||'')+'|'+(e.end||'')+'|'+(e.title||'')+'|'+(e.description||'');if(m.has(k))m.get(k).rooms.push(e.room);else m.set(k,{...e,rooms:[e.room]});});return Array.from(m.values());}
+
+function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).catch(()=>{});}
+
+function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;return '<div class="evcard" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span></div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+r).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+
+// Multi-select groups
+function toggleGroup(g){
+  if(!g){activeGroups.clear();}
+  else{if(activeGroups.has(g))activeGroups.delete(g);else activeGroups.add(g);}
+  syncGroupBtns();page=0;render();
+}
+function syncGroupBtns(){document.querySelectorAll('.gb').forEach(b=>{const g=b.dataset.g;b.classList.toggle('on',!g?activeGroups.size===0:activeGroups.has(g));});}
+
+// Search
+let debounce;
+function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('search').value.trim();if(v.length<1){closeDrop();render();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));render();},200);}
+function showDrop(d){let h='';if(d.groups.length){h+='<div class="sdrop-section">Groups</div>';d.groups.forEach(g=>{h+='<div class="sdrop-item" onmousedown="addTag(\'group\',\''+g+'\')">'+g+'</div>';});}if(d.rooms.length){h+='<div class="sdrop-section">Rooms</div>';d.rooms.forEach(r=>{h+='<div class="sdrop-item" onmousedown="addTag(\'room\',\''+r+'\')"><span class="rm-dot" style="background:'+rcol(r)+'"></span>'+r+'</div>';});}if(d.titles.length){h+='<div class="sdrop-section">Events</div>';d.titles.forEach(t=>{h+='<div class="sdrop-item" onmousedown="addTag(\'query\',\''+esc(t).replace(/'/g,'&#39;')+'\')">'+esc(t)+'</div>';});}document.getElementById('sdrop').innerHTML=h;document.getElementById('sdrop').classList.add('show');}
+function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
+function addTag(type,value){if(tags.some(t=>t.type===type&&t.value===value))return;tags.push({type,value});if(type==='group')toggleGroup(value);document.getElementById('search').value='';closeDrop();renderTags();page=0;render();}
+function removeTag(idx){const t=tags.splice(idx,1)[0];if(t.type==='group')toggleGroup(t.value);renderTags();page=0;render();}
+function renderTags(){document.getElementById('tags').innerHTML=tags.map((t,i)=>{const cls=t.type==='room'?'tag-rm':t.type==='group'?'tag-grp':'tag-q';const lbl=t.type==='room'?'Room '+t.value:t.type==='group'?'📁 '+t.value:t.value;return '<span class="tag '+cls+'">'+lbl+'<span class="tag-x" onclick="removeTag('+i+')">✕</span></span>';}).join('');}
+
+function setSort(k){sortKey=k;page=0;document.querySelectorAll('.sort-btn').forEach(b=>b.classList.remove('on'));document.getElementById('s-'+k).classList.add('on');render();}
+
+function render(){
+  const q=document.getElementById('search').value.toLowerCase();
+  const rf=document.getElementById('roomFilter').value;
+  let evts=EVENTS.filter(e=>{
+    if(rf!=='all'&&e.room!==rf)return false;
+    if(activeGroups.size){let ok=false;activeGroups.forEach(g=>{if(GROUPS[g]&&GROUPS[g].includes(e.room))ok=true;});if(!ok)return false;}
+    if(tags.length){const ok=tags.some(t=>{if(t.type==='room')return e.room===t.value;if(t.type==='group')return GROUPS[t.value]&&GROUPS[t.value].includes(e.room);return((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(t.value.toLowerCase());});if(!ok)return false;}
+    if(q&&!((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(q))return false;
+    return true;
+  });
+  evts.sort((a,b)=>{if(sortKey==='time')return(a.start||'').localeCompare(b.start||'');if(sortKey==='room')return(a.room||'').localeCompare(b.room||'');return(a.title||'').localeCompare(b.title||'');});
+  document.getElementById('evcnt').textContent=evts.length+' events';
+  const tp=Math.ceil(evts.length/PER);if(page>=tp)page=Math.max(0,tp-1);
+  const pe=evts.slice(page*PER,(page+1)*PER);
+  const merged=mergeEvts(pe);
+  const listEl=document.getElementById('list');
+  if(!evts.length){listEl.innerHTML='<div class="empty" style="font-size:1.1rem">📭 No events match your filters</div>';document.getElementById('pgn').innerHTML='';return;}
+  let html='',lastDay='';
+  pe.forEach(e=>{const d=(e.start||'').slice(0,10);if(d!==lastDay&&sortKey==='time'){lastDay=d;const dayObj=new Date(d+'T12:00:00');const dc=evts.filter(x=>(x.start||'').slice(0,10)===d).length;html+='<div class="daysep"><span>'+dayObj.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+'</span><span class="dc">'+dc+' events</span></div>';}});
+  merged.forEach(ev=>{html+=cardHTML(ev);});
+  listEl.innerHTML=html;
+  if(tp>1){let pg='<button class="pb" onclick="page--;render()"'+(page===0?' disabled':'')+'>◀</button>';const ms=5;let ps=Math.max(0,page-2),pe2=Math.min(tp,ps+ms);if(pe2-ps<ms)ps=Math.max(0,pe2-ms);for(let i=ps;i<pe2;i++)pg+='<button class="pb'+(i===page?' on':'')+'" onclick="page='+i+';render()">'+(i+1)+'</button>';pg+='<button class="pb" onclick="page++;render()"'+(page>=tp-1?' disabled':'')+'>▶</button>';pg+='<span style="font-size:.78rem;color:var(--tx3);margin-left:8px">'+evts.length+' events</span>';document.getElementById('pgn').innerHTML=pg;}else{document.getElementById('pgn').innerHTML='';}
+}
+
+document.addEventListener('keydown',e=>{if(document.activeElement.tagName==='INPUT'||document.activeElement.tagName==='SELECT')return;if(e.key==='/'){e.preventDefault();document.getElementById('search').focus();}});
+
+// ── BOOT ──
+(async function boot(){
+  try{
+    const r=await fetch('/api/bootstrap');
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();
+    EVENTS=d.events||[];ROOMS=d.rooms||[];GROUPS=d.groups||{};
+    GROUPS.Classroom=[...(GROUPS.North||[]),...(GROUPS.South||[])];
+    buildRoomFilter();
+  }catch(e){
+    document.getElementById('list').innerHTML='<div class="empty">Could not load bookings: '+e.message+'</div>';
+    return;
+  }
+  render();
+})();
+</script>
+</body>
+</html>
