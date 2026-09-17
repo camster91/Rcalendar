@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS events (
     description TEXT,
     class_code  TEXT,
     cancelled   INTEGER NOT NULL DEFAULT 0,
+    all_day     INTEGER NOT NULL DEFAULT 0,
     scraped_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_date  ON events(date);
@@ -89,9 +90,24 @@ def _tx() -> Iterator[sqlite3.Connection]:
         raise
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Retrofit columns onto an existing database.
+
+    CREATE TABLE IF NOT EXISTS silently does nothing when the table is
+    already there, so a new column has to be added explicitly.
+    """
+    have = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
+    if "all_day" not in have:
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0"
+        )
+        log.info("migrated: added events.all_day")
+
+
 def init_db() -> None:
     with _tx() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
     log.info("database ready at %s", DB_PATH)
 
 
@@ -134,6 +150,7 @@ def replace_events(events: Iterable[dict[str, Any]], date_from: str, date_to: st
             ev.get("description") or "",
             ev.get("class_code") or "",
             1 if ev.get("cancelled") else 0,
+            1 if ev.get("all_day") else 0,
             now,
         ))
 
@@ -150,13 +167,14 @@ def replace_events(events: Iterable[dict[str, Any]], date_from: str, date_to: st
         conn.executemany(
             """INSERT INTO events
                  (uid, title, room, start_iso, end_iso, date, description,
-                  class_code, cancelled, scraped_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
+                  class_code, cancelled, all_day, scraped_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(uid) DO UPDATE SET
                  title=excluded.title,
                  description=excluded.description,
                  class_code=excluded.class_code,
                  cancelled=excluded.cancelled,
+                 all_day=excluded.all_day,
                  scraped_at=excluded.scraped_at""",
             rows,
         )
@@ -298,6 +316,7 @@ def _row_to_event(r: sqlite3.Row) -> dict[str, Any]:
         "description": r["description"] or "",
         "class_code": r["class_code"] or "",
         "cancelled": bool(r["cancelled"]),
+        "all_day": bool(r["all_day"]),
     }
 
 

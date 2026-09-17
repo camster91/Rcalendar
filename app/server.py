@@ -110,9 +110,16 @@ def create_app(orchestrator: Any) -> Flask:
         """Per-room availability for today — booked vs free, with the next slot."""
         now = datetime.now()
         today_iso = now.strftime("%Y-%m-%d")
-        events = [e for e in store.get_events() if e.get("date") == today_iso]
+        all_events = store.get_events()
+        events = [e for e in all_events if e.get("date") == today_iso]
 
-        by_room: dict[str, list[dict[str, Any]]] = {}
+        # Seed every known room, not just the ones with a booking today.
+        # Building this map from today's bookings alone meant a room with a
+        # completely empty day was absent from the response entirely — so the
+        # emptiest rooms, the ones you actually want, were the ones missing.
+        by_room: dict[str, list[dict[str, Any]]] = {
+            r["room"]: [] for r in _active_rooms(all_events)
+        }
         for ev in events:
             by_room.setdefault(ev["room"], []).append(ev)
 

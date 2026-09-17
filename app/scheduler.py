@@ -23,7 +23,7 @@ from __future__ import annotations
 import queue
 import threading
 from datetime import date, datetime, time as dtime, timedelta
-from typing import Any
+from typing import Any, Iterable
 
 from app import session, store
 from app.config import (
@@ -265,7 +265,7 @@ class Orchestrator:
             )
 
             if result.status in ("ok", "empty"):
-                excluded = _excluded_rooms()
+                excluded = _excluded_rooms(result.rooms)
                 kept = [
                     e for e in result.events
                     if e.get("room") not in excluded and not e.get("cancelled")
@@ -322,14 +322,21 @@ class Orchestrator:
             self._status.update(kwargs)
 
 
-def _excluded_rooms() -> set[str]:
+def _excluded_rooms(seen: Iterable[str] = ()) -> set[str]:
+    """Rooms to keep out of the calendar.
+
+    `seen` must be the rooms in the report we are holding right now. It used
+    to read the persisted rooms table instead, which is filled with every
+    room the report shuttle offers — including the excluded ones — so the
+    exclusion set was self-referential and nothing was ever excluded.
+    """
     import re
 
     from app.config import EXCLUDED_PATTERNS, EXCLUDED_ROOMS
 
     excluded = set(EXCLUDED_ROOMS)
     patterns = [re.compile(p) for p in EXCLUDED_PATTERNS]
-    for room in {r["room"] for r in store.get_rooms()}:
+    for room in seen:
         if any(p.match(room) for p in patterns):
             excluded.add(room)
     return excluded

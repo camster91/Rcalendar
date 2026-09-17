@@ -140,6 +140,47 @@ def test_csv() -> None:
     check("empty input safe", empty, [])
 
 
+def _one(comment: str) -> dict:
+    csv_text = (
+        "Room,Event/Course,Date,Start Time,End Time,Duration,Building,"
+        "Class Code,Comment\n"
+        f'RT 142,Thing,15-April-26,900,1200,3h,RT,A,"{comment}"\n'
+    )
+    return parse_csv(csv_text)[0]
+
+
+def test_cancelled_spellings() -> None:
+    print("\ncancellation spellings")
+    # The report spells it "CANCLD" / "Cancld". The old pattern was
+    # "cancel|cnxld|cncld", and "cancl" is not a substring of "cancel" — so
+    # nothing ever matched and every cancelled booking showed as live.
+    for comment in ("CANCLD DCIT 07.29", "Cancld may 11", "CANCELLED", "cnxld"):
+        check(f"flagged: {comment!r}", _one(comment)["cancelled"], True)
+    check("not flagged: 'CAT/ CLEAN'", _one("CAT/ CLEAN")["cancelled"], False)
+
+
+def test_all_day() -> None:
+    print("\nall-day detection")
+    csv_text = (
+        "Room,Event/Course,Date,Start Time,End Time,Duration,Building,"
+        "Class Code,Comment\n"
+        # Full-day service block, as the report sends it.
+        "RT 157,003/RENOVATIONS/MACPHERSON,01-August-26,0,2300,,RT,Z,\n"
+        # Slot index with no time recoverable from the comment.
+        "RT 142,Some Slot Booking,02-August-26,500,501,,RT,A,\n"
+        # Ordinary timed booking.
+        "RT 142,RSM6307 Marketing,03-August-26,900,1200,,RT,A,\n"
+    )
+    events = parse_csv(csv_text)
+    check("three rows parsed", len(events), 3)
+
+    check("full-day block is all_day", events[0]["all_day"], True)
+    check("full-day block keeps its real start", events[0]["start"],
+          "2026-08-01T00:00:00")
+    check("unrecoverable slot is all_day", events[1]["all_day"], True)
+    check("ordinary booking is not all_day", events[2]["all_day"], False)
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — parser tests")
@@ -150,6 +191,8 @@ def main() -> int:
     test_rooms()
     test_cleanup()
     test_csv()
+    test_cancelled_spellings()
+    test_all_day()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

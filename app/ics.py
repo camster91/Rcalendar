@@ -42,8 +42,16 @@ def build_ics(events: Iterable[dict[str, Any]]) -> str:
         item = Event()
         room = ev.get("room") or ""
         item.add("summary", ev.get("title") or "Room booking")
-        item.add("dtstart", start)
-        item.add("dtend", end)
+        if ev.get("all_day"):
+            # All-day events take DATE values, and DTEND is exclusive — a
+            # single day ends on the following date. Without this branch a
+            # full-day block exported as a bogus 00:00-01:00 timed booking.
+            day = start.date()
+            item.add("dtstart", day)
+            item.add("dtend", day + timedelta(days=1))
+        else:
+            item.add("dtstart", start)
+            item.add("dtend", end)
         item.add("location", ev.get("location") or room)
         item.add("uid", _uid(ev))
         item.add("dtstamp", datetime.now(TZ))

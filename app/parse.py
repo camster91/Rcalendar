@@ -44,7 +44,11 @@ _MONTHS = {
     "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
 }
 
-_CANCELLED_RE = re.compile(r"cancel|cnxld|cncld", re.IGNORECASE)
+# Spellings that actually occur in the LSM comment field: "Cancld may 11",
+# "CANCLD DCIT 07.29". Note "cancl" is NOT a substring of "cancel", so it
+# needs its own alternative — without it this never matched anything, and
+# every cancelled booking was treated as live.
+_CANCELLED_RE = re.compile(r"cancel|cancl|cnxld|cncld", re.IGNORECASE)
 _TIME_RANGE_RE = re.compile(r"\b(\d{3,4})\s*[-–—]\s*(\d{3,4})\b")
 # Longest alternative first — otherwise "ROTMAN" matches as "RT" and
 # leaves "MAN L1060" behind.
@@ -116,10 +120,24 @@ def _row_to_event(row: dict[str, str]) -> dict[str, Any] | None:
     )
 
     building = _pick(row, "building")
+
+    # All-day means the report gave us no recoverable time at all (an
+    # unresolvable timetable slot index), OR the booking genuinely spans the
+    # day. The second case is the 003/RENOVATIONS and 003/AV UPGRADES service
+    # blocks, which arrive as 00:00-23:00: without this they rendered as
+    # "12:00 a.m. -> 11:00 p.m." and sat at the top of every month cell.
+    all_day = start is None or (
+        start.hour == 0
+        and start.minute == 0
+        and end is not None
+        and end.hour >= 23
+    )
+
     return {
         "title": title,
         "start": (start or event_date).isoformat(),
         "end": end.isoformat() if end else None,
+        "all_day": all_day,
         "room": room,
         "location": f"{building} {room}".strip(),
         "description": clean_description(comment),
