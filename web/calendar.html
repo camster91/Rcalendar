@@ -125,6 +125,10 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .wkdh{text-align:center;padding:8px 4px;font-size:.88rem;font-weight:600;background:var(--sf2);border-left:1px solid var(--bd);border-bottom:1px solid var(--bd)}
 .wkdh.tdy{color:var(--ac);background:var(--acg)}.wkdh .wn{font-size:.78rem;color:var(--tx3);font-weight:400}
 .wkev{position:absolute;left:2px;right:2px;border-radius:4px;padding:2px 6px;font-size:.78rem;font-weight:500;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;z-index:2;color:#fff}
+/* All-day strip above the week grid. */
+.wkadrow{display:flex;flex-wrap:wrap;gap:5px;padding:6px 4px 8px}
+.wkad{padding:2px 8px;border-left:3px solid;border-radius:3px;background:var(--sf2);color:var(--tx2);font-size:.76rem;font-weight:600;cursor:pointer;max-width:290px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.wkad:hover{background:var(--sf3)}
 
 /* ── TODAY VIEW ── */
 .today-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px}
@@ -355,7 +359,12 @@ function applyFilters(){
 const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
 function fmtT(iso){if(!iso)return'';const d=new Date(iso);return d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',hour12:true});}
 function fmtDur(s,e){if(!s||!e)return'';const ms=new Date(e)-new Date(s);const h=Math.floor(ms/36e5);const m=Math.round((ms%36e5)/6e4);return h>0?(m>0?h+'h '+m+'m':h+'h'):(m+'m');}
-function fmtDay(iso){if(!iso)return'';const d=new Date(iso+'T12:00:00');return d.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
+// Takes either a bare date ('2026-09-17') or a full ISO timestamp. The
+// T12:00:00 is only for the bare-date case, where it keeps the parse out of
+// UTC rounding either side of midnight; appending it to an already-full
+// timestamp produced "Invalid Date" — which is what copyCard had been putting
+// on the clipboard.
+function fmtDay(iso){if(!iso)return'';const d=new Date(iso.length>10?iso:iso+'T12:00:00');return d.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 // Tooltip payload for a month chip. Shared by the timed and all-day variants so
 // the two cannot drift apart.
@@ -403,12 +412,26 @@ function renderMonth(){
 
 function renderWeek(){
   const now=new Date(),sow=new Date(curDate);sow.setDate(curDate.getDate()-curDate.getDay());const eow=new Date(sow);eow.setDate(sow.getDate()+6);
-  let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><h2>'+MONTHS[sow.getMonth()]+' '+sow.getDate()+' – '+MONTHS[eow.getMonth()]+' '+eow.getDate()+', '+eow.getFullYear()+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div><div class="wkgrid"><div class="cdhead" style="border-left:none"></div>';
+  // The grid used to be hard-coded to 07:00-22:00, which silently dropped
+  // 6.8% of bookings (early-morning and late-evening ones) while the badge
+  // above counted them. Widen the range to whatever the week actually holds.
+  const wkEnd=new Date(eow);wkEnd.setDate(eow.getDate()+1);
+  const inWeek=ev=>{if(!ev.start)return false;const d=new Date(ev.start);return d>=sow&&d<wkEnd;};
+  const allDayWeek=mergeEvts(filtered.filter(ev=>ev.all_day&&inWeek(ev)));
+  const weekEvts=filtered.filter(ev=>!ev.all_day&&ev.end&&inWeek(ev));
+  let H0=7,H1=22;
+  weekEvts.forEach(ev=>{H0=Math.min(H0,new Date(ev.start).getHours());const eh=new Date(ev.end);H1=Math.max(H1,eh.getHours()+(eh.getMinutes()?1:0));});
+  H1=Math.min(H1,23);
+  // All-day blocks get their own strip above the grid rather than being
+  // dropped: they have no hour to land on, and silently omitting them made the
+  // week view disagree with the month view about the same week.
+  const adStrip=allDayWeek.length?'<div class="wkadrow">'+allDayWeek.map(ev=>'<div class="wkad" style="border-left-color:'+rcol(ev.room)+'" '+tipAttrs(ev)+'>'+esc(fmtDay(ev.start).slice(0,3)+' · '+ev.title)+'</div>').join('')+'</div>':'';
+  let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><h2>'+MONTHS[sow.getMonth()]+' '+sow.getDate()+' – '+MONTHS[eow.getMonth()]+' '+eow.getDate()+', '+eow.getFullYear()+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>'+adStrip+'<div class="wkgrid"><div class="cdhead" style="border-left:none"></div>';
   for(let d=0;d<7;d++){const day=new Date(sow);day.setDate(sow.getDate()+d);h+='<div class="wkdh'+(day.toDateString()===now.toDateString()?' tdy':'')+'">'+DAYS[d]+'<br><span class="wn">'+day.getDate()+'</span></div>';}
-  const hours=[7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22];
+  const hours=[];for(let hr=H0;hr<=H1;hr++)hours.push(hr);
   hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d).toISOString().slice(0,10)+'" data-hour="'+hr+'"></div>';}});
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
-  filtered.forEach(ev=>{if(!ev.start)return;const st=new Date(ev.start),en=ev.end?new Date(ev.end):null;if(!en)return;const ds=st.toISOString().slice(0,10),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<7||sh>22)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
+  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=new Date(ev.end);const ds=st.toISOString().slice(0,10),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
 }
 
 function renderToday(){
