@@ -137,7 +137,10 @@ function buildRoomFilter(){
   Object.keys(rCnt).sort().forEach(r=>{const o=document.createElement('option');o.value=r;o.textContent=r+' ('+rCnt[r]+')';sel.appendChild(o);});
 }
 
-(function(){
+// Called from boot() once EVENTS is populated. This used to be an IIFE that
+// ran at parse time, before the fetch had resolved, so every tile read 0 and
+// was never recomputed.
+function renderStats(){
   const ur=new Set(EVENTS.map(e=>e.room)),days=new Set(EVENTS.map(e=>(e.start||'').slice(0,10)));
   const hrs=EVENTS.reduce((a,e)=>{if(e.start&&e.end)return a+(new Date(e.end)-new Date(e.start))/36e5;return a;},0);
   document.getElementById('stats').innerHTML=
@@ -145,7 +148,7 @@ function buildRoomFilter(){
     '<div class="stat"><div class="stat-l">Rooms</div><div class="stat-v sv-gn">'+ur.size+'</div></div>'+
     '<div class="stat"><div class="stat-l">Hours</div><div class="stat-v sv-og">'+hrs.toFixed(0)+'</div></div>'+
     '<div class="stat"><div class="stat-l">Days</div><div class="stat-v">'+days.size+'</div></div>';
-})();
+}
 
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmtT(iso){if(!iso)return'?';const d=new Date(iso);return d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',hour12:true});}
@@ -212,6 +215,7 @@ document.addEventListener('keydown',e=>{if(document.activeElement.tagName==='INP
     EVENTS=d.events||[];ROOMS=d.rooms||[];GROUPS=d.groups||{};
     GROUPS.Classroom=[...(GROUPS.North||[]),...(GROUPS.South||[])];
     buildRoomFilter();
+    renderStats();
   }catch(e){
     document.getElementById('list').innerHTML='<div class="empty">Could not load bookings: '+e.message+'</div>';
     return;

@@ -67,6 +67,19 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .rc:hover{background:var(--sf2)}.rc.on{background:var(--sf2);border-color:var(--bd)}.rc.off{opacity:.25}
 .rc .cd{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:7px}
 .rc .cn{font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--tx3)}
+/* Floor subheader inside the room list — sticky so it stays legible while
+   scrolling a 99-room column. */
+.rfloor{position:sticky;top:0;z-index:1;background:var(--bg);padding:8px 2px 3px;font-size:.7rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3)}
+
+/* "Free right now" panel */
+.freen{font-family:'JetBrains Mono',monospace;color:var(--gn,#22c55e)}
+.freelist{display:flex;flex-wrap:wrap;gap:4px;max-height:132px;overflow-y:auto}
+.freelist::-webkit-scrollbar{width:4px}.freelist::-webkit-scrollbar-thumb{background:var(--sf3);border-radius:4px}
+.freeload{font-size:.78rem;color:var(--tx3)}
+.free{padding:3px 7px;border-radius:5px;background:var(--sf2);border:1px solid var(--bd);font-size:.76rem;font-family:'JetBrains Mono',monospace;color:var(--tx2);cursor:pointer}
+.free:hover{background:var(--sf3)}
+.free.busy{border-color:var(--rd,#ef4444);color:var(--tx3)}
+.freenone{font-size:.78rem;color:var(--tx3)}
 
 /* Group filters — multi-select */
 .gbar{display:flex;gap:5px;flex-wrap:wrap}
@@ -90,12 +103,17 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .cday-n{font-size:.92rem;font-weight:700;color:var(--tx2);font-family:'JetBrains Mono',monospace}
 .cday.tdy .cday-n{color:var(--ac)}
 .cday-evts{flex:1;overflow:hidden;position:relative}
-.cday-evts .cev:nth-child(n+5){display:none}
-.cday.showall .cday-evts .cev{display:flex!important}
+.cday-evts .cev:nth-child(n+5),.cday-evts .cad:nth-child(n+5){display:none}
+.cday.showall .cday-evts .cev,.cday.showall .cday-evts .cad{display:block!important}
 .cday-evts .cmr{display:block}
 .cday.showall .cday-evts .cmr{display:none!important}
 .cev{padding:2px 6px;border-radius:3px;font-size:.78rem;font-weight:500;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;line-height:1.4;user-select:text;color:#fff}
 .cev:hover{filter:brightness(1.1)}
+.cev .crm{font-weight:700}
+/* Full-day blocks (003/RENOVATIONS etc). A tinted strip, not a timed bar —
+   they used to render as "12:00 a.m. → 11:00 p.m." and crowd out real bookings. */
+.cad{padding:1px 6px;border-left:3px solid;border-radius:3px;background:var(--sf2);color:var(--tx2);font-size:.72rem;font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.cad:hover{background:var(--sf3)}
 .cmr{font-size:.72rem;color:var(--ac);font-weight:500;padding:2px 4px;cursor:pointer;display:block}
 .cmr:hover{text-decoration:underline}
 
@@ -125,6 +143,10 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .evcard:hover{box-shadow:0 2px 8px rgba(0,0,0,.05)}
 .evcard .etitle{font-weight:600;font-size:.98rem;color:var(--tx);margin-bottom:4px;word-break:break-word;padding-right:28px}
 .evcard .etime{font-family:'JetBrains Mono',monospace;font-size:.88rem;color:var(--ac);margin-bottom:3px;white-space:nowrap}
+.evcard .etime em{font-style:normal;letter-spacing:.04em;text-transform:uppercase;font-size:.78rem}
+/* All-day blocks are context, not bookings — quieter than a timed card. */
+.evcard.allday{background:var(--sf2)}
+.evcard.allday .etime{color:var(--tx3)}
 .evcard .eroom{font-size:.88rem;color:var(--tx2);display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .evcard .eroom .rd{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .evcard .edesc{font-size:.85rem;color:var(--tx3);margin-top:5px;line-height:1.4;word-break:break-word}
@@ -174,6 +196,10 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 <div class="wrap">
 <div class="side">
   <div>
+    <div class="stit">Free Right Now <span class="freen" id="freeN"></span></div>
+    <div class="freelist" id="freeList"><span class="freeload">checking…</span></div>
+  </div>
+  <div>
     <div class="stit">Last Scrape</div>
     <div class="sval" id="scrapeInfo"><strong>loading…</strong></div>
     <div id="sessInfo" class="sess"></div>
@@ -222,6 +248,10 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 let EVENTS = [];
 let ROOMS = [];
 let GROUPS = {};
+// Room number -> {display, floor, capacity, panopto}. /api/bootstrap has always
+// returned this; the page used to fetch and discard it, which is why the
+// sidebar read as 99 unlabelled numbers.
+let ROOM_META = {};
 
 const PAL = ["#3b82f6","#ef4444","#10b981","#f59e0b","#8b5cf6","#ec4899","#06b6d4","#f97316","#14b8a6","#6366f1","#84cc16","#d946ef","#0ea5e9","#22c55e","#eab308","#64748b"];
 function rcol(r){let i=ROOMS.indexOf(r);return PAL[(i<0?r.charCodeAt(0):i)%PAL.length];}
@@ -232,6 +262,11 @@ let curDate = new Date();
 let activeRooms = new Set(ROOMS);
 let activeGroups = new Set(); // multi-select
 let searchQ = '';
+
+// Events shown per month cell before "+N more". Must match the nth-child
+// cut-off in the stylesheet — the label used to be computed as length-3 while
+// CSS hid from the 5th child, so it always undercounted by one.
+const MONTH_MAX = 4;
 
 // ── MERGE ──
 function mergeEvts(evts){
@@ -245,9 +280,19 @@ function buildChips(){
   const rCnt={};EVENTS.forEach(e=>{rCnt[e.room]=(rCnt[e.room]||0)+1;});
   const cDiv=document.getElementById('rchips');
   cDiv.innerHTML='';
+  // ROOMS arrives already sorted by (floor, room), so a subheader whenever
+  // the floor changes turns 99 undifferentiated chips into a navigable list.
+  let lastFloor=null;
   ROOMS.forEach(r=>{
     if(!rCnt[r])return;
+    const meta=ROOM_META[r]||{};
+    const floor=meta.floor||'';
+    if(floor&&floor!==lastFloor){
+      const h=document.createElement('div');h.className='rfloor';h.textContent=floor;
+      cDiv.appendChild(h);lastFloor=floor;
+    }
     const d=document.createElement('div');d.className='rc on';d.dataset.room=r;
+    d.title=(meta.display||('Room '+r))+(meta.capacity?(' · '+meta.capacity+' seats'):'')+(meta.notes?(' · '+meta.notes):'');
     d.innerHTML='<span style="display:flex;align-items:center"><span class="cd" style="background:'+rcol(r)+'"></span>'+r+'</span><span class="cn">'+rCnt[r]+'</span>';
     d.onclick=()=>toggleRoom(r);cDiv.appendChild(d);
   });
@@ -255,7 +300,15 @@ function buildChips(){
 }
 function toggleRoom(r){if(activeRooms.has(r))activeRooms.delete(r);else activeRooms.add(r);syncChips();applyFilters();}
 function syncChips(){document.querySelectorAll('.rc').forEach(c=>{c.classList.toggle('on',activeRooms.has(c.dataset.room));c.classList.toggle('off',!activeRooms.has(c.dataset.room))});}
-function roomClear(){activeRooms.clear();if(activeGroups.size){let rs=[];activeGroups.forEach(g=>rs.push(...(GROUPS[g]||[])));activeRooms=new Set(rs.filter(r=>ROOMS.includes(r)));}syncChips();applyFilters();}
+// With no group filter active there is nothing to fall back to, so clearing
+// used to leave activeRooms empty and blank the entire calendar with no way
+// back. Falling back to "all rooms" is the only sane meaning of clear.
+function roomClear(){
+  activeRooms.clear();
+  if(activeGroups.size){let rs=[];activeGroups.forEach(g=>rs.push(...(GROUPS[g]||[])));activeRooms=new Set(rs.filter(r=>ROOMS.includes(r)));}
+  else{activeRooms=new Set(ROOMS);}
+  syncChips();applyFilters();
+}
 
 // ── MULTI-SELECT GROUP FILTER ──
 function toggleGroup(g){
@@ -304,8 +357,15 @@ function fmtT(iso){if(!iso)return'';const d=new Date(iso);return d.toLocaleTimeS
 function fmtDur(s,e){if(!s||!e)return'';const ms=new Date(e)-new Date(s);const h=Math.floor(ms/36e5);const m=Math.round((ms%36e5)/6e4);return h>0?(m>0?h+'h '+m+'m':h+'h'):(m+'m');}
 function fmtDay(iso){if(!iso)return'';const d=new Date(iso+'T12:00:00');return d.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+// Tooltip payload for a month chip. Shared by the timed and all-day variants so
+// the two cannot drift apart.
+function tipAttrs(ev){return 'onclick="event.stopPropagation();showTip(event,this)" data-title="'+esc(ev.title)+'" data-start="'+esc(ev.start)+'" data-end="'+esc(ev.end||'')+'" data-rooms="'+esc(ev.rooms.join(','))+'" data-desc="'+esc(ev.description||'')+'"';}
 function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).then(()=>toast('Copied!')).catch(()=>{});}
-function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;return '<div class="evcard" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'')+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+r).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;
+  // An all-day block has no meaningful clock time — its start is just midnight.
+  // Printing "12:00 a.m. → 11:00 p.m. (23h)" reads as a real 23-hour booking.
+  const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+r).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
 
 // ── RENDER ──
 function render(){if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else renderToday();}
@@ -323,8 +383,17 @@ function renderMonth(){
     h+='<div class="cday'+(tdy?' tdy':'')+(oth?' oth':'')+'" onclick="openDay(\''+ds+'\')">';
     h+='<div class="cday-hd"><span class="cday-n">'+date.getDate()+'</span></div>';
     h+='<div class="cday-evts">';
-    de.forEach(ev=>{const c=rcol(ev.rooms[0]);const ts=ev.start?fmtT(ev.start):'';const rl=ev.rooms.length>1?ev.rooms.length+' rms':ev.rooms[0];h+='<div class="cev" style="background:'+c+'" onclick="event.stopPropagation();showTip(event,this)" data-title="'+esc(ev.title)+'" data-start="'+esc(ev.start)+'" data-end="'+esc(ev.end||'')+'" data-rooms="'+esc(ev.rooms.join(','))+'" data-desc="'+esc(ev.description||'')+'">'+ts+' '+esc(ev.title)+' <span style="opacity:.6">'+rl+'</span></div>';});
-    if(de.length>3)h+='<span class="cmr" onclick="event.stopPropagation();this.parentElement.parentElement.classList.toggle(\'showall\')">+'+(de.length-3)+' more</span>';
+    // All-day blocks sort to the top and render as a strip; everything else is
+    // a timed bar. Sorting is stable, so same-kind events keep time order.
+    de.sort((a,b)=>(b.all_day?1:0)-(a.all_day?1:0));
+    de.forEach(ev=>{
+      const c=rcol(ev.rooms[0]),rl=ev.rooms.length>1?ev.rooms.length+' rms':ev.rooms[0];
+      if(ev.all_day){h+='<div class="cad" style="border-left-color:'+c+'" '+tipAttrs(ev)+'>'+esc(ev.title)+'</div>';return;}
+      // Room first: "is 142 free that day?" is the question a month grid
+      // answers, and the room is what the eye scans for.
+      h+='<div class="cev" style="background:'+c+'" '+tipAttrs(ev)+'><span class="crm">'+esc(rl)+'</span> '+fmtT(ev.start)+' '+esc(ev.title)+'</div>';
+    });
+    if(de.length>MONTH_MAX)h+='<span class="cmr" onclick="event.stopPropagation();this.parentElement.parentElement.classList.toggle(\'showall\')">+'+(de.length-MONTH_MAX)+' more</span>';
     h+='</div></div>';
   }
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
@@ -348,8 +417,14 @@ function renderToday(){
   const dStr=now.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
   let h='<div class="today-hd"><h2>'+dStr+'</h2><div class="td-nav"><button onclick="todayNav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="todayNav(1)">▶</button></div><span class="badge bg-bl">'+dayEvts.length+' bookings</span></div>';
   if(!dayEvts.length){h+='<div style="text-align:center;padding:60px;color:var(--tx3);font-size:1.1rem">No bookings on this day</div>';document.getElementById('mainArea').innerHTML=h;return;}
-  const byHour={};dayEvts.forEach(ev=>{const hr=ev.start?new Date(ev.start).getHours():0;byHour[hr]=byHour[hr]||[];byHour[hr].push(ev);});
-  h+='<div class="timeline">';for(let hr=7;hr<=22;hr++){const evts=byHour[hr];if(!evts)continue;const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="tl-hour"><div class="tl-time">'+lb+'</div><div class="tl-slots">';evts.forEach(ev=>{h+=cardHTML(ev);});h+='</div></div>';}
+  const allDay=dayEvts.filter(e=>e.all_day);
+  const byHour={};dayEvts.filter(e=>!e.all_day).forEach(ev=>{const hr=ev.start?new Date(ev.start).getHours():0;byHour[hr]=byHour[hr]||[];byHour[hr].push(ev);});
+  h+='<div class="timeline">';
+  if(allDay.length){h+='<div class="tl-hour"><div class="tl-time">All day</div><div class="tl-slots">';allDay.forEach(ev=>{h+=cardHTML(ev);});h+='</div></div>';}
+  // Render the hours that actually have bookings instead of a fixed 7..22 range.
+  // That range silently dropped anything starting before 7 a.m. while the badge
+  // above it still counted those bookings, so the header and the body disagreed.
+  Object.keys(byHour).map(Number).sort((a,b)=>a-b).forEach(hr=>{const evts=byHour[hr];const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="tl-hour"><div class="tl-time">'+lb+'</div><div class="tl-slots">';evts.forEach(ev=>{h+=cardHTML(ev);});h+='</div></div>';});
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
 }
 
@@ -393,17 +468,20 @@ async function triggerScrape(){
     const r=await fetch('/api/scrape',{method:'POST'});
     const d=await r.json();
     if(r.status===409){toast('⚠️ '+(d.message||'Already running'));btn.textContent='⟳';btn.disabled=false;return;}
-    // The worker scrapes on its own thread; poll until it reports done.
+    // The worker scrapes on its own thread; poll until it reports done. As in
+    // doLogin(), a false `busy` before the worker has picked the job up is not
+    // the same as a finished job.
     const t0=Date.now();
+    let sawBusy=false;
     while(Date.now()-t0<15*60*1000){
       await new Promise(s=>setTimeout(s,2000));
       const st=await (await fetch('/api/status')).json();
-      if(!st.busy){
-        if(st.session==='expired'){toast('❌ Session expired — use “Sign in to LSM”');}
-        else if(st.last_scrape_status==='error'){toast('❌ '+st.last_scrape_message);}
-        else{toast('✅ '+(st.last_scrape_message||'Scraped'),true);setTimeout(()=>location.reload(),900);}
-        btn.textContent='⟳';btn.disabled=false;return;
-      }
+      if(st.busy){sawBusy=true;continue;}
+      if(!sawBusy)continue;
+      if(st.session==='expired'){toast('❌ Session expired — use “Sign in to LSM”');}
+      else if(st.last_scrape_status==='error'){toast('❌ '+st.last_scrape_message);}
+      else{toast('✅ '+(st.last_scrape_message||'Scraped'),true);setTimeout(()=>location.reload(),900);}
+      btn.textContent='⟳';btn.disabled=false;return;
     }
     toast('⚠️ Still running — see the sidebar');btn.textContent='⟳';btn.disabled=false;
   }catch(e){toast('❌ '+e.message);btn.textContent='⟳';btn.disabled=false;}
@@ -427,12 +505,29 @@ async function loadStatus(){
   }catch(e){}
 }
 
+async function loadFree(){
+  const el=document.getElementById('freeList');
+  if(!el)return;
+  try{
+    const d=await (await fetch('/api/today')).json();
+    const free=(d.rooms||[]).filter(r=>r.status==='free');
+    document.getElementById('freeN').textContent=free.length+' of '+(d.rooms||[]).length;
+    if(!free.length){el.innerHTML='<span class="freenone">Every room is booked right now.</span>';return;}
+    // Rooms with nothing else today first — those are the safe answers; a room
+    // that frees up for twenty minutes is technically free and practically not.
+    free.sort((a,b)=>(a.next_at?1:0)-(b.next_at?1:0)||a.room.localeCompare(b.room));
+    el.innerHTML=free.map(r=>{const m=ROOM_META[r.room]||{};return '<span class="free'+(r.next_at?' busy':'')+'" onclick="freePick(\''+esc(r.room)+'\')" title="'+esc(m.display||('Room '+r.room))+(m.capacity?' · '+m.capacity+' seats':'')+(r.next_at?' — free until '+fmtT(r.next_at):' — free all day')+'">'+esc(r.room)+(r.next_at?' <span style="opacity:.6">'+fmtT(r.next_at)+'</span>':'')+'</span>';}).join('');
+  }catch(e){el.innerHTML='<span class="freeload">Unavailable</span>';}
+}
+
+function freePick(room){activeRooms=new Set([room]);syncChips();applyFilters();setView('today');}
+
 async function boot(){
   try{
     const r=await fetch('/api/bootstrap');
     if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
-    EVENTS=d.events||[];ROOMS=d.rooms||[];GROUPS=d.groups||{};
+    EVENTS=d.events||[];ROOMS=d.rooms||[];GROUPS=d.groups||{};ROOM_META=d.room_meta||{};
     GROUPS.Classroom=[...(GROUPS.North||[]),...(GROUPS.South||[])];
     activeRooms=new Set(ROOMS);
     document.getElementById('roomcnt').textContent=ROOMS.length+' rooms';
@@ -440,6 +535,7 @@ async function boot(){
   }catch(e){toast('Could not load bookings: '+e.message);}
   applyFilters();
   loadStatus();
+  loadFree();
 }
 
 async function doLogin(){
@@ -451,22 +547,30 @@ async function doLogin(){
     if(r.status===409){toast('⚠️ '+(d.message||'Busy'));btn.disabled=false;btn.textContent='Sign in to LSM';return;}
     toast('A browser window opened — sign in and approve Duo',true);
     const t0=Date.now();
+    let sawBusy=false;
     while(Date.now()-t0<6*60*1000){
       await new Promise(s=>setTimeout(s,2500));
       const st=await (await fetch('/api/status')).json();
       if(st.progress)btn.textContent=st.progress.slice(0,30);
-      if(!st.busy){
-        if(st.session==='ok'){toast('✅ Signed in',true);setTimeout(()=>location.reload(),900);}
-        else{toast('❌ Sign-in did not complete — try again');btn.disabled=false;btn.textContent='Sign in to LSM';}
-        return;
-      }
+      if(st.busy){sawBusy=true;continue;}
+      // The POST returns as soon as the command is queued, and `busy` is false
+      // both before the worker dequeues it and after the job ends. Treating the
+      // first false reading as the end of the job made the UI announce failure
+      // one second into a sign-in that then completed successfully.
+      if(!sawBusy)continue;
+      if(st.session==='ok'){toast('✅ Signed in',true);setTimeout(()=>location.reload(),900);}
+      else{toast('❌ Sign-in did not complete — try again');btn.disabled=false;btn.textContent='Sign in to LSM';}
+      return;
     }
+    toast(sawBusy?'⚠️ Still waiting — see the sidebar':'⚠️ Sign-in did not start — see the sidebar');
     btn.disabled=false;btn.textContent='Sign in to LSM';
   }catch(e){toast('❌ '+e.message);btn.disabled=false;btn.textContent='Sign in to LSM';}
 }
 
 boot();
-setInterval(loadStatus,60000);
+// Availability moves hour to hour, so refresh the free-room panel on the same
+// cadence as the session status rather than only at load.
+setInterval(()=>{loadStatus();loadFree();},60000);
 </script>
 </body>
 </html>
