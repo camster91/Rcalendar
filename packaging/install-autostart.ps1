@@ -6,17 +6,22 @@
     Adds a shortcut to the current user's Startup folder — no admin
     rights needed, and trivially reversible.
 
-    Prefers the packaged .exe when it exists, otherwise falls back to
-    running the dev checkout through the venv.
+    Points at the venv by default. On a UofT-managed machine SentinelOne
+    and CrowdStrike quarantine the unsigned PyInstaller exe shortly after
+    it is built, so a shortcut aimed at it would break silently at the
+    next login. A signed pythonw.exe is left alone. Pass -UseExe to
+    override on an unmanaged machine.
 
 .EXAMPLE
     .\packaging\install-autostart.ps1
     .\packaging\install-autostart.ps1 -Remove
+    .\packaging\install-autostart.ps1 -UseExe
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$Remove
+    [switch]$Remove,
+    [switch]$UseExe
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,19 +46,26 @@ $exe = Join-Path $Root "dist\RotmanLSMCalendar.exe"
 $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
 $pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
 
-if (Test-Path $exe) {
+if ($UseExe -and (Test-Path $exe)) {
     $target = $exe
     $arguments = ""
     Write-Host "  Using packaged executable."
 } elseif (Test-Path $venvPy) {
+    if ($UseExe) {
+        Write-Host "  -UseExe given but no exe in dist\ — using the venv." -ForegroundColor Yellow
+    }
     # pythonw runs without a console window — python.exe would flash a
     # black box on every login.
     $target = if (Test-Path $pythonw) { $pythonw } else { $venvPy }
     $arguments = "-m app.main"
     Write-Host "  Using dev checkout via venv."
+} elseif (Test-Path $exe) {
+    $target = $exe
+    $arguments = ""
+    Write-Host "  No venv found — falling back to the packaged executable." -ForegroundColor Yellow
 } else {
-    Write-Host "  Neither dist\RotmanLSMCalendar.exe nor .venv found." -ForegroundColor Red
-    Write-Host "  Run .\packaging\setup.ps1 or .\packaging\build.ps1 first."
+    Write-Host "  Neither .venv nor dist\RotmanLSMCalendar.exe found." -ForegroundColor Red
+    Write-Host "  Run .\packaging\setup.ps1 first."
     exit 1
 }
 

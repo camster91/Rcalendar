@@ -42,6 +42,25 @@ $sizeMb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
 Write-Host ""
 Write-Host "  Built: $exe ($sizeMb MB)" -ForegroundColor Green
 Write-Host ""
+
+# This machine is UofT-managed and runs SentinelOne + CrowdStrike Falcon.
+# Both quarantine a freshly-compiled unsigned exe within a minute or so.
+# Say so here rather than letting it look like the build silently failed.
+$av = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue |
+    Where-Object { $_.displayName -match "Sentinel|CrowdStrike" } |
+    Select-Object -ExpandProperty displayName
+
+if ($av) {
+    Write-Host "  WARNING: endpoint agent detected on this machine:" -ForegroundColor Yellow
+    foreach ($a in $av) { Write-Host "    - $a" -ForegroundColor Yellow }
+    Write-Host "  It will likely quarantine this exe within a minute, and" -ForegroundColor Yellow
+    Write-Host "  dist\ will be empty when you look again. That is expected." -ForegroundColor Yellow
+    Write-Host "  Run the app from the venv instead:" -ForegroundColor Yellow
+    Write-Host "    .\.venv\Scripts\python.exe -m app.main" -ForegroundColor Yellow
+    Write-Host "  or use .\packaging\install-autostart.ps1 for login startup." -ForegroundColor Yellow
+    Write-Host ""
+}
+
 Write-Host "  Note: the app reads its data from"
 Write-Host "    $env:LOCALAPPDATA\RotmanLSMCalendar"
 Write-Host "  First run needs one interactive LSM sign-in (Duo)."

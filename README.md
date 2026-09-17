@@ -57,29 +57,49 @@ python -m app.main --scrape-once    # scrape and exit (for Task Scheduler)
 python -m app.main --probe          # report session state and exit
 ```
 
-## Building a standalone .exe
-
-```powershell
-.\packaging\build.ps1
-```
-
-Produces `dist\RotmanLSMCalendar.exe`. The Playwright browser stays in
-its normal user-level cache (`%LOCALAPPDATA%\ms-playwright`) rather than
-being embedded, which keeps the executable around 30 MB instead of 200 MB.
-
-To start automatically at login:
+## Starting automatically at login
 
 ```powershell
 .\packaging\install-autostart.ps1            # add
 .\packaging\install-autostart.ps1 -Remove    # remove
 ```
 
+This drops a shortcut in your Startup folder pointing at
+`.venv\Scripts\pythonw.exe -m app.main` — no admin rights, trivially
+reversible. `pythonw` rather than `python` so no console window flashes
+on every login. The app comes up in the tray, scrapes at 06:00, and
+stays out of the way.
+
+## Building a standalone .exe
+
+```powershell
+.\packaging\build.ps1
+```
+
+Produces `dist\RotmanLSMCalendar.exe`, about 62 MB. The Playwright
+browser is deliberately *not* embedded — it lives in the normal
+user-level cache at `%LOCALAPPDATA%\ms-playwright`, which is ~150 MB and
+only needs installing once per machine.
+
+> **On a managed UofT machine this build will not survive.** The standard
+> UofT Windows image runs both **SentinelOne** and **CrowdStrike Falcon**,
+> and they quarantine the freshly-compiled unsigned executable about a
+> minute after it is written — you will watch it appear in `dist\` and
+> then disappear. That is the endpoint agent doing its job, not a bug in
+> the build, and nothing here tries to evade it. **Run from the venv**
+> instead: it is the same app, and a signed `python.exe` is not treated
+> as hostile.
+>
+> `.\packaging\build.ps1` is still here for unmanaged machines, and
+> `install-autostart.ps1 -UseExe` will point the shortcut at the exe if
+> you have one that has survived.
+
 ## Where the data lives
 
 Everything writable is under one directory:
 
+- **Running from the venv** — `.\data`
 - **Packaged .exe** — `%LOCALAPPDATA%\RotmanLSMCalendar`
-- **Dev checkout** — `.\data`
 
 Override with the `LSM_DATA_DIR` environment variable.
 
