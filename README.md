@@ -81,18 +81,26 @@ browser is deliberately *not* embedded — it lives in the normal
 user-level cache at `%LOCALAPPDATA%\ms-playwright`, which is ~150 MB and
 only needs installing once per machine.
 
-> **On a managed UofT machine this build will not survive.** The standard
-> UofT Windows image runs both **SentinelOne** and **CrowdStrike Falcon**,
-> and they quarantine the freshly-compiled unsigned executable about a
-> minute after it is written — you will watch it appear in `dist\` and
-> then disappear. That is the endpoint agent doing its job, not a bug in
-> the build, and nothing here tries to evade it. **Run from the venv**
-> instead: it is the same app, and a signed `python.exe` is not treated
-> as hostile.
+> **On this machine the built exe cannot be run.** The build itself
+> succeeds and the exe sits in `dist\` quite happily — it survived a
+> four-minute watch completely untouched. But every attempt to *execute*
+> it failed with `Access is denied`, and the file was deleted within
+> about ten seconds of the attempt. The first symptom is easy to
+> misread: from Git Bash it looks like a bare `Permission denied`, exit
+> code 126.
 >
-> `.\packaging\build.ps1` is still here for unmanaged machines, and
-> `install-autostart.ps1 -UseExe` will point the shortcut at the exe if
-> you have one that has survived.
+> The likely cause is the endpoint agent. This is a UofT-managed machine,
+> and Windows Defender is **switched off** in favour of **SentinelOne**
+> and **CrowdStrike Falcon**, both of which are running. A
+> freshly-compiled unsigned binary is precisely what such agents remove.
+> I could not prove that attribution beyond doubt from inside the
+> machine — but the practical answer does not depend on it: **run from
+> the venv.** It is the same app, and a signed `python.exe` is not
+> treated as hostile.
+>
+> `.\packaging\build.ps1` still works, and the exe is still worth having
+> on an unmanaged machine. `install-autostart.ps1 -UseExe` will point
+> the Startup shortcut at it if it survives for you.
 
 ## Where the data lives
 
