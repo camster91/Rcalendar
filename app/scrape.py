@@ -74,6 +74,47 @@ def default_window(
     return first.strftime("%d/%m/%Y"), last.strftime("%d/%m/%Y")
 
 
+def month_start(months_back: int) -> date:
+    """First day of the calendar month `months_back` months before this one.
+
+    month_start(0) is the 1st of the current month; negatives go forward.
+    """
+    today = date.today()
+    m = today.month - months_back
+    y = today.year + (m - 1) // 12
+    return date(y, (m - 1) % 12 + 1, 1)
+
+
+def month_end(months_back: int) -> date:
+    """Last day of the calendar month `months_back` months before this one."""
+    start = month_start(months_back)
+    nxt = date(start.year + (start.month // 12), start.month % 12 + 1, 1)
+    return nxt - timedelta(days=1)
+
+
+def backfill_windows(
+    months_back: int = 12, daily_months_back: int = 1
+) -> list[tuple[str, str]]:
+    """
+    Whole calendar months to fetch, as (dd/mm/yyyy, dd/mm/yyyy) pairs,
+    oldest first.
+
+    Stops short of the month the daily scrape's window starts in, so the
+    backfill and the daily scrape never do the same month twice.
+
+    One month per request rather than one long window, on purpose. The
+    window's bounds are also the bounds of the reconcile delete, so a month
+    APEX fails to render deletes that month and nothing else; a single
+    twelve-month window would put the whole year behind one bad render. It
+    also makes progress reportable and the run resumable — re-scraping a
+    finished month finds no changes and writes nothing.
+    """
+    return [
+        (month_start(k).strftime("%d/%m/%Y"), month_end(k).strftime("%d/%m/%Y"))
+        for k in range(months_back, daily_months_back, -1)
+    ]
+
+
 def scrape(
     date_from: str | None = None,
     date_to: str | None = None,

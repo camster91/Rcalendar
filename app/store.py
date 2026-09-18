@@ -17,7 +17,10 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Iterable, Iterator, Sequence
 
-from app.config import DB_PATH, GROUPS_PATH, ROOM_GROUPS, ROOMS_PATH, log
+from app.config import (
+    CHANGES_KEEP_DAYS, DB_PATH, GROUPS_PATH, KEEP_DAYS, ROOM_GROUPS,
+    ROOMS_PATH, log,
+)
 
 _local = threading.local()
 
@@ -59,6 +62,30 @@ CREATE TABLE IF NOT EXISTS rooms (
     panopto  INTEGER DEFAULT 0,
     seen_at  TEXT
 );
+
+-- What changed between scrapes. Append-only, and deliberately denormalised:
+-- a 'removed' row describes a booking that no longer exists in `events`, so
+-- the feed cannot join back to it and the payload is copied in. There is no
+-- foreign key to scrape_runs either — an audit log should not be coupled to
+-- a table a retention policy might trim.
+CREATE TABLE IF NOT EXISTS changes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      INTEGER,                 -- scrape_runs.id; NULL if unknown
+    trigger     TEXT NOT NULL,           -- startup | schedule | manual | backfill
+    kind        TEXT NOT NULL,           -- added | removed
+    uid         TEXT NOT NULL,           -- content hash; may recur over time
+    title       TEXT NOT NULL DEFAULT '',
+    room        TEXT NOT NULL DEFAULT '',
+    start_iso   TEXT,
+    end_iso     TEXT,
+    date        TEXT,
+    description TEXT NOT NULL DEFAULT '',
+    class_code  TEXT NOT NULL DEFAULT '',
+    detected_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_changes_detected ON changes(detected_at);
+CREATE INDEX IF NOT EXISTS idx_changes_date     ON changes(date);
+CREATE INDEX IF NOT EXISTS idx_changes_run      ON changes(run_id);
 
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
@@ -123,23 +150,48 @@ def event_uid(ev: dict[str, Any]) -> str:
 
 # ── Writes ───────────────────────────────────────────────────────────────
 
-def replace_events(events: Iterable[dict[str, Any]], date_from: str, date_to: str) -> int:
+def replace_events(
+    events: Iterable[dict[str, Any]],
+    date_from: str,
+    date_to: str,
+    run_id: int | None = None,
+    trigger: str = "manual",
+    record_changes: bool = True,
+) -> int:
     """
-    Upsert a scraped window.
+    Upsert a scraped window and record what changed in it.
 
     Deletes rows inside [date_from, date_to] that this scrape did not
     report — that is how cancellations disappear — then upserts what we
     did get. Rows outside the window are left alone so a narrow scrape
     never wipes a wider one.
+
+    The delta is worked out against what the window already held, captured
+    immediately before that delete: anything reported but not stored is an
+    add, anything stored but not reported is a removal. Both are written to
+    the `changes` table, so a booking that vanishes leaves a trace instead of
+    silently disappearing. Comparing against the window (rather than against
+    the whole table) is what makes a narrow re-scrape of wider data report no
+    adds at all.
+
+    `record_changes=False` is the backfill path: a first observation is not a
+    change, and a year of them would bury the real feed.
+
+    Note that a booking whose time is edited gets a different uid, so it is
+    recorded as one removal and one addition rather than a "move". The report
+    carries no booking id, so a move cannot be told apart from a cancel plus a
+    rebook; the feed does not pretend otherwise.
     """
     events = list(events)
     now = datetime.now().isoformat()
     seen: set[str] = set()
     rows = []
+    by_uid: dict[str, dict[str, Any]] = {}
 
     for ev in events:
         uid = event_uid(ev)
         seen.add(uid)
+        by_uid.setdefault(uid, ev)
         rows.append((
             uid,
             ev.get("title") or "",
@@ -157,7 +209,54 @@ def replace_events(events: Iterable[dict[str, Any]], date_from: str, date_to: st
     with _tx() as conn:
         iso_from = _to_iso_date(date_from)
         iso_to = _to_iso_date(date_to)
-        if iso_from and iso_to:
+        have_window = bool(iso_from and iso_to)
+
+        before: dict[str, sqlite3.Row] = {}
+        if have_window:
+            before = {
+                r["uid"]: r
+                for r in conn.execute(
+                    "SELECT uid, title, room, start_iso, end_iso, date, "
+                    "  description, class_code FROM events "
+                    "WHERE date BETWEEN ? AND ?",
+                    (iso_from, iso_to),
+                )
+            }
+        else:
+            # Without a window there is nothing to reconcile against. Do not
+            # fall back to "everything is an add" — that would log a mass
+            # addition that never happened.
+            log.warning(
+                "window %r → %r is unparseable — reconcile and change "
+                "detection skipped", date_from, date_to,
+            )
+
+        added = [u for u in seen if u not in before] if have_window else []
+        removed = [u for u in before if u not in seen] if have_window else []
+
+        # An empty report for a window that currently holds bookings is far
+        # more likely to be a failed render than a genuine mass cancellation.
+        # Acting on it would empty the window and log a removal burst that
+        # never happened, and the daily scrape runs again anyway.
+        wipe = have_window and not seen and bool(before)
+        if wipe:
+            log.warning(
+                "refusing to reconcile: an empty report would delete %d "
+                "bookings in %s → %s", len(before), date_from, date_to,
+            )
+            added, removed = [], []
+
+        if record_changes and (added or removed):
+            conn.executemany(
+                """INSERT INTO changes
+                     (run_id, trigger, kind, uid, title, room, start_iso,
+                      end_iso, date, description, class_code, detected_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                _change_rows(added, removed, by_uid, before,
+                             run_id, trigger, now),
+            )
+
+        if have_window and not wipe:
             placeholders = ",".join("?" for _ in seen) or "''"
             conn.execute(
                 f"DELETE FROM events WHERE date BETWEEN ? AND ? "
@@ -178,8 +277,42 @@ def replace_events(events: Iterable[dict[str, Any]], date_from: str, date_to: st
                  scraped_at=excluded.scraped_at""",
             rows,
         )
-    log.info("stored %d events (%s → %s)", len(rows), date_from, date_to)
+    log.info("stored %d events (%s → %s) +%d -%d",
+             len(rows), date_from, date_to, len(added), len(removed))
     return len(rows)
+
+
+def _change_rows(
+    added: list[str],
+    removed: list[str],
+    by_uid: dict[str, dict[str, Any]],
+    before: dict[str, sqlite3.Row],
+    run_id: int | None,
+    trigger: str,
+    now: str,
+) -> list[tuple[Any, ...]]:
+    """One feed row per change, carrying everything needed to render it."""
+    out: list[tuple[Any, ...]] = []
+    for uid in added:
+        ev = by_uid.get(uid) or {}
+        out.append((
+            run_id, trigger, "added", uid,
+            ev.get("title") or "", ev.get("room") or "",
+            ev.get("start"), ev.get("end"),
+            (ev.get("start") or "")[:10] or None,
+            ev.get("description") or "", ev.get("class_code") or "",
+            now,
+        ))
+    for uid in removed:
+        r = before[uid]
+        out.append((
+            run_id, trigger, "removed", uid,
+            r["title"] or "", r["room"] or "",
+            r["start_iso"], r["end_iso"], r["date"],
+            r["description"] or "", r["class_code"] or "",
+            now,
+        ))
+    return out
 
 
 def replace_rooms(rooms: Iterable[dict[str, Any]]) -> None:
@@ -210,15 +343,35 @@ def replace_rooms(rooms: Iterable[dict[str, Any]]) -> None:
         )
 
 
-def prune(keep_days_back: int = 120) -> int:
-    """Drop bookings whose date is well in the past."""
+def prune(
+    keep_days_back: int = KEEP_DAYS,
+    changes_keep_days: int = CHANGES_KEEP_DAYS,
+) -> dict[str, int]:
+    """Drop bookings — and change-feed rows about them — once they age out.
+
+    Change rows are aged by the *booking's* date, not by when we noticed the
+    change, so the feed's horizon tracks the calendar's: a removal recorded in
+    March about an August booking survives until August ages out, and a change
+    about a booking we no longer keep goes with it. Ageing them by
+    `detected_at` instead would drop feed entries for bookings still on the
+    calendar.
+    """
     with _tx() as conn:
-        cur = conn.execute(
+        events = conn.execute(
             "DELETE FROM events WHERE date IS NOT NULL "
             "AND date < date('now', ?)",
             (f"-{int(keep_days_back)} days",),
-        )
-        return cur.rowcount
+        ).rowcount
+        # `date IS NOT NULL` keeps an undated row forever rather than
+        # silently dropping it.
+        changes = conn.execute(
+            "DELETE FROM changes WHERE date IS NOT NULL "
+            "AND date < date('now', ?)",
+            (f"-{int(changes_keep_days)} days",),
+        ).rowcount
+    if events or changes:
+        log.info("pruned %d events, %d changes", events, changes)
+    return {"events": events, "changes": changes}
 
 
 # ── Runs ─────────────────────────────────────────────────────────────────
@@ -253,12 +406,53 @@ def finish_run(
         )
 
 
-def last_run() -> dict[str, Any] | None:
+def last_run(
+    exclude_triggers: Sequence[str] = ("backfill",),
+) -> dict[str, Any] | None:
+    """The newest finished run — by default the newest finished *scrape*.
+
+    A backfill is a run but not a scrape. Counting it here would make it read
+    as recent activity (suppressing the startup scrape, which the backfill
+    does not refresh) and would report a backfill's finish time as
+    `last_scrape_*` next to a different job's message.
+    """
+    sql = "SELECT * FROM scrape_runs WHERE status != 'running'"
+    args: list[Any] = []
+    if exclude_triggers:
+        marks = ",".join("?" for _ in exclude_triggers)
+        sql += f" AND (trigger IS NULL OR trigger NOT IN ({marks}))"
+        args += list(exclude_triggers)
+    row = _conn().execute(sql + " ORDER BY id DESC LIMIT 1", args).fetchone()
+    return dict(row) if row else None
+
+
+def last_backfill() -> dict[str, Any] | None:
     row = _conn().execute(
-        "SELECT * FROM scrape_runs WHERE status != 'running' "
-        "ORDER BY id DESC LIMIT 1"
+        "SELECT * FROM scrape_runs WHERE trigger = 'backfill' "
+        "AND status != 'running' ORDER BY id DESC LIMIT 1"
     ).fetchone()
     return dict(row) if row else None
+
+
+def backfill_done() -> bool:
+    """Has the one-time history fill already landed?
+
+    The gate for the automatic first-run backfill. A run only counts when it
+    finished `ok` *and* stored something: _do_backfill records a run that
+    skipped a month, hit an expired session, or threw as `error` /
+    `auth_required`, so `ok` means the whole reach came back. Anything less
+    leaves the debt outstanding, which is what makes an interrupted backfill
+    resume on the next launch instead of being silently written off.
+
+    `events_count > 0` closes the degenerate case: a run asked for a reach
+    that yields no windows at all finishes `ok` having fetched nothing, and
+    must not retire the fill for good.
+    """
+    row = _conn().execute(
+        "SELECT 1 FROM scrape_runs WHERE trigger = 'backfill' "
+        "AND status = 'ok' AND events_count > 0 LIMIT 1"
+    ).fetchone()
+    return row is not None
 
 
 def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
@@ -266,6 +460,65 @@ def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
         "SELECT * FROM scrape_runs ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Change feed ──────────────────────────────────────────────────────────
+
+def get_changes(
+    since: str | None = None,
+    kind: str | None = None,
+    room: str | None = None,
+    run_id: int | None = None,
+    include_backfill: bool = False,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """
+    Reported additions and removals, newest first.
+
+    `since` compares `detected_at`, which is ISO-8601 and so sorts
+    lexicographically — the same trick the date filters use. `kind` is only
+    applied when it is one of the two real values, so a junk value widens the
+    filter rather than silently emptying it.
+    """
+    sql = ["SELECT * FROM changes WHERE 1=1"]
+    args: list[Any] = []
+    if not include_backfill:
+        sql.append("AND trigger != 'backfill'")
+    if since:
+        sql.append("AND detected_at > ?")
+        args.append(since)
+    if kind in ("added", "removed"):
+        sql.append("AND kind = ?")
+        args.append(kind)
+    if room:
+        sql.append("AND room = ?")
+        args.append(room)
+    if run_id is not None:
+        sql.append("AND run_id = ?")
+        args.append(run_id)
+    sql.append("ORDER BY id DESC LIMIT ?")
+    args.append(limit)
+
+    rows = _conn().execute(" ".join(sql), args).fetchall()
+    return [_row_to_change(r) for r in rows]
+
+
+def _row_to_change(r: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": r["id"],
+        "run_id": r["run_id"],
+        "trigger": r["trigger"],
+        "kind": r["kind"],
+        "uid": r["uid"],
+        "title": r["title"],
+        "room": r["room"],
+        "start": r["start_iso"],
+        "end": r["end_iso"],
+        "date": r["date"],
+        "description": r["description"] or "",
+        "class_code": r["class_code"] or "",
+        "detected_at": r["detected_at"],
+    }
 
 
 # ── Reads ────────────────────────────────────────────────────────────────
@@ -277,7 +530,11 @@ def get_events(
     date_from: str | None = None,
     date_to: str | None = None,
     include_cancelled: bool = False,
-    limit: int = 20_000,
+    # Rows come back ORDER BY start_iso *ascending*, so a limit below the row
+    # count keeps the oldest bookings and silently drops the upcoming ones —
+    # /api/today would report every room free. A year of history is ~24k rows,
+    # so the cap has to clear that with room to spare.
+    limit: int = 200_000,
     rooms: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     sql = ["SELECT * FROM events WHERE 1=1"]

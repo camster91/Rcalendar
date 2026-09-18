@@ -41,13 +41,21 @@ a.vtab{display:inline-flex;align-items:center}
 
 /* ── LAYOUT ── */
 .wrap{display:flex;height:calc(100vh - 54px)}
-.side{width:250px;min-width:250px;background:var(--sf);border-right:1px solid var(--bd);overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+/* overflow:hidden, not auto — the column must never scroll as a whole. The
+   room list is the one long thing here and it scrolls inside its own box
+   (.sgrow/.rchips); when the column scrolled too, the two fought and the
+   rooms you were looking at slid out from under the pointer. */
+.side{width:250px;min-width:250px;background:var(--sf);border-right:1px solid var(--bd);overflow:hidden;padding:16px;display:flex;flex-direction:column;gap:14px}
+/* The room block takes whatever height the fixed blocks leave. */
+.sgrow{flex:1;min-height:90px;display:flex;flex-direction:column}
 .main{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column}
 
 .stit{font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--tx3);margin-bottom:6px}
 .sval{font-size:.92rem;color:var(--tx2);line-height:1.5}
+.shist{font-size:.8rem;color:var(--tx3);margin-top:5px}
+.sgrow .stit{flex-shrink:0}
 .sval strong{color:var(--tx)}
-.sess{font-size:.76rem;font-weight:600;margin-top:8px}
+.sess{font-size:.76rem;font-weight:600;margin-bottom:5px}
 .sess.ok{color:var(--gn2)}.sess.bad{color:#dc2626}.sess.warn{color:var(--og)}
 .btn-w{background:var(--og);border-color:var(--og);color:#fff}
 
@@ -73,7 +81,7 @@ a.vtab{display:inline-flex;align-items:center}
 .tag-x{cursor:pointer;opacity:.6;font-size:.78rem;margin-left:2px}.tag-x:hover{opacity:1}
 
 /* Room chips */
-.rchips{display:flex;flex-direction:column;gap:1px;max-height:calc(100vh - 460px);overflow-y:auto}
+.rchips{display:flex;flex-direction:column;gap:1px;flex:1;min-height:0;overflow-y:auto}
 .rchips::-webkit-scrollbar{width:4px}.rchips::-webkit-scrollbar-thumb{background:var(--sf3);border-radius:4px}
 .rc{padding:6px 10px;border-radius:5px;font-size:.88rem;font-weight:500;cursor:pointer;transition:.1s;display:flex;align-items:center;justify-content:space-between;border:1px solid transparent}
 .rc:hover{background:var(--sf2)}.rc.on{background:var(--sf2);border-color:var(--bd)}.rc.off{opacity:.25}
@@ -83,9 +91,10 @@ a.vtab{display:inline-flex;align-items:center}
    scrolling a 99-room column. */
 .rfloor{position:sticky;top:0;z-index:1;background:var(--bg);padding:8px 2px 3px;font-size:.7rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3)}
 
-/* "Free right now" panel */
+/* "Free right now" panel. Two rows: enough to be a glance, not enough to
+   push the room list up. It scrolls internally past that. */
 .freen{font-family:'JetBrains Mono',monospace;color:var(--gn,#22c55e)}
-.freelist{display:flex;flex-wrap:wrap;gap:4px;max-height:132px;overflow-y:auto}
+.freelist{display:flex;flex-wrap:wrap;gap:4px;max-height:62px;overflow-y:auto}
 .freelist::-webkit-scrollbar{width:4px}.freelist::-webkit-scrollbar-thumb{background:var(--sf3);border-radius:4px}
 .freeload{font-size:.78rem;color:var(--tx3)}
 .free{padding:3px 7px;border-radius:5px;background:var(--sf2);border:1px solid var(--bd);font-size:.76rem;font-family:'JetBrains Mono',monospace;color:var(--tx2);cursor:pointer}
@@ -186,6 +195,24 @@ a.vtab{display:inline-flex;align-items:center}
 .toast.ok{border-color:var(--gn)}
 @keyframes si{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
 
+/* ── CHANGE FEED ── */
+/* Additions and removals between scrapes. Colour is carried by the left border
+   and the kind label together, so the meaning survives without the colour. */
+.daysep{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:14px 2px 6px;font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);border-bottom:1px solid var(--bd);margin-bottom:8px}
+.daysep:first-child{padding-top:0}
+.daysep .dc{font-weight:500;text-transform:none;letter-spacing:0;font-size:.8rem;color:var(--tx3)}
+.chg{display:flex;align-items:flex-start;gap:12px;background:var(--sf);border:1px solid var(--bd);border-left:4px solid var(--bd2);border-radius:var(--rs);padding:9px 14px;margin-bottom:6px}
+.chg.added{border-left-color:var(--gn)}
+.chg.removed{border-left-color:var(--rd)}
+.chg-kind{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;flex-shrink:0;width:70px;padding-top:2px;color:var(--tx3)}
+.chg.added .chg-kind{color:var(--gn)}
+.chg.removed .chg-kind{color:var(--rd)}
+.chg-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.chg-t{font-weight:600;font-size:.92rem;color:var(--tx);word-break:break-word}
+.chg-m{font-size:.8rem;color:var(--tx2)}
+.chg-m .mono{font-family:'JetBrains Mono',monospace}
+.chg-when{font-size:.75rem;color:var(--tx3);white-space:nowrap;flex-shrink:0;padding-top:2px}
+
 @media(max-width:900px){.side{display:none}.wrap{flex-direction:column}}
 </style>
 </head>
@@ -202,9 +229,10 @@ a.vtab{display:inline-flex;align-items:center}
       <button class="vtab" id="v-month" onclick="setView('month')">📅 Month</button>
       <button class="vtab" id="v-week" onclick="setView('week')">📊 Week</button>
       <button class="vtab on" id="v-today" onclick="setView('today')">📋 Today</button>
+      <button class="vtab" id="v-changes" onclick="setView('changes')">🔀 Changes</button>
       <a class="vtab" href="/list">☰ List</a>
     </div>
-    <button class="btn btn-a" onclick="triggerScrape()">⟳</button>
+    <button class="btn btn-a" id="scrapeBtn" onclick="triggerScrape()" title="Scrape LSM now">⟳</button>
     <a class="btn btn-g" data-export="/download/ics" href="/download/ics" title="Export the current view">⬇ .ics</a>
     <a class="btn" data-export="/download/json" href="/download/json" title="Export the current view">⬇ JSON</a>
   </div>
@@ -212,16 +240,9 @@ a.vtab{display:inline-flex;align-items:center}
 
 <div class="wrap">
 <div class="side">
-  <div>
-    <div class="stit">Free Right Now <span class="freen" id="freeN"></span></div>
-    <div class="freelist" id="freeList"><span class="freeload">checking…</span></div>
-  </div>
-  <div>
-    <div class="stit">Last Scrape</div>
-    <div class="sval" id="scrapeInfo"><strong>loading…</strong></div>
-    <div id="sessInfo" class="sess"></div>
-    <button class="btn btn-w" id="loginBtn" onclick="doLogin()" style="display:none;width:100%;margin-top:8px">Sign in to LSM</button>
-  </div>
+  <!-- Controls first, in the order they get used: find a room, narrow by
+       group, pick from the list. The list takes whatever height is left and
+       is the only thing here that scrolls. -->
   <div>
     <div class="stit">Search</div>
     <div class="sbox">
@@ -242,9 +263,21 @@ a.vtab{display:inline-flex;align-items:center}
       <button class="gb" data-g="Self Serve" onclick="toggleGroup('Self Serve')">Self Serve</button>
     </div>
   </div>
-  <div style="flex:1;min-height:0">
+  <div class="sgrow">
     <div class="stit">Rooms <span style="font-weight:400;text-transform:none;letter-spacing:0;cursor:pointer;font-size:.78rem;color:var(--ac)" onclick="roomClear()">clear</span></div>
     <div class="rchips" id="rchips"></div>
+  </div>
+  <!-- Everything below is read-only. -->
+  <div>
+    <div class="stit">Free Right Now <span class="freen" id="freeN"></span></div>
+    <div class="freelist" id="freeList"><span class="freeload">checking…</span></div>
+  </div>
+  <div>
+    <div class="stit">Status</div>
+    <div id="sessInfo" class="sess"></div>
+    <div class="sval" id="scrapeInfo"><strong>loading…</strong></div>
+    <div class="sval shist" id="histInfo"></div>
+    <button class="btn btn-w" id="loginBtn" onclick="doLogin()" style="display:none;width:100%;margin-top:8px">Sign in to LSM</button>
   </div>
 </div>
 <div class="main" id="mainArea"></div>
@@ -401,7 +434,7 @@ function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.roo
 // change without going through applyFilters() — setView(), nav() and goToday()
 // all call render() directly, so hanging the sync off the filter pass left the
 // month view advertising today's single-day export.
-function render(){syncExportLinks();if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else renderToday();}
+function render(){syncExportLinks();if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else if(viewMode==='changes')renderChanges();else renderToday();}
 
 function renderMonth(){
   const y=curDate.getFullYear(),m=curDate.getMonth(),first=new Date(y,m,1),last=new Date(y,m+1,0),so=first.getDay(),td=last.getDate(),now=new Date();
@@ -479,8 +512,88 @@ function renderToday(){
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
 }
 
+// ── CHANGES ──
+// Additions and removals between scrapes — the only trace a cancelled booking
+// leaves, since the report carries no booking id and a vanished booking simply
+// disappears from the window. Cached, because applyFilters() re-renders on
+// every keystroke and refetching 200 rows per letter would be silly.
+let CHANGES=null;
+
+// The app fills a year of history by itself on first run, while this page is
+// already open on an almost-empty calendar. Watch for that fill ending and
+// reload, or the year lands in the database and never appears on screen.
+let BF_WAS_RUNNING=false;
+function renderChanges(force){
+  const el=document.getElementById('mainArea');
+  if(!force&&CHANGES){paintChanges();return;}
+  if(force||!el.querySelector('#chgList')){
+    el.innerHTML='<div class="chead"><h2>Changes</h2>'
+      +'<span class="badge bg-bl" id="chgCnt">loading…</span>'
+      +'<button class="btn" onclick="renderChanges(true)" title="Fetch the feed again">⟳ Refresh</button></div>'
+      +'<div id="chgList"><div class="freeload">loading…</div></div>';
+  }
+  fetch('/api/changes?limit=200').then(r=>r.json()).then(d=>{CHANGES=d;paintChanges();})
+    .catch(e=>{const l=document.getElementById('chgList');
+      if(l)l.innerHTML='<div class="freeload">Could not load changes: '+esc(e.message)+'</div>';});
+}
+
+function paintChanges(){
+  const list=document.getElementById('chgList');
+  if(!list||!CHANGES)return;
+  const cnt=document.getElementById('chgCnt');
+  if(cnt)cnt.textContent='+'+CHANGES.added+' −'+CHANGES.removed;
+  const rows=CHANGES.changes||[];
+  if(!rows.length){
+    list.innerHTML='<div style="text-align:center;padding:60px;color:var(--tx3);font-size:1.1rem">Nothing has changed since the feed began</div>';
+    return;
+  }
+  const perDay={};
+  rows.forEach(c=>{const d=c.date||(c.start||'').slice(0,10);if(d)perDay[d]=(perDay[d]||0)+1;});
+  let h='',lastDay='';
+  rows.forEach(c=>{
+    const d=c.date||(c.start||'').slice(0,10);
+    if(d&&d!==lastDay){
+      lastDay=d;const n=perDay[d];
+      h+='<div class="daysep"><span>'+new Date(d+'T12:00:00').toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+'</span><span class="dc">'+n+(n===1?' change':' changes')+'</span></div>';
+    }
+    h+=chgHTML(c);
+  });
+  list.innerHTML=h;
+}
+
+function chgHTML(c){
+  const added=c.kind==='added';
+  const when=c.start?'<span class="mono">'+fmtT(c.start)+(c.end?' → '+fmtT(c.end):'')+'</span>':'';
+  const room=c.room?'Room '+esc(c.room):'';
+  const meta=[when,room,c.description?esc(c.description):''].filter(Boolean).join(' · ');
+  return '<div class="chg '+(added?'added':'removed')+'">'
+    +'<span class="chg-kind">'+(added?'+ Added':'− Removed')+'</span>'
+    +'<span class="chg-body"><span class="chg-t">'+esc(c.title||'(untitled)')+'</span>'
+    +(meta?'<span class="chg-m">'+meta+'</span>':'')+'</span>'
+    +'<span class="chg-when">seen '+esc(fmtSeen(c.detected_at))+'</span>'
+    +'</div>';
+}
+
+// When we noticed the change — not when the booking is. Short form, because
+// most of the feed is from today or yesterday.
+function fmtSeen(iso){
+  if(!iso)return'';
+  const d=new Date(iso);
+  const today=new Date();
+  const yest=new Date();yest.setDate(today.getDate()-1);
+  if(d.toDateString()===today.toDateString())return'today '+d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit'});
+  if(d.toDateString()===yest.toDateString())return'yesterday';
+  return d.toLocaleDateString('en-CA',{month:'short',day:'numeric'});
+}
+
 function todayNav(dir){curDate.setDate(curDate.getDate()+dir);renderToday();}
-function nav(dir){if(viewMode==='today')curDate.setDate(curDate.getDate()+dir*7);else curDate.setMonth(curDate.getMonth()+dir);render();}
+function nav(dir){
+  // The feed is a list of changes, not a span of time. Advancing the date here
+  // would change nothing on screen while quietly moving the month underneath.
+  if(viewMode==='changes')return;
+  if(viewMode==='today')curDate.setDate(curDate.getDate()+dir*7);else curDate.setMonth(curDate.getMonth()+dir);
+  render();
+}
 function goToday(){curDate=new Date();render();}
 
 // ── DAY MODAL — only close from overlay background ──
@@ -524,7 +637,10 @@ document.addEventListener('mousedown',e=>{const tip=document.getElementById('tip
 
 // ── SCRAPE ──
 async function triggerScrape(){
-  const btn=document.querySelector('.btn-a');
+  // By id, not by class: the scrape button used to be found with
+  // querySelector('.btn-a'), which silently grabs whichever accent button
+  // happens to come first in the document.
+  const btn=document.getElementById('scrapeBtn');
   if(btn.disabled)return;
   btn.textContent='⏳';btn.disabled=true;
   try{
@@ -580,18 +696,44 @@ document.addEventListener('keydown',e=>{
   if(e.key==='m')setView('month');
   if(e.key==='w')setView('week');
   if(e.key==='d')setView('today');
+  if(e.key==='c')setView('changes');
 });
 
 // ── BOOT ──
 async function loadStatus(){
   try{
     const r=await fetch('/api/status');const d=await r.json();
-    document.getElementById('scrapeInfo').innerHTML=
-      '<strong>'+(d.last_scrape_human||'never')+'</strong>'+(d.date_range?'<br>'+d.date_range:'');
     const el=document.getElementById('sessInfo'),btn=document.getElementById('loginBtn');
     if(d.session==='ok'){el.className='sess ok';el.textContent='● Session active';btn.style.display='none';}
     else if(d.session==='expired'){el.className='sess bad';el.textContent='● Session expired';btn.style.display='block';}
     else{el.className='sess warn';el.textContent='● '+(d.session_message||'Session unknown');btn.style.display='block';}
+
+    // What the last scrape did, not what is held: the two used to share a line
+    // and once the range spans a backfilled year it read as though the morning
+    // scrape had fetched a year.
+    document.getElementById('scrapeInfo').innerHTML=
+      '<strong>'+(d.last_scrape_human||'never')+'</strong>'
+      +(d.last_scrape_message?'<br>'+esc(d.last_scrape_message):'');
+
+    // What is kept, and how far back it reaches. The history fill is the app's
+    // own job now, so there is nothing to offer here — only to report. While it
+    // is still owed, say so rather than showing a partial range as if it were
+    // the final answer; the progress text is the only sign the app is working
+    // on it, since there is no longer a button to have pressed.
+    const bf=d.backfill||{};
+    let tail;
+    if(bf.running)      tail=esc(d.progress||'Filling history…');
+    else if(d.backfill_done) tail=d.last_backfill?'Filled '+esc(d.last_backfill.when||''):'';
+    else                tail='History fill pending';
+    document.getElementById('histInfo').innerHTML=
+      '<strong>'+(d.total_events||0).toLocaleString()+' bookings</strong>'
+      +(d.date_range?'<br>'+esc(d.date_range):'')
+      +(tail?'<br>'+tail:'');
+
+    // bf.running is set and cleared explicitly by the worker, so unlike the
+    // racy top-level `busy` it is safe to treat as a real edge.
+    if(BF_WAS_RUNNING&&!bf.running){toast('✅ History filled',true);setTimeout(()=>location.reload(),900);return;}
+    BF_WAS_RUNNING=!!bf.running;
   }catch(e){}
 }
 
@@ -616,6 +758,8 @@ function freePick(room){activeRooms=new Set([room]);syncChips();applyFilters();s
 // The date span currently on screen, as [from, to] ISO dates.
 function viewWindow(){
   const y=curDate.getFullYear(),m=curDate.getMonth();
+  // The feed is not date-scoped, so there is no window to describe.
+  if(viewMode==='changes')return null;
   if(viewMode==='month'){
     const last=new Date(y,m+1,0);
     return [fmtISO(new Date(y,m,1)),fmtISO(last)];
@@ -632,7 +776,12 @@ function fmtISO(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,
 // Keep the download links pointing at what is on screen, so ".ics" means
 // "export this view" rather than "export everything, every time".
 function syncExportLinks(){
-  if(!ROOMS.length)return;
+  // Hide the export links on the feed: it has no date window, so they would
+  // otherwise advertise "export this day" and export today's bookings from a
+  // view that is not about today at all.
+  const feed=viewMode==='changes';
+  document.querySelectorAll('[data-export]').forEach(a=>{a.style.display=feed?'none':'';});
+  if(!ROOMS.length||feed)return;
   const p=[];
   if(activeRooms.size&&activeRooms.size<ROOMS.length)
     p.push('rooms='+encodeURIComponent([...activeRooms].join(',')));
