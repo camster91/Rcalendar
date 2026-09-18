@@ -1142,7 +1142,7 @@ function renderPresets(){
   PRESETS.forEach(p=>{
     const t=el('span','tag',p.name);
     t.title='Apply “'+p.name+'”';
-    t.onclick=()=>applyPreset(p.filters);
+    t.onclick=()=>applyPreset(p);
     const x=el('span','tag-x','✕');
     x.title='Delete';
     x.onclick=ev=>{ev.stopPropagation();deletePreset(p.name);};
@@ -1150,19 +1150,27 @@ function renderPresets(){
     box.appendChild(t);
   });
 }
-function applyPreset(f){
-  activeRooms=new Set((f.rooms||[]).filter(r=>ROOMS.includes(r)));
-  activeGroups=new Set((f.groups||[]).filter(g=>GROUPS[g]));
-  searchQ=f.q||'';
-  document.getElementById('q').value=f.q||'';
+// Takes the whole preset rather than its filters object: the toast below used
+// to read f.name off the filters, which have no name, so every application
+// announced Applied "undefined".
+function applyPreset(p){
+  const f=parseFilters((p&&p.filters)||{},{rooms:ROOMS,groups:GROUPS});
+  // No room list means every room, not none. An empty set here is what blanked
+  // the calendar for a preset that simply had not recorded any rooms.
+  activeRooms=new Set(f.rooms||ROOMS);
+  activeGroups=new Set(f.groups||[]);
+  searchQ=f.q;
+  document.getElementById('q').value=f.q;
   advFloors=new Set(f.floors||[]);
-  advSeats=+f.seats||0;
-  advPanopto=!!f.panopto;
-  advFreeAt=f.free||'';
-  advFreeMins=+f.mins||60;
-  FREE_KEY='';
+  advSeats=f.seats;
+  advPanopto=f.panopto;
+  advFreeAt=f.free;
+  advFreeMins=f.mins;
+  // Clearing the key alone would leave the previous set in place and apply it
+  // to the new filters for as long as the refetch took.
+  FREE_KEY='';FREE_ROOMS=null;
   syncGroupBtns();syncChips();renderTags();buildFilterBody();applyFilters();
-  toast('Applied “'+f.name+'”',true);
+  toast('Applied “'+((p&&p.name)||'filter')+'”',true);
 }
 async function savePreset(rawName){
   const name=(rawName||'').trim();
@@ -1207,6 +1215,48 @@ function copyLink(){
 // replaceState, not pushState: with push, every chip click becomes a
 // back-button step and leaving the page takes a dozen presses. The cost is that
 // Back does not undo a filter — Clear all is the escape hatch for that.
+// Coerce an untrusted bag of filter values into the shape the state variables
+// expect. One answer for two callers: readURL, whose values are strings off the
+// query string, and applyPreset, whose values are whatever JSON is on disk.
+//
+// applyPreset used to assign straight through, and a preset is a user file that
+// can hold anything. floors:"Ground Floor" became new Set("Ground Floor") — a
+// set of individual *characters*, matching no room's floor, which blanked the
+// calendar with no error to explain it. A non-array rooms threw on .filter and
+// left the rest half-applied. Both are handled here rather than at the call
+// site, because the bad presets are already on disk: validating future writes
+// on the server would not rescue the ones already saved.
+function parseFilters(raw, ctx){
+  const rooms=(ctx&&ctx.rooms)||[], groups=(ctx&&ctx.groups)||{};
+  const src=(raw&&typeof raw==='object')?raw:{};
+  // A list of names, from an array or a comma-joined string, keeping only
+  // strings and intersecting with what actually exists — so a name that is no
+  // longer in the data drops out instead of selecting nothing. An absent *or
+  // empty* list returns null, which every caller reads as "no opinion", the
+  // same rule roomClear documents.
+  const names=(v,valid)=>{
+    let list=null;
+    if(Array.isArray(v))list=v.filter(x=>typeof x==='string'&&x);
+    else if(typeof v==='string'&&v)list=v.split(',').filter(Boolean);
+    if(!list||!list.length)return null;
+    return valid?list.filter(x=>valid.indexOf(x)>=0):list;
+  };
+  return {
+    rooms:names(src.rooms,rooms),
+    groups:names(src.groups,Object.keys(groups)),
+    q:typeof src.q==='string'?src.q:'',
+    floors:names(src.floors,null),
+    // +x||0 turns a non-number into 0 rather than NaN, which would poison
+    // every comparison it reached.
+    seats:Math.max(0,+src.seats||0),
+    panopto:src.panopto===true||src.panopto===1||src.panopto==='1',
+    free:typeof src.free==='string'&&/^\d{2}:\d{2}$/.test(src.free)?src.free:'',
+    // Clamped to a day: the longest the question is meaningful for, and the
+    // same cap the server puts on `for`.
+    mins:Math.min(1440,Math.max(1,+src.mins||60)),
+  };
+}
+
 function writeURL(){
   const p=new URLSearchParams();
   // The rooms/q/from/to vocabulary is the one the download endpoints already
@@ -1227,23 +1277,19 @@ function writeURL(){
 // have been set up and before the first applyFilters().
 function readURL(){
   const p=new URLSearchParams(location.search);
-  const csv=k=>{const v=p.get(k);return v?v.split(',').filter(Boolean):null;};
-  const groups=csv('groups');
-  if(groups)activeGroups=new Set(groups.filter(g=>GROUPS[g]));
+  const f=parseFilters(Object.fromEntries(p),{rooms:ROOMS,groups:GROUPS});
+  if(f.groups)activeGroups=new Set(f.groups);
   // An explicit room list is the more specific statement, so it wins; with only
   // groups named, the selection implies its rooms — the same inference
   // toggleGroup makes, through the same helper.
-  const rooms=csv('rooms');
-  if(rooms)activeRooms=new Set(rooms.filter(r=>ROOMS.includes(r)));
+  if(f.rooms)activeRooms=new Set(f.rooms);
   else if(activeGroups.size)activeRooms=roomsForGroups();
-  const q=p.get('q');
-  if(q){searchQ=q.toLowerCase();document.getElementById('q').value=q;}
-  const floors=csv('floors');
-  if(floors)advFloors=new Set(floors);
-  advSeats=Math.max(0,+p.get('seats')||0);
-  advPanopto=p.get('panopto')==='1';
-  advFreeAt=/^\d{2}:\d{2}$/.test(p.get('free')||'')?p.get('free'):'';
-  advFreeMins=Math.max(1,+p.get('mins')||60);
+  if(f.q){searchQ=f.q.toLowerCase();document.getElementById('q').value=f.q;}
+  if(f.floors)advFloors=new Set(f.floors);
+  advSeats=f.seats;
+  advPanopto=f.panopto;
+  advFreeAt=f.free;
+  advFreeMins=f.mins;
   const v=p.get('view');
   if(v&&['today','week','month','changes'].includes(v))viewMode=v;
   const d=p.get('date');

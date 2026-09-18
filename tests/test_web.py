@@ -119,6 +119,20 @@ def seeded() -> None:
     )
 
 
+def seeded_presets() -> None:
+    """Presets of the shape a hand-edited file can hold.
+
+    load_presets type-checks the outer blob but not the values inside it, so
+    these are exactly what a user file can deliver: a scalar where a list
+    belongs, a comma string where an array belongs, and plain nonsense. All
+    three used to reach the state variables uncoerced.
+    """
+    store.save_preset("Ground Floor", {"floors": "Ground Floor"})
+    store.save_preset("Two rooms", {"rooms": "142,147"})
+    store.save_preset("Junk", {"seats": "abc", "mins": "nonsense",
+                               "free": "afternoon", "panopto": "yes"})
+
+
 # ── Browser harness ──────────────────────────────────────────────────────
 
 # assertable clipboard: navigator.clipboard needs permissions and a secure
@@ -178,6 +192,37 @@ def exports(page) -> dict:
         "() => Object.fromEntries("
         "[...document.querySelectorAll('[data-export]')]"
         ".map(a => [a.dataset.export, a.getAttribute('href')]))"
+    )
+
+
+def events_shown(page) -> int:
+    """"5 events" -> 5. Written by applyFilters, so it tracks the filter pass."""
+    return int(page.inner_text("#evcnt").split()[0])
+
+
+def open_presets(page) -> None:
+    """Open the filter panel, which is what loads the preset tags."""
+    page.evaluate("() => openFilters()")
+    page.wait_for_selector("#presetTags .tag")
+
+
+def apply_preset(page, name: str):
+    """Click a preset by name and return the toast in the same turn.
+
+    Clicking and reading in one evaluate() closes the race with the toast's own
+    2s timeout, and dispatching the click on the element still exercises the
+    handler renderPresets wired -- which is the part that was passing the wrong
+    object.
+    """
+    return page.evaluate(
+        """(name) => {
+             const t = [...document.querySelectorAll('#presetTags .tag')]
+               .find(el => el.textContent.startsWith(name));
+             if (!t) return null;
+             t.click();
+             return document.getElementById('toast').textContent;
+           }""",
+        name,
     )
 
 
@@ -248,6 +293,77 @@ def test_month_nav_still_steps_a_month(browser, base: str) -> None:
         page.close()
 
 
+# ── R3: a saved filter cannot mangle the UI ──────────────────────────────
+
+def test_preset_names_itself_in_the_toast(browser, base: str) -> None:
+    """renderPresets passed p.filters into applyPreset, which read .name off it.
+
+    Filters have no name, so every application announced Applied "undefined".
+    """
+    page = open_page(browser, base, "/?view=month&date=2026-03-10")
+    try:
+        open_presets(page)
+        text = apply_preset(page, "Two rooms")
+        ok("preset: toast names the preset", "Two rooms" in (text or ""))
+        ok("preset: toast is not 'undefined'", "undefined" not in (text or ""))
+    finally:
+        page.close()
+
+
+def test_scalar_floors_does_not_blank_the_calendar(browser, base: str) -> None:
+    """"Ground Floor" became a set of individual characters.
+
+    new Set("Ground Floor") is {'G','r','o','u','n','d',' ','F','l',...}, which
+    matches no room's floor, so the calendar emptied with nothing to explain it.
+    Every seeded room is on the ground floor, so a working preset shows all of
+    them.
+    """
+    page = open_page(browser, base, "/?view=month&date=2026-03-10")
+    try:
+        total = events_shown(page)
+        open_presets(page)
+        apply_preset(page, "Ground Floor")
+        check("preset: scalar floors keeps the rooms that match",
+              events_shown(page), total)
+    finally:
+        page.close()
+
+
+def test_string_rooms_selects_those_rooms(browser, base: str) -> None:
+    """rooms:"142,147" is a string, and strings have no .filter.
+
+    That threw inside applyPreset, leaving the state half-applied with only a
+    console error to show for it.
+    """
+    page = open_page(browser, base, "/?view=month&date=2026-03-10")
+    try:
+        open_presets(page)
+        apply_preset(page, "Two rooms")
+        # 142 has two bookings, 147 has two, and 157's is excluded.
+        check("preset: string rooms selects exactly those rooms",
+              events_shown(page), 4)
+    finally:
+        page.close()
+
+
+def test_nonsense_values_apply_as_no_opinion(browser, base: str) -> None:
+    """A junk value must not silently switch a filter ON.
+
+    panopto:"yes" is not 1, so it is off; free:"afternoon" is not a clock time,
+    so it is off rather than sent to the server as one.
+    """
+    page = open_page(browser, base, "/?view=month&date=2026-03-10")
+    try:
+        total = events_shown(page)
+        open_presets(page)
+        apply_preset(page, "Junk")
+        check("preset: nonsense values filter nothing", events_shown(page), total)
+        check("preset: nonsense free-at stays off", param(page, "free"), None)
+        check("preset: nonsense panopto stays off", param(page, "panopto"), None)
+    finally:
+        page.close()
+
+
 # ── Runner ───────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -257,6 +373,7 @@ def main() -> int:
 
     store.init_db()
     seeded()
+    seeded_presets()
 
     try:
         from playwright.sync_api import sync_playwright
@@ -288,6 +405,10 @@ def main() -> int:
                 test_today_back_arrow_is_symmetric(browser, base)
                 test_nav_agrees_between_arrow_and_keyboard(browser, base)
                 test_month_nav_still_steps_a_month(browser, base)
+                test_preset_names_itself_in_the_toast(browser, base)
+                test_scalar_floors_does_not_blank_the_calendar(browser, base)
+                test_string_rooms_selects_those_rooms(browser, base)
+                test_nonsense_values_apply_as_no_opinion(browser, base)
             finally:
                 browser.close()
     finally:
