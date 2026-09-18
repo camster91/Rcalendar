@@ -364,6 +364,100 @@ def test_nonsense_values_apply_as_no_opinion(browser, base: str) -> None:
         page.close()
 
 
+# ── R2: free-at is a per-day answer ──────────────────────────────────────
+
+def wait_for_free(page) -> None:
+    """Open the panel, which is what builds #freeNote, then wait for an answer.
+
+    The note only exists once the panel body has been built, so a cold link
+    carrying ?free= has no element to write to until then -- which is why the
+    page looks it up on each write rather than capturing it.
+    """
+    page.evaluate("() => openFilters()")
+    page.wait_for_function(
+        "() => /free from|Could not check/.test("
+        "(document.getElementById('freeNote')||{}).textContent || '')"
+    )
+
+
+def test_free_at_filters_each_booking_by_its_own_day(browser, base: str) -> None:
+    """The filter asked about one day and applied the answer to every day.
+
+    At 10:30 for 60 min: room 147 is free on the 10th and booked all day on the
+    11th, while 157 is free on the 10th and booked on the 11th. One day's
+    answer applied across the month has to get one of them wrong, so the count
+    below cannot be reached by accident.
+
+    Per-day, exactly one booking survives: 147's 14:00 slot on the 10th. Every
+    other booking either sits on the 11th, or is a room that is booked at that
+    time on its own day.
+    """
+    page = open_page(browser, base,
+                     "/?view=month&date=2026-03-10&free=10:30&mins=60")
+    try:
+        wait_for_free(page)
+        check("free-at: month view filters each booking by its own day",
+              events_shown(page), 1)
+    finally:
+        page.close()
+
+
+def test_free_at_is_per_day_for_a_single_day_window(browser, base: str) -> None:
+    """The same question over a one-day window gives the same answer.
+
+    #evcnt counts every booking that passes the filters, not only the ones the
+    current view draws, so the two views report the same number here. What
+    differs is the window the answer was fetched for -- one day against the
+    month grid's 35 -- so this pins that the answer is per-day at both sizes,
+    and that a window of one day is not a special case that skips the lookup.
+    """
+    page = open_page(browser, base,
+                     "/?view=today&date=2026-03-10&free=10:30&mins=60")
+    try:
+        wait_for_free(page)
+        check("free-at: a one-day window filters per day too",
+              events_shown(page), 1)
+    finally:
+        page.close()
+
+
+def test_free_at_clears_the_rooms_booked_that_day(browser, base: str) -> None:
+    """Room 142 is booked 09:00-12:00 on the 10th, so it is not free at 10:30.
+
+    A guard against the opposite failure: a predicate that let everything
+    through would also pass the counts above if the corpus were smaller.
+    """
+    page = open_page(browser, base,
+                     "/?view=today&date=2026-03-10&free=10:30&mins=60")
+    try:
+        wait_for_free(page)
+        rooms = page.evaluate(
+            "() => [...document.querySelectorAll('.evcard .eroom')]"
+            ".map(el => el.textContent)"
+        )
+        ok("free-at: the booked room is gone", not any("142" in r for r in rooms))
+        ok("free-at: the free room is still there", any("147" in r for r in rooms))
+    finally:
+        page.close()
+
+
+def test_free_at_note_describes_the_span(browser, base: str) -> None:
+    """The note said "on <one date>" while answering for a whole month.
+
+    With a per-day answer the note cannot name a single day, and saying so is
+    the difference between a filter that explains itself and one that does not.
+    """
+    page = open_page(browser, base,
+                     "/?view=month&date=2026-03-10&free=10:30&mins=60")
+    try:
+        wait_for_free(page)
+        note = page.text_content("#freeNote") or ""
+        ok("free-at: the month note describes the span", "every day shown" in note)
+        ok("free-at: and does not claim one date", "2026-03-10" not in note)
+    finally:
+        page.close()
+
+
 # ── Runner ───────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -409,6 +503,10 @@ def main() -> int:
                 test_scalar_floors_does_not_blank_the_calendar(browser, base)
                 test_string_rooms_selects_those_rooms(browser, base)
                 test_nonsense_values_apply_as_no_opinion(browser, base)
+                test_free_at_filters_each_booking_by_its_own_day(browser, base)
+                test_free_at_is_per_day_for_a_single_day_window(browser, base)
+                test_free_at_clears_the_rooms_booked_that_day(browser, base)
+                test_free_at_note_describes_the_span(browser, base)
             finally:
                 browser.close()
     finally:

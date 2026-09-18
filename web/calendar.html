@@ -359,11 +359,14 @@ let advSeats = 0;            // 0 = no minimum
 let advPanopto = false;      // only rooms the report flags for Panopto
 let advFreeAt = '';          // "14:00"; empty = off
 let advFreeMins = 60;
-// Rooms free for the whole window, from /api/today. Null means "not fetched
-// yet", which applyFilters treats as no opinion rather than as "nothing is
-// free" — a filter that blanks the calendar while a request is in flight reads
-// as a bug.
-let FREE_ROOMS = null;
+// Rooms free for the window, per day, from /api/today?dates= — a Map of
+// day -> Set(room). Per day because the question is asked of a span: the month
+// and week views draw bookings from many days at once, and applying one day's
+// answer to all of them made a room booked every day of the month read as free.
+// Null means "not fetched yet", which applyFilters treats as no opinion rather
+// than as "nothing is free" — a filter that blanks the calendar while a request
+// is in flight reads as a bug.
+let FREE_DAYS = null;
 
 // Events shown per month cell before "+N more". Must match the nth-child
 // cut-off in the stylesheet — the label used to be computed as length-3 while
@@ -538,9 +541,9 @@ function applyFilters(){
     // leniency is visible rather than a surprise.
     if(advSeats&&(m.capacity??Infinity)<advSeats)return false;
     if(advPanopto&&!m.panopto)return false;
-    // FREE_ROOMS === null means the fetch has not landed; showing everything
+    // FREE_DAYS === null means the fetch has not landed; showing everything
     // briefly beats showing nothing.
-    if(advFreeAt&&FREE_ROOMS&&!FREE_ROOMS.has(e.room))return false;
+    if(advFreeAt&&FREE_DAYS&&!freeOn(e))return false;
     return true;
   });
   advCount();
@@ -965,7 +968,7 @@ function buildFilterBody(){
   trow.appendChild(mins);
   if(advFreeAt){
     const off=el('button',null,'Turn off');off.className='gb';
-    off.onclick=()=>{advFreeAt='';FREE_ROOMS=null;FREE_KEY='';buildFilterBody();writeURL();applyFilters();};
+    off.onclick=()=>{advFreeAt='';FREE_DAYS=null;FREE_KEY='';buildFilterBody();writeURL();applyFilters();};
     trow.appendChild(off);
   }
   tms.appendChild(trow);
@@ -1082,43 +1085,112 @@ async function saveGroups(){
 // Asked of /api/today, the same route and the same predicate that answer Free
 // Right Now. A JS reimplementation would be a second answer to one question.
 let FREE_KEY='';
-// The key is what the held set is an answer to. The note is rebuilt from it
-// whenever the panel is redrawn, so reopening the panel does not refetch a set
-// that is already current.
-function freeKey(){return fmtISO(curDate)+'|'+advFreeAt+'|'+advFreeMins;}
+// The days the current view draws bookings from. A month cell is a whole grid,
+// so the first and last cells can fall in the neighbouring month — asking for
+// the grid is simpler than trimming it, and 42 days is well inside the
+// server's cap of 62.
+function viewDays(){
+  if(viewMode==='changes')return [];
+  if(viewMode==='month'){
+    const y=curDate.getFullYear(),m=curDate.getMonth();
+    const first=new Date(y,m,1),last=new Date(y,m+1,0);
+    const total=Math.ceil((first.getDay()+last.getDate())/7)*7;
+    const start=new Date(y,m,1-first.getDay()),out=[];
+    for(let i=0;i<total;i++){
+      const d=new Date(start);d.setDate(start.getDate()+i);out.push(fmtISO(d));
+    }
+    return out;
+  }
+  if(viewMode==='week'){
+    const sow=new Date(curDate);sow.setDate(curDate.getDate()-curDate.getDay());
+    const out=[];
+    for(let i=0;i<7;i++){
+      const d=new Date(sow);d.setDate(sow.getDate()+i);out.push(fmtISO(d));
+    }
+    return out;
+  }
+  return [fmtISO(curDate)];
+}
+// The key is what the held set is an answer to, and it names the whole span on
+// screen — not one day. The note is rebuilt from it whenever the panel is
+// redrawn, so reopening the panel does not refetch a set that is already
+// current.
+function freeKey(){
+  const d=viewDays();
+  return d.length?d[0]+'|'+d[d.length-1]+'|'+advFreeAt+'|'+advFreeMins:'';
+}
+// Which day a booking belongs to, for looking it up in the per-day answer.
+// The server buckets on the row's own `date` (falling back to the start
+// timestamp, the same way avail._span derives it), so this has to agree with
+// that or the client would look up a day the server never answered about.
+function dayKey(e){return e.date||(e.start||'').slice(0,10);}
+function freeOn(e){
+  const set=FREE_DAYS&&FREE_DAYS.get(dayKey(e));
+  return !!(set&&set.has(e.room));
+}
 function freeNoteText(){
   if(!advFreeAt)return 'Off. Checked against the day on screen, not today.';
-  if(FREE_ROOMS&&FREE_KEY===freeKey()){
-    return FREE_ROOMS.size+' of '+ROOMS.length+' rooms free from '
-      +advFreeAt+' for '+advFreeMins+' min on '+fmtISO(curDate);
+  if(!FREE_DAYS||FREE_KEY!==freeKey())return 'checking…';
+  const days=viewDays();
+  if(days.length<=1){
+    const set=FREE_DAYS.get(days[0])||new Set();
+    return set.size+' of '+ROOMS.length+' rooms free from '
+      +advFreeAt+' for '+advFreeMins+' min on '+days[0];
   }
-  return 'checking…';
+  // Across a span, the honest single number is the rooms free on *every* day
+  // of it. The old note reported one day's count, which was true of that day
+  // and false of the rest of the month it was being applied to.
+  let every=null;
+  days.forEach(d=>{
+    const set=FREE_DAYS.get(d)||new Set();
+    every=every===null?new Set(set):new Set([...every].filter(r=>set.has(r)));
+  });
+  return (every?every.size:0)+' of '+ROOMS.length+' rooms free from '+advFreeAt
+    +' for '+advFreeMins+' min on every day shown — each booking is checked'
+    +' against its own day';
+}
+// Looked up on every write, not captured once. The panel body is rebuilt
+// whenever it opens, so #freeNote is a different element before and after —
+// and a request that starts with the panel closed (a shared link carrying
+// ?free=) would otherwise write its answer into a detached node and leave the
+// panel showing "checking…" for good.
+function setFreeNote(text){
+  const note=document.getElementById('freeNote');
+  if(note)note.textContent=text;
 }
 function maybeRefreshFree(){
   if(!advFreeAt)return;
+  // The change feed is not a span of time, so there is no day to ask about.
+  // Cleared rather than left holding the last answer, which would be an answer
+  // to a question this view never asked.
+  if(!viewDays().length){FREE_DAYS=null;FREE_KEY='';return;}
   const key=freeKey();
   if(key===FREE_KEY)return;
   FREE_KEY=key;
   loadFreeRooms();
 }
 async function loadFreeRooms(){
-  const note=document.getElementById('freeNote');
-  if(!advFreeAt){FREE_ROOMS=null;applyFilters();return;}
-  if(note)note.textContent='checking…';
+  if(!advFreeAt){FREE_DAYS=null;applyFilters();return;}
+  const days=viewDays();
+  if(!days.length){FREE_DAYS=null;applyFilters();return;}
+  setFreeNote('checking…');
   try{
-    const d=await (await fetch('/api/today?date='+fmtISO(curDate)
+    // One request for the whole span. Asking per visible day would work and
+    // would be 42 round trips, each a full read of the events table.
+    const d=await (await fetch('/api/today?dates='+days.join(',')
       +'&at='+encodeURIComponent(advFreeAt)+'&for='+advFreeMins)).json();
-    const all=d.rooms||[];
-    FREE_ROOMS=new Set(all.filter(r=>r.status==='free').map(r=>r.room));
-    if(note)note.textContent=freeNoteText();
+    const m=new Map();
+    Object.keys(d.days||{}).forEach(k=>m.set(k,new Set((d.days[k].free||[]))));
+    FREE_DAYS=m;
+    setFreeNote(freeNoteText());
   }catch(e){
     // Left as no-opinion rather than empty: a failed request must not read as
     // "no room is free". FREE_KEY deliberately keeps the key it was set to —
     // clearing it here would make the render() this call ends with see a
     // changed key, refetch immediately, fail again, and spin. A failed check
-    // is retried when the date, time or length changes, not on every paint.
-    FREE_ROOMS=null;
-    if(note)note.textContent='Could not check availability: '+e.message;
+    // is retried when the day, time or length changes, not on every paint.
+    FREE_DAYS=null;
+    setFreeNote('Could not check availability: '+e.message);
   }
   applyFilters();
 }
@@ -1168,7 +1240,7 @@ function applyPreset(p){
   advFreeMins=f.mins;
   // Clearing the key alone would leave the previous set in place and apply it
   // to the new filters for as long as the refetch took.
-  FREE_KEY='';FREE_ROOMS=null;
+  FREE_KEY='';FREE_DAYS=null;
   syncGroupBtns();syncChips();renderTags();buildFilterBody();applyFilters();
   toast('Applied “'+((p&&p.name)||'filter')+'”',true);
 }
@@ -1199,7 +1271,7 @@ function clearAllFilters(){
   searchQ='';document.getElementById('q').value='';
   tags.length=0;renderTags();
   advFloors.clear();advSeats=0;advPanopto=false;advFreeAt='';advFreeMins=60;
-  FREE_ROOMS=null;FREE_KEY='';
+  FREE_DAYS=null;FREE_KEY='';
   syncGroupBtns();syncChips();buildFilterBody();
   applyFilters();
   toast('Filters cleared',true);
