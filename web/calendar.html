@@ -656,7 +656,7 @@ function renderToday(){
   const now=new Date(curDate),ds=fmtISO(now);
   const dayEvts=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
   const dStr=now.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
-  let h='<div class="today-hd"><h2>'+dStr+'</h2><div class="td-nav"><button onclick="todayNav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="todayNav(1)">▶</button></div><span class="badge bg-bl">'+dayEvts.length+' bookings</span></div>';
+  let h='<div class="today-hd"><h2>'+dStr+'</h2><div class="td-nav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><span class="badge bg-bl">'+dayEvts.length+' bookings</span></div>';
   if(!dayEvts.length){h+='<div style="text-align:center;padding:60px;color:var(--tx3);font-size:1.1rem">No bookings on this day</div>';document.getElementById('mainArea').innerHTML=h;return;}
   const allDay=dayEvts.filter(e=>e.all_day);
   const byHour={};dayEvts.filter(e=>!e.all_day).forEach(ev=>{const hr=ev.start?new Date(ev.start).getHours():0;byHour[hr]=byHour[hr]||[];byHour[hr].push(ev);});
@@ -765,12 +765,21 @@ function fmtSeen(iso){
   return d.toLocaleDateString('en-CA',{month:'short',day:'numeric'});
 }
 
-function todayNav(dir){curDate.setDate(curDate.getDate()+dir);renderToday();}
+// There is deliberately no todayNav. It used to step the date and call
+// renderToday() directly, which skipped render() — and render() is the only
+// caller of syncExportLinks, writeURL and maybeRefreshFree. So stepping a day
+// in Today view left the URL and both export links describing the day you had
+// just navigated away from, and never re-asked the free-at question. The bug
+// was the second render path, so the fix is to have one: every arrow, key and
+// view switch lands in nav() or goToday(), and both go through render().
 function nav(dir){
   // The feed is a list of changes, not a span of time. Advancing the date here
   // would change nothing on screen while quietly moving the month underneath.
   if(viewMode==='changes')return;
-  if(viewMode==='today')curDate.setDate(curDate.getDate()+dir*7);else curDate.setMonth(curDate.getMonth()+dir);
+  // One press moves one unit of the view you are looking at: a month in Month,
+  // a day in Today. Today used to step a week here while its own arrow buttons
+  // stepped a day, so ArrowRight and ▶ disagreed about how far a press went.
+  if(viewMode==='today')curDate.setDate(curDate.getDate()+dir);else curDate.setMonth(curDate.getMonth()+dir);
   render();
 }
 function goToday(){curDate=new Date();render();}
