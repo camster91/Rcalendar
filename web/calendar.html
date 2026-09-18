@@ -13,6 +13,12 @@
    mostly landed between 2.1 and 3.8. */
 :root{--bg:#f4f6f9;--sf:#fff;--sf2:#f0f3f8;--sf3:#e4e9f0;--bd:#dce2ea;--bd2:#bfc8d4;--tx:#1a2133;--tx2:#4a5568;--tx3:#617082;--ac:#0d64f4;--ac2:#1e6ef5;--acg:#eff6ff;--gn:#0b7e58;--gn2:#04865e;--rd:#dc1313;--og:#a46907;--r:12px;--rs:8px;--sh:0 1px 3px rgba(0,0,0,.06);--sh2:0 8px 24px rgba(0,0,0,.08)}
 *{margin:0;padding:0;box-sizing:border-box}
+/* The month grid, room chips and free-room pills are divs/spans carrying
+   onclick, so they need an explicit role and a visible focus ring to be
+   reachable and usable from the keyboard at all. */
+[role="button"]{cursor:pointer}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px;border-radius:4px}
+.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:16px}
 
 /* ── BAR ── */
@@ -220,7 +226,7 @@ a.vtab{display:inline-flex;align-items:center}
     <div class="stit">Search</div>
     <div class="sbox">
       <span class="si">🔍</span>
-      <input type="text" id="q" placeholder="Room, group, event..." autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="setTimeout(()=>closeDrop(),200)">
+      <input type="text" id="q" placeholder="Room, group, event..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="setTimeout(()=>closeDrop(),200)">
       <div class="sdrop" id="sdrop"></div>
     </div>
     <div class="tags" id="tags"></div>
@@ -247,8 +253,8 @@ a.vtab{display:inline-flex;align-items:center}
 <div class="tip" id="tip" onmousedown="event.stopPropagation()"><div class="tip-t" id="tipT"></div><div class="tip-tm" id="tipD"></div><div class="tip-r" id="tipR"></div><div class="tip-d" id="tipDe"></div></div>
 <div class="toast" id="toast"></div>
 <div class="mover" id="dayModal">
-  <div class="modal" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">
-    <button class="mcl" onclick="closeModal()">✕</button>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">
+    <button class="mcl" onclick="closeModal()" aria-label="Close">✕</button>
     <h2 id="modalTitle"></h2>
     <div id="modalBody"></div>
   </div>
@@ -307,14 +313,17 @@ function buildChips(){
       cDiv.appendChild(h);lastFloor=floor;
     }
     const d=document.createElement('div');d.className='rc on';d.dataset.room=r;
+    d.setAttribute('role','button');
+    d.tabIndex=0;
     d.title=(meta.display||('Room '+r))+(meta.capacity?(' · '+meta.capacity+' seats'):'')+(meta.notes?(' · '+meta.notes):'');
+    d.setAttribute('aria-label',(meta.display||('Room '+r))+', '+rCnt[r]+' bookings');
     d.innerHTML='<span style="display:flex;align-items:center"><span class="cd" style="background:'+rcol(r)+'"></span>'+r+'</span><span class="cn">'+rCnt[r]+'</span>';
     d.onclick=()=>toggleRoom(r);cDiv.appendChild(d);
   });
   syncChips();
 }
 function toggleRoom(r){if(activeRooms.has(r))activeRooms.delete(r);else activeRooms.add(r);syncChips();applyFilters();}
-function syncChips(){document.querySelectorAll('.rc').forEach(c=>{c.classList.toggle('on',activeRooms.has(c.dataset.room));c.classList.toggle('off',!activeRooms.has(c.dataset.room))});}
+function syncChips(){document.querySelectorAll('.rc').forEach(c=>{const on=activeRooms.has(c.dataset.room);c.classList.toggle('on',on);c.classList.toggle('off',!on);c.setAttribute('aria-pressed',on?'true':'false')});}
 // With no group filter active there is nothing to fall back to, so clearing
 // used to leave activeRooms empty and blank the entire calendar with no way
 // back. Falling back to "all rooms" is the only sane meaning of clear.
@@ -404,7 +413,11 @@ function renderMonth(){
     if(dn<1){date=new Date(y,m,dn);oth=true;}else if(dn>td){date=new Date(y,m,dn);oth=true;}else{date=new Date(y,m,dn);}
     const tdy=date.toDateString()===now.toDateString(),ds=date.toISOString().slice(0,10);
     const de=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)));
-    h+='<div class="cday'+(tdy?' tdy':'')+(oth?' oth':'')+'" onclick="openDay(\''+ds+'\')">';
+    // Focusable with a spoken label: the cell opens the day's full list, and
+    // making all 150 chips individually tabbable would bury that behind a
+    // hundred keypresses.
+    const dLabel=date.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric'})+' — '+de.length+(de.length===1?' booking':' bookings');
+    h+='<div class="cday'+(tdy?' tdy':'')+(oth?' oth':'')+'" role="button" tabindex="0" aria-label="'+esc(dLabel)+'" onclick="openDay(\''+ds+'\')">';
     h+='<div class="cday-hd"><span class="cday-n">'+date.getDate()+'</span></div>';
     h+='<div class="cday-evts">';
     // All-day blocks sort to the top and render as a strip; everything else is
@@ -471,14 +484,26 @@ function nav(dir){if(viewMode==='today')curDate.setDate(curDate.getDate()+dir*7)
 function goToday(){curDate=new Date();render();}
 
 // ── DAY MODAL — only close from overlay background ──
+let modalOpener=null;
 function openDay(ds){
   const dayEvts=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
   if(!dayEvts.length)return;
   document.getElementById('modalTitle').textContent=new Date(ds+'T12:00:00').toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+' — '+dayEvts.length+' bookings';
   document.getElementById('modalBody').innerHTML=dayEvts.map(ev=>cardHTML(ev)).join('');
+  modalOpener=document.activeElement;
   document.getElementById('dayModal').classList.add('show');
+  // Move focus into the dialog so the keyboard follows the eye, and keep the
+  // page behind it from being tabbed into while it is open.
+  document.querySelector('#dayModal .mcl').focus();
+  document.querySelectorAll('.bar a,.bar button,.side [role="button"],.cday').forEach(el=>{el.dataset.tab=el.tabIndex;el.tabIndex=-1;});
 }
-function closeModal(){document.getElementById('dayModal').classList.remove('show');}
+function closeModal(){
+  if(!document.getElementById('dayModal').classList.contains('show'))return;
+  document.getElementById('dayModal').classList.remove('show');
+  document.querySelectorAll('[data-tab]').forEach(el=>{el.tabIndex=Number(el.dataset.tab);delete el.dataset.tab;});
+  if(modalOpener&&modalOpener.focus)modalOpener.focus();
+  modalOpener=null;
+}
 document.getElementById('dayModal').addEventListener('mousedown',e=>{if(e.target===document.getElementById('dayModal'))closeModal();});
 
 // ── TOOLTIP — stays open while hovering/selecting ──
@@ -528,7 +553,34 @@ async function triggerScrape(){
 function toast(msg,ok){const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';if(ok)t.classList.add('ok');setTimeout(()=>{t.style.display='none';t.classList.remove('ok');},ok?2000:3000);}
 
 // ── KEYBOARD ──
-document.addEventListener('keydown',e=>{if(document.activeElement.tagName==='INPUT')return;if(e.key==='t'){goToday();e.preventDefault();}if(e.key==='m')setView('month');if(e.key==='w')setView('week');if(e.key==='d')setView('today');if(e.key==='/'){e.preventDefault();document.getElementById('q').focus();}if(e.key==='ArrowLeft')nav(-1);if(e.key==='ArrowRight')nav(1);if(e.key==='Escape')closeModal();});
+// One delegate gives every [role="button"] Enter and Space. Without it the
+// month cells, room chips and free-room pills are clickable but unreachable.
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Enter'&&e.key!==' ')return;
+  const t=e.target&&e.target.closest?e.target.closest('[role="button"]'):null;
+  if(!t)return;
+  e.preventDefault();
+  t.click();
+});
+document.addEventListener('keydown',e=>{
+  const a=document.activeElement;
+  const typing=a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable);
+  // The view-switch letters are suppressed while an interactive element has
+  // focus, otherwise tabbing to a room chip and pressing "d" would silently
+  // switch the view out from under the user. Escape, the arrows and "/" are
+  // navigation aids and stay available from anywhere.
+  const onControl=a&&(a.tagName==='BUTTON'||a.tagName==='A'||(a.getAttribute&&a.getAttribute('role')==='button'));
+  if(e.key==='Escape'){closeModal();return;}
+  if(typing)return;
+  if(e.key==='/'){e.preventDefault();document.getElementById('q').focus();return;}
+  if(e.key==='ArrowLeft'){nav(-1);return;}
+  if(e.key==='ArrowRight'){nav(1);return;}
+  if(onControl)return;
+  if(e.key==='t'){goToday();e.preventDefault();}
+  if(e.key==='m')setView('month');
+  if(e.key==='w')setView('week');
+  if(e.key==='d')setView('today');
+});
 
 // ── BOOT ──
 async function loadStatus(){
@@ -554,7 +606,8 @@ async function loadFree(){
     // Rooms with nothing else today first — those are the safe answers; a room
     // that frees up for twenty minutes is technically free and practically not.
     free.sort((a,b)=>(a.next_at?1:0)-(b.next_at?1:0)||a.room.localeCompare(b.room));
-    el.innerHTML=free.map(r=>{const m=ROOM_META[r.room]||{};return '<span class="free'+(r.next_at?' busy':'')+'" onclick="freePick(\''+esc(r.room)+'\')" title="'+esc(m.display||('Room '+r.room))+(m.capacity?' · '+m.capacity+' seats':'')+(r.next_at?' — free until '+fmtT(r.next_at):' — free all day')+'">'+esc(r.room)+(r.next_at?' <span style="opacity:.6">'+fmtT(r.next_at)+'</span>':'')+'</span>';}).join('');
+    const desc=r=>{const m=ROOM_META[r.room]||{};return esc(m.display||('Room '+r.room))+(m.capacity?' · '+m.capacity+' seats':'')+(r.next_at?' — free until '+fmtT(r.next_at):' — free all day');};
+    el.innerHTML=free.map(r=>'<span class="free'+(r.next_at?' busy':'')+'" role="button" tabindex="0" aria-label="'+desc(r)+'" onclick="freePick(\''+esc(r.room)+'\')" title="'+desc(r)+'">'+esc(r.room)+(r.next_at?' <span style="opacity:.6">'+fmtT(r.next_at)+'</span>':'')+'</span>').join('');
   }catch(e){el.innerHTML='<span class="freeload">Unavailable</span>';}
 }
 
