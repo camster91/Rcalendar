@@ -442,14 +442,19 @@ function buildGroupBtns(){
   Object.keys(GROUPS).forEach(g=>add(g==='Classroom'?'🏫 '+g:g,g));
   syncGroupBtns();
 }
+// The rooms a group selection implies. toggleGroup and readURL both need this,
+// and a URL that set activeGroups without it lit the group's button while the
+// room list stayed at every room — a filter that looked applied and was not.
+function roomsForGroups(){
+  const rs=[];
+  activeGroups.forEach(grp=>rs.push(...(GROUPS[grp]||[])));
+  return new Set(rs.filter(r=>ROOMS.includes(r)));
+}
 function toggleGroup(g){
   if(!g){activeGroups.clear();activeRooms=new Set(ROOMS);}
   else{
     if(activeGroups.has(g))activeGroups.delete(g);else activeGroups.add(g);
-    // Build room set from active groups
-    let rs=[];
-    activeGroups.forEach(grp=>rs.push(...(GROUPS[grp]||[])));
-    activeRooms=new Set(rs.filter(r=>ROOMS.includes(r)));
+    activeRooms=roomsForGroups();
   }
   syncGroupBtns();syncChips();applyFilters();
 }
@@ -1214,10 +1219,14 @@ function writeURL(){
 function readURL(){
   const p=new URLSearchParams(location.search);
   const csv=k=>{const v=p.get(k);return v?v.split(',').filter(Boolean):null;};
-  const rooms=csv('rooms');
-  if(rooms)activeRooms=new Set(rooms.filter(r=>ROOMS.includes(r)));
   const groups=csv('groups');
   if(groups)activeGroups=new Set(groups.filter(g=>GROUPS[g]));
+  // An explicit room list is the more specific statement, so it wins; with only
+  // groups named, the selection implies its rooms — the same inference
+  // toggleGroup makes, through the same helper.
+  const rooms=csv('rooms');
+  if(rooms)activeRooms=new Set(rooms.filter(r=>ROOMS.includes(r)));
+  else if(activeGroups.size)activeRooms=roomsForGroups();
   const q=p.get('q');
   if(q){searchQ=q.toLowerCase();document.getElementById('q').value=q;}
   const floors=csv('floors');
