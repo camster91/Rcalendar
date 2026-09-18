@@ -533,7 +533,12 @@ function applyFilters(){
     if(!activeRooms.has(e.room))return false;
     if(terms.length&&!terms.some(s=>((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
     const m=ROOM_META[e.room]||{};
-    if(advFloors.size&&!advFloors.has(m.floor||''))return false;
+    // Strict for floor, lenient for capacity, and the difference is deliberate:
+    // a floor is a partition, so a room with no recorded floor is not on the
+    // one you selected; a capacity is a threshold, so a room with no recorded
+    // capacity still passes a minimum. The panel states both, and offers
+    // "No floor" so the strict reading is something you can select for.
+    if(advFloors.size&&!advFloors.has(floorOf(e.room)))return false;
     // An unknown capacity PASSES a minimum. 49 of the 91 rooms have no recorded
     // capacity, and silently hiding half the building from "seats >= 20" is
     // worse than showing a room that might be too small. It must be Infinity,
@@ -852,14 +857,35 @@ function openFilters(){
 // no 5th Floor — so a chip built from it would select nothing and read as a bug.
 // ROOMS arrives sorted by (floor, room), so first-seen order is display order
 // and FLOOR_ORDER does not need duplicating in the browser.
+//
+// NO_FLOOR stands for a room whose floor the data does not state. The floor
+// filter is a *partition*, so "not on Ground Floor" is the honest reading for
+// such a room — unlike capacity, which is a threshold and lenient about an
+// unknown (see applyFilters). But the room used to vanish under every floor
+// chip with no chip that could select it, which is a state the user could
+// neither see nor enter. The sentinel is a label rather than an empty string
+// because an empty string does not survive being comma-joined into a URL.
+const NO_FLOOR='(no floor)';
+function floorOf(room){return (ROOM_META[room]||{}).floor||NO_FLOOR;}
+
 function floorsPresent(){
   const inData=new Set(EVENTS.map(e=>e.room));
   const out=[];
+  let unknown=false;
   ROOMS.forEach(r=>{
+    if(!inData.has(r))return;
     const f=(ROOM_META[r]||{}).floor;
-    if(f&&!out.includes(f)&&inData.has(r))out.push(f);
+    if(!f){unknown=true;return;}
+    if(!out.includes(f))out.push(f);
   });
+  // Last, so the known floors keep their display order and this reads as the
+  // remainder rather than as one of them.
+  if(unknown)out.push(NO_FLOOR);
   return out;
+}
+function roomsWithNoFloor(){
+  const inData=new Set(EVENTS.map(e=>e.room));
+  return ROOMS.filter(r=>inData.has(r)&&!(ROOM_META[r]||{}).floor).length;
 }
 function roomsWithoutCapacity(){
   const seen=new Set();
@@ -905,7 +931,7 @@ function buildFilterBody(){
   if(!floors.length){fs.appendChild(el('div','fempty','No floors in the current data.'));}
   else{
     floors.forEach(f=>{
-      const b=el('button',null,f);
+      const b=el('button',null,f===NO_FLOOR?'No floor':f);
       b.classList.toggle('on',advFloors.has(f));
       b.setAttribute('aria-pressed',advFloors.has(f)?'true':'false');
       b.onclick=()=>{if(advFloors.has(f))advFloors.delete(f);else advFloors.add(f);buildFilterBody();writeURL();applyFilters();};
@@ -920,6 +946,14 @@ function buildFilterBody(){
     any.onclick=()=>{advFloors.clear();buildFilterBody();writeURL();applyFilters();};
     fbar.appendChild(any);
     fs.appendChild(fbar);
+    // Stated, not silent, and stated only when there is something to state.
+    // The rule is the opposite of the capacity one above, so leaving it
+    // unspoken would make the two look like an oversight rather than a choice.
+    const nf=roomsWithNoFloor();
+    if(nf)fs.appendChild(el('div','fnote',
+      nf+' of '+ROOMS.length+' rooms have no recorded floor. Unlike capacity, '
+      +'floor is a partition, so they are not on the floor you picked — choose '
+      +'"No floor" to see them.'));
   }
   body.appendChild(fs);
 

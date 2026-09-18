@@ -47,6 +47,8 @@ PASS, FAIL = 0, 0
 # and the Wednesday after it.
 D = "2026-03-10"
 D1 = "2026-03-11"
+# Outside March's grid entirely, so it never enters a free-at answer.
+D2 = "2026-04-20"
 
 PAGE_TIMEOUT_MS = 20000
 
@@ -104,6 +106,12 @@ def seeded() -> None:
     Room 157 is deliberately free on D and booked on D1: that is the case
     that tells a per-day answer apart from a one-day answer applied to every
     day.
+
+    The Auditorium is the other shape the corpus needs. Its name matches none
+    of app.rooms.floor_for's patterns and it is not in ROOM_INFO, so it comes
+    back with no floor at all -- the only way to reach the branch where the
+    floor filter has nothing to place a room on. It sits outside March's grid
+    on purpose, so it cannot enter a free-at answer and move those counts.
     """
     store.replace_events(
         [
@@ -114,8 +122,9 @@ def seeded() -> None:
             # An all-day service block, which must render as "All day" rather
             # than as a 23-hour booking.
             booking("147", D1, "00:00", "23:00", "RENOVATIONS", all_day=True),
+            booking("Auditorium", D2, "09:00", "12:00", "Convocation setup"),
         ],
-        D, D1,
+        D, D2,
     )
 
 
@@ -315,16 +324,86 @@ def test_scalar_floors_does_not_blank_the_calendar(browser, base: str) -> None:
 
     new Set("Ground Floor") is {'G','r','o','u','n','d',' ','F','l',...}, which
     matches no room's floor, so the calendar emptied with nothing to explain it.
-    Every seeded room is on the ground floor, so a working preset shows all of
-    them.
+
+    Read correctly it selects the five bookings in Ground Floor rooms -- 142 has
+    two, 147 has two, 157 has one -- and leaves out the Auditorium, which has no
+    recorded floor. That exclusion is the intended strict reading, not a
+    regression: see test_no_floor_is_selectable for the other half of it.
     """
     page = open_page(browser, base, "/?view=month&date=2026-03-10")
     try:
-        total = events_shown(page)
+        check("preset: the corpus is the six seeded bookings",
+              events_shown(page), 6)
         open_presets(page)
         apply_preset(page, "Ground Floor")
-        check("preset: scalar floors keeps the rooms that match",
-              events_shown(page), total)
+        check("preset: scalar floors keeps exactly the rooms that match",
+              events_shown(page), 5)
+    finally:
+        page.close()
+
+
+# ── R5: a room with no floor can be selected ─────────────────────────────
+
+def test_no_floor_is_selectable(browser, base: str) -> None:
+    """The floor filter hid unfloored rooms and offered no way to ask for them.
+
+    app.rooms.floor_for returns "" for a room whose name matches none of its
+    patterns, and the predicate mapped that to "", while floorsPresent() skipped
+    falsy floors -- so such a room dropped out under any active floor filter
+    with no chip that could bring it back. A state the user could neither see
+    nor enter.
+
+    The filter stays a partition: unlike capacity, which is a threshold and
+    rightly lenient about an unknown, "not on the floor you picked" is the
+    honest reading for a room whose floor is unrecorded. So the fix makes the
+    unknown selectable rather than making it pass.
+    """
+    page = open_page(browser, base, "/?view=month&date=2026-03-10")
+    try:
+        page.evaluate("() => openFilters()")
+        page.wait_for_selector("#filterBody button")
+        labels = page.evaluate(
+            "() => [...document.querySelectorAll('#filterBody button')]"
+            ".map(b => b.textContent)"
+        )
+        if "No floor" not in labels:
+            # Reported and returned rather than falling through to the click
+            # below, which would throw on undefined and take every later test
+            # down with it.
+            ok("floor: a No floor chip is offered", False)
+            return
+
+        page.evaluate(
+            """() => [...document.querySelectorAll('#filterBody button')]
+                 .find(b => b.textContent === 'No floor').click()"""
+        )
+        check("floor: selecting it shows exactly the unfloored bookings",
+              events_shown(page), 1)
+        # The sentinel is a label rather than an empty string precisely so this
+        # survives: an empty member of a comma-joined list is dropped on the way
+        # back in, and the chip would silently unselect itself on reload.
+        check("floor: and the URL carries it",
+              param(page, "floors"), "(no floor)")
+    finally:
+        page.close()
+
+
+def test_no_floor_survives_a_reload(browser, base: str) -> None:
+    """The chip has to come back selected, not just be written to the URL."""
+    page = open_page(browser, base,
+                     "/?view=month&date=2026-03-10&floors=(no floor)")
+    try:
+        page.evaluate("() => openFilters()")
+        page.wait_for_selector("#filterBody button")
+        pressed = page.evaluate(
+            """() => [...document.querySelectorAll('#filterBody button')]
+                 .filter(b => b.getAttribute('aria-pressed') === 'true')
+                 .map(b => b.textContent)"""
+        )
+        ok("floor: the chip is selected again on reload",
+           "No floor" in pressed)
+        check("floor: and the filter is still applied",
+              events_shown(page), 1)
     finally:
         page.close()
 
@@ -460,6 +539,38 @@ def test_free_at_note_describes_the_span(browser, base: str) -> None:
 
 # ── Runner ───────────────────────────────────────────────────────────────
 
+# Listed rather than called one by one so the run can report a crash as a
+# failure. A test that throws would otherwise end the run, skip every test
+# after it and print no summary -- a suite that looks truncated, not failed.
+TESTS = [
+    test_today_nav_keeps_url_and_exports_current,
+    test_today_back_arrow_is_symmetric,
+    test_nav_agrees_between_arrow_and_keyboard,
+    test_month_nav_still_steps_a_month,
+    test_preset_names_itself_in_the_toast,
+    test_scalar_floors_does_not_blank_the_calendar,
+    test_string_rooms_selects_those_rooms,
+    test_no_floor_is_selectable,
+    test_no_floor_survives_a_reload,
+    test_nonsense_values_apply_as_no_opinion,
+    test_free_at_filters_each_booking_by_its_own_day,
+    test_free_at_is_per_day_for_a_single_day_window,
+    test_free_at_clears_the_rooms_booked_that_day,
+    test_free_at_note_describes_the_span,
+]
+
+
+def run(test, browser, base: str) -> None:
+    """One test, with a crash reported as a failure rather than ending the run."""
+    global FAIL
+    try:
+        test(browser, base)
+    except Exception as exc:
+        FAIL += 1
+        msg = f"{type(exc).__name__}: {exc}".encode("ascii", "replace").decode()
+        print(f"  FAIL  {test.__name__} raised\n          {msg}")
+
+
 def main() -> int:
     print("=" * 60)
     print("  web UI (real browser)")
@@ -495,18 +606,8 @@ def main() -> int:
                 print("        fix:  playwright install chromium")
                 return 1
             try:
-                test_today_nav_keeps_url_and_exports_current(browser, base)
-                test_today_back_arrow_is_symmetric(browser, base)
-                test_nav_agrees_between_arrow_and_keyboard(browser, base)
-                test_month_nav_still_steps_a_month(browser, base)
-                test_preset_names_itself_in_the_toast(browser, base)
-                test_scalar_floors_does_not_blank_the_calendar(browser, base)
-                test_string_rooms_selects_those_rooms(browser, base)
-                test_nonsense_values_apply_as_no_opinion(browser, base)
-                test_free_at_filters_each_booking_by_its_own_day(browser, base)
-                test_free_at_is_per_day_for_a_single_day_window(browser, base)
-                test_free_at_clears_the_rooms_booked_that_day(browser, base)
-                test_free_at_note_describes_the_span(browser, base)
+                for test in TESTS:
+                    run(test, browser, base)
             finally:
                 browser.close()
     finally:
