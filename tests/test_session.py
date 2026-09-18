@@ -12,10 +12,18 @@ seconds in — before there was any chance to approve Duo.
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# app.session logs through app.config, which opens the log file as soon as it
+# is imported. Point the data directory at a scratch location first, so the
+# snapshot-guard case does not write "not saving session snapshot" into the
+# real data/app.log — that warning in the live log should mean the app hit it.
+os.environ["LSM_DATA_DIR"] = tempfile.mkdtemp(prefix="lsm-session-")
 
 from app.config import LSM_PORTAL_URL  # noqa: E402
 from app.session import login_progress  # noqa: E402

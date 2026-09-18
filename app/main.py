@@ -14,8 +14,14 @@ than quitting, so the daily scrape keeps happening in the background.
 Usage:
     python -m app.main                 # the app
     python -m app.main --scrape-once   # scrape and exit (for Task Scheduler)
+    python -m app.main --backfill      # redo the one-time history fill and exit
     python -m app.main --probe         # report session state and exit
     python -m app.main --no-window     # run headless, web UI only
+
+The history fill is not something you ask for: the app gives it to itself
+once, on the first launch that has a live session, and never offers it again
+(see Orchestrator._queue_backfill_if_owed). --backfill is the repair path for
+a fill that did not complete, and the only way to ask for it a second time.
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ from typing import Any
 
 from app import session, store
 from app.config import (
-    APP_NAME, DATA_DIR, WEB_HOST, WEB_PORT, WINDOW_TITLE, log,
+    APP_NAME, BACKFILL_MONTHS, DATA_DIR, WEB_HOST, WEB_PORT, WINDOW_TITLE, log,
 )
 from app.scheduler import Orchestrator
 from app.server import create_app
@@ -200,6 +206,24 @@ def run_scrape_once() -> int:
     return 0 if st.get("session") == "ok" else 1
 
 
+def run_backfill(months: int | None = None) -> int:
+    """Fetch history from the command line.
+
+    The repair path: the app runs this by itself once per install, so this is
+    only for redoing a fill that failed or was cut short. Safe to repeat — a
+    month already fetched reconciles to zero changes and stores nothing.
+    """
+    store.init_db()
+    orch = Orchestrator()
+    orch._do_backfill(months=months)
+    bf = orch.status().get("backfill") or {}
+    session.shutdown()
+    print(f"backfill: stored {bf.get('stored', 0)} bookings over "
+          f"{bf.get('done', 0)}/{bf.get('total', 0)} months, "
+          f"{bf.get('failed', 0)} skipped")
+    return 0 if not bf.get("failed") else 1
+
+
 def run_probe() -> int:
     store.init_db()
     state = session.probe(headless=True)
@@ -275,6 +299,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--scrape-once", action="store_true",
                         help="run one scrape and exit")
+    parser.add_argument("--backfill", action="store_true",
+                        help=f"fetch {BACKFILL_MONTHS} months of history and exit")
+    parser.add_argument("--months", type=int, default=None,
+                        help="how many months --backfill should reach back")
     parser.add_argument("--probe", action="store_true",
                         help="print session state and exit")
     parser.add_argument("--no-window", action="store_true",
@@ -285,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_probe()
     if args.scrape_once:
         return run_scrape_once()
+    if args.backfill:
+        return run_backfill(months=args.months)
     return run_app(show_window=not args.no_window)
 
 

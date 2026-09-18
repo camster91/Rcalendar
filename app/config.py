@@ -81,6 +81,17 @@ SCRAPE_TIME = "06:00"           # local time, daily
 HEARTBEAT_HOURS = 4             # how often to re-ping LSM to keep the session warm
 SCRAPE_ON_START = True          # scrape at launch if the last one is stale
 
+# ── History ──────────────────────────────────────────────────────────────
+# Keep a rolling year of bookings rather than only the four-month scrape
+# window. The margin is not decoration: a backfill window starts on the 1st
+# of the month BACKFILL_MONTHS back and today can be the 31st, so the oldest
+# row a backfill writes is up to 365 + 30 days old (396 across a leap day).
+# Prune at 365 and the first month the backfill fetched is deleted by the
+# very next scrape.
+KEEP_DAYS = 410                 # ~13.5 months of bookings
+CHANGES_KEEP_DAYS = 410         # change-feed rows age out on the same horizon
+BACKFILL_MONTHS = 12            # how far back the one-time backfill reaches
+
 CALENDAR_NAME = "UofT Rotman Room Bookings"
 CALENDAR_TZ = "America/Toronto"
 DEFAULT_DURATION_MINUTES = 60

@@ -27,14 +27,17 @@ from typing import Any, Iterable
 
 from app import session, store
 from app.config import (
-    HEARTBEAT_HOURS, SCRAPE_MONTHS_AHEAD, SCRAPE_MONTHS_BACK,
+    BACKFILL_MONTHS, HEARTBEAT_HOURS, SCRAPE_MONTHS_AHEAD, SCRAPE_MONTHS_BACK,
     SCRAPE_ON_START, SCRAPE_TIME, log,
 )
 from app.rooms import describe
-from app.scrape import ScrapeResult, default_window, scrape
+from app.scrape import (
+    ScrapeResult, backfill_windows, default_window, scrape,
+)
 
 # Commands the worker understands.
 CMD_SCRAPE = "scrape"
+CMD_BACKFILL = "backfill"
 CMD_LOGIN = "login"
 CMD_PROBE = "probe"
 CMD_STOP = "stop"
@@ -56,6 +59,7 @@ class Orchestrator:
             "next_scrape": None,
             "last_heartbeat": None,
             "progress": "",
+            "backfill": None,       # dict while/after a backfill, else None
         }
         self._last_daily: date | None = None
         self._last_heartbeat: datetime | None = None
@@ -87,6 +91,11 @@ class Orchestrator:
 
     def request_scrape(self, interactive: bool = False) -> None:
         self.submit(CMD_SCRAPE, trigger="manual", interactive=interactive)
+
+    def request_backfill(self, months: int | None = None,
+                         auto: bool = False) -> None:
+        """Queue a history fill. `auto` marks the app's own first-run one."""
+        self.submit(CMD_BACKFILL, months=months, auto=auto)
 
     def request_login(self) -> None:
         self.submit(CMD_LOGIN)
@@ -128,6 +137,9 @@ class Orchestrator:
                     trigger=kwargs.get("trigger", "manual"),
                     interactive=kwargs.get("interactive", False),
                 )
+            elif command == CMD_BACKFILL:
+                self._do_backfill(months=kwargs.get("months"),
+                                  auto=kwargs.get("auto", False))
             else:
                 self._tick()
 
@@ -193,8 +205,30 @@ class Orchestrator:
             if SCRAPE_ON_START and stale:
                 self._set(busy=False, busy_action="", progress="")
                 self._do_scrape(trigger="startup")
+
+            self._queue_backfill_if_owed()
         finally:
             self._set(busy=False, busy_action="Checking session", progress="")
+
+    def _queue_backfill_if_owed(self) -> None:
+        """Ask for the one-time history fill, once per install.
+
+        A fresh database holds only the four months the daily window covers,
+        and no later scrape reaches further back — so without this the older
+        months are simply never fetched. It is a first-run job the app gives
+        itself, not a control: there is no button for it, and store.backfill_done()
+        retires the call for good as soon as one clean run lands.
+
+        Only ever called once the session is known good. Queued rather than run
+        inline so the worker loop owns the busy/progress bookkeeping, and called
+        after an interactive sign-in as well as at startup — that way a fill cut
+        short by an expired session resumes on the next sign-in rather than
+        waiting for a restart.
+        """
+        if store.backfill_done():
+            return
+        log.info("no completed backfill yet — queueing the one-time history fill")
+        self.request_backfill(auto=True)
 
     def _do_probe(self) -> None:
         self._set(busy=True, busy_action="Checking session")
@@ -223,6 +257,9 @@ class Orchestrator:
             if state.ok:
                 self._set(progress="Signed in")
                 self._do_scrape(trigger="manual")
+                # A backfill that died on an expired session is still owed, and
+                # signing in is the moment it becomes possible again.
+                self._queue_backfill_if_owed()
         finally:
             self._set(busy=False, busy_action="", progress="")
 
@@ -270,7 +307,8 @@ class Orchestrator:
                     e for e in result.events
                     if e.get("room") not in excluded and not e.get("cancelled")
                 ]
-                store.replace_events(kept, result.date_from, result.date_to)
+                store.replace_events(kept, result.date_from, result.date_to,
+                                     run_id=run_id, trigger=trigger)
                 store.replace_rooms(
                     [describe(r) for r in _rooms_from(kept, result.rooms)]
                 )
@@ -314,12 +352,168 @@ class Orchestrator:
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
+    def _do_backfill(self, months: int | None = None,
+                     auto: bool = False) -> None:
+        """
+        Fetch `months` calendar months of history, one report run per month.
+
+        `auto` marks the first-run fill the app gives itself (see
+        _queue_backfill_if_owed) as opposed to `--backfill` run by hand. It
+        changes only what the log and the sidebar say — the work is identical,
+        which is what makes the CLI a usable repair path for a fill that did
+        not complete.
+
+        Deliberately unlike _do_scrape, and the differences are the point:
+
+        * _last_daily is NOT stamped. The daily scrape has its own window;
+          stamping it here would make the worker skip that day's scrape.
+        * _last_heartbeat is NOT stamped either. This does exercise the
+          session, so resetting the clock would be defensible, but leaving it
+          alone costs at most one redundant ping.
+        * last_scrape / last_scrape_message are NOT touched — those describe
+          the last *scrape*, and a backfill is not one.
+        * record_changes=False. A first observation is not a change; a year
+          of "added" rows would bury every real change in the feed. The
+          run's own scrape_runs row is the record of what it did.
+        * prune() is NOT called per chunk. It runs once at the end, against
+          the whole year rather than a half-filled window.
+
+        Each chunk is its own committed transaction, so a session that dies
+        partway leaves the finished months in place and the run can simply be
+        started again — a completed month re-scrapes to zero changes.
+        """
+        months = int(months or BACKFILL_MONTHS)
+        windows = backfill_windows(months, SCRAPE_MONTHS_BACK)
+        what = "first-run backfill" if auto else "backfill"
+        log.info("%s: %d window(s), %s → %s", what, len(windows),
+                 windows[0][0] if windows else "—",
+                 windows[-1][1] if windows else "—")
+        self._set(busy=True,
+                  busy_action="Backfilling history" + (" (first run)" if auto else ""),
+                  progress="Starting…")
+        self._set_backfill(running=True, months=months, done=0,
+                           total=len(windows), stored=0, failed=0,
+                           message="", finished_at=None)
+        run_id = store.start_run("backfill")
+        stored = 0
+        failed: list[str] = []
+
+        try:
+            state = session.probe(headless=True)
+            self._set_session(state)
+            if not state.ok:
+                store.finish_run(run_id, "auth_required",
+                                 message="Backfill skipped — sign in required")
+                self._set_backfill(running=False, message="Sign in required")
+                return
+
+            for i, (win_from, win_to) in enumerate(windows, 1):
+                self._set(progress=f"Backfill {i}/{len(windows)}: "
+                                   f"{win_from} → {win_to}")
+                try:
+                    # No on_status: scrape() reports "Scraping 01/02/2026 →
+                    # 28/02/2026", which would overwrite the month counter set
+                    # above with the same dates minus the position in the run.
+                    # For a backfill the label above is the better one.
+                    result = scrape(date_from=win_from, date_to=win_to)
+                except Exception:
+                    log.exception("backfill chunk threw (%s → %s)",
+                                  win_from, win_to)
+                    failed.append(win_from)
+                    self._set_backfill(failed=len(failed))
+                    continue
+
+                if result.status == "auth_required":
+                    # The session is gone; every later chunk would fail the
+                    # same way. Stop, and leave the finished months standing.
+                    store.finish_run(
+                        run_id, "auth_required", events_count=stored,
+                        date_from=windows[0][0], date_to=windows[-1][1],
+                        message=f"Session expired after {i - 1}/{len(windows)} months",
+                    )
+                    self._set(session="expired",
+                              session_message="Session expired — sign in required")
+                    self._set_backfill(running=False,
+                                       finished_at=datetime.now().isoformat(),
+                                       message="Session expired")
+                    log.info("backfill stopped: session expired")
+                    return
+
+                if result.status == "empty":
+                    # A historical month that renders as "no data" is far more
+                    # likely to be a failed report than a month that was fully
+                    # booked and then emptied. Skip it rather than reconciling
+                    # it away.
+                    log.info("backfill: %s → %s came back empty — skipped",
+                             win_from, win_to)
+                    failed.append(win_from)
+                    self._set_backfill(failed=len(failed))
+                    continue
+
+                if result.status != "ok":
+                    failed.append(win_from)
+                    self._set_backfill(failed=len(failed))
+                    continue
+
+                excluded = _excluded_rooms(result.rooms)
+                kept = [
+                    e for e in result.events
+                    if e.get("room") not in excluded and not e.get("cancelled")
+                ]
+                stored += store.replace_events(
+                    kept, result.date_from, result.date_to,
+                    run_id=run_id, trigger="backfill",
+                    record_changes=False,
+                )
+                store.replace_rooms(
+                    [describe(r) for r in _rooms_from(kept, result.rooms)]
+                )
+                self._set_backfill(done=i, stored=stored)
+
+            store.prune()
+
+            status = "ok" if not failed else "error"
+            store.finish_run(
+                run_id, status, events_count=stored,
+                date_from=windows[0][0], date_to=windows[-1][1],
+                message=(f"{stored} bookings over {len(windows)} months"
+                         + (f"; {len(failed)} month(s) skipped" if failed else "")),
+            )
+            self._set_backfill(running=False, failed=len(failed),
+                               finished_at=datetime.now().isoformat(),
+                               message=f"{stored} bookings over "
+                                       f"{len(windows)} months")
+            log.info("%s complete — %d bookings, %d month(s) skipped",
+                     what, stored, len(failed))
+        except Exception as exc:
+            log.exception("backfill failed")
+            try:
+                store.finish_run(run_id, "error", message=str(exc))
+            except Exception:
+                pass
+            self._set_backfill(running=False,
+                               finished_at=datetime.now().isoformat(),
+                               message=f"Failed: {exc}")
+        finally:
+            self._set(busy=False, busy_action="", progress="")
+
     def _set_session(self, state: session.SessionState) -> None:
         self._set(session=state.state, session_message=state.message)
 
     def _set(self, **kwargs: Any) -> None:
         with self._status_lock:
             self._status.update(kwargs)
+
+    def _set_backfill(self, **kwargs: Any) -> None:
+        """Merge into the nested backfill dict under the lock.
+
+        _set does a shallow update, so replacing the whole dict from here
+        would race /api/status reading it on another thread.
+        """
+        with self._status_lock:
+            bf = dict(self._status.get("backfill") or {})
+            bf.update(kwargs)
+            self._status["backfill"] = bf
 
 
 def _excluded_rooms(seen: Iterable[str] = ()) -> set[str]:

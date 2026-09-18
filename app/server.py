@@ -158,6 +158,9 @@ def create_app(orchestrator: Any) -> Flask:
     def status() -> Any:
         st = orchestrator.status()
         stats = store.stats()
+        # last_run() skips backfill rows, so the status and the finish time
+        # below stay paired with the orchestrator's last_scrape_message — a
+        # backfill is a run but not a scrape.
         last = store.last_run()
 
         return jsonify({
@@ -172,9 +175,39 @@ def create_app(orchestrator: Any) -> Flask:
             ),
             "last_scrape_message": st.get("last_scrape_message", ""),
             "last_scrape_status": (last or {}).get("status"),
+            "backfill": st.get("backfill"),
+            "last_backfill": _backfill_label(store.last_backfill()),
+            # Whether the one-time history fill has landed. The sidebar says
+            # "filling…" rather than "not backfilled yet" while this is false,
+            # because the app now does it unprompted - there is nothing for the
+            # reader to go and start.
+            "backfill_done": store.backfill_done(),
             "date_range": _range_label(stats.get("date_from"), stats.get("date_to")),
             "total_events": stats.get("total_events", 0),
             "rooms": stats.get("rooms", 0),
+        })
+
+    # ── Change feed ──────────────────────────────────────────────────────
+
+    @app.get("/api/changes")
+    def api_changes() -> Any:
+        """Additions and removals between scrapes, newest first."""
+        limit = min(request.args.get("limit", 200, type=int) or 200, 2000)
+        rows = store.get_changes(
+            since=request.args.get("since"),
+            kind=request.args.get("kind"),
+            room=request.args.get("room"),
+            run_id=request.args.get("run_id", type=int),
+            include_backfill=request.args.get("include_backfill") == "1",
+            limit=limit,
+        )
+        return jsonify({
+            "since": request.args.get("since"),
+            "count": len(rows),
+            "truncated": len(rows) == limit,
+            "added": sum(1 for r in rows if r["kind"] == "added"),
+            "removed": sum(1 for r in rows if r["kind"] == "removed"),
+            "changes": rows,
         })
 
     @app.post("/api/scrape")
@@ -288,6 +321,18 @@ def _human_when(raw: str | None) -> str:
     if (datetime.now().date() - dt.date()).days == 1:
         return f"yesterday {dt:%H:%M}"
     return f"{dt:%b %d, %H:%M}"
+
+
+def _backfill_label(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Last backfill, shaped for the sidebar."""
+    if not run:
+        return None
+    return {
+        "when": _human_when(run.get("finished_at")),
+        "status": run.get("status"),
+        "events": run.get("events_count") or 0,
+        "message": run.get("message") or "",
+    }
 
 
 def _range_label(date_from: str | None, date_to: str | None) -> str:

@@ -10,11 +10,19 @@ trap where a value under 600 is a timetable period rather than a time.
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# app.parse logs through app.config, which opens the log file as soon as it
+# is imported. Point the data directory at a scratch location first, or every
+# parser case writes "parsed N events" into the real data/app.log and makes
+# the live log look like the app scraped when it did not.
+os.environ["LSM_DATA_DIR"] = tempfile.mkdtemp(prefix="lsm-parse-")
 
 from app.parse import (  # noqa: E402
     clean_description, clean_title, normalise_room, parse_csv,
