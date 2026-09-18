@@ -17,6 +17,7 @@ Usage:
     python -m app.main --backfill      # redo the one-time history fill and exit
     python -m app.main --probe         # report session state and exit
     python -m app.main --no-window     # run headless, web UI only
+    python -m app.main --selftest      # check a packaged build is intact, exit
 
 The history fill is not something you ask for: the app gives it to itself
 once, on the first launch that has a live session, and never offers it again
@@ -27,15 +28,18 @@ a fill that did not complete, and the only way to ask for it a second time.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from typing import Any
 
 from app import session, store
 from app.config import (
-    APP_NAME, BACKFILL_MONTHS, DATA_DIR, WEB_HOST, WEB_PORT, WINDOW_TITLE, log,
+    APP_NAME, BACKFILL_MONTHS, BUNDLE_DIR, DATA_DIR, DB_PATH, WEB_DIR, WEB_HOST,
+    WEB_PORT, WINDOW_TITLE, log,
 )
 from app.scheduler import Orchestrator
 from app.server import create_app
@@ -234,6 +238,124 @@ def run_probe() -> int:
     return 0 if state.ok else 1
 
 
+def run_selftest() -> int:
+    """Prove a packaged build is intact, then exit. Written for the verifier.
+
+    Deliberately does not start the Orchestrator: no scrape, no backfill, and
+    nothing sent to LSM. The question here is whether the *bundle* shipped and
+    loads, which is a question about the build rather than the session.
+
+    Findings go to selftest.json because a windowed build has no stdout —
+    print() is a silent no-op there, so a report on the console would be lost.
+    """
+    import json
+    import urllib.request
+
+    checks: dict[str, Any] = {}
+    failures: list[str] = []
+
+    def record(name: str, ok: bool, detail: str = "") -> None:
+        checks[name] = {"ok": bool(ok), "detail": detail}
+        if not ok:
+            failures.append(name)
+
+    # The GUI stack. Importing the winforms backend runs
+    # clr.AddReference("System.Windows.Forms") at module level, so this single
+    # import proves pythonnet, the CLR and .NET interop all resolve inside the
+    # bundle. It is the check that catches the most likely packaging failure.
+    try:
+        import webview.platforms.winforms  # noqa: F401
+        record("webview.winforms", True)
+    except Exception as exc:
+        record("webview.winforms", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        import pystray._win32  # noqa: F401
+        record("pystray.win32", True)
+    except Exception as exc:
+        record("pystray.win32", False, f"{type(exc).__name__}: {exc}")
+
+    # The web assets, i.e. that datas= landed where WEB_DIR looks for them.
+    for asset in ("calendar.html", "list.html"):
+        path = WEB_DIR / asset
+        record(f"web/{asset}", path.is_file(), str(path))
+
+    # The Playwright driver, then a browser. Two checks, because they fail
+    # independently and the second is the one that matters: an earlier build
+    # passed every other check in this list and could not scrape at all,
+    # because resolving the driver says nothing about whether a browser
+    # starts. playwright/_impl/_transport.py forces
+    # PLAYWRIGHT_BROWSERS_PATH="0" when frozen, which points at a browsers
+    # directory inside the bundle that nothing ever installs into — and this
+    # report called it green. Only launching one exercises the path the app
+    # will really use.
+    #
+    # Still no network, and still nothing sent to LSM: launching a browser is
+    # local, and it is never navigated anywhere.
+    try:
+        from playwright._impl._driver import compute_driver_executable
+
+        resolved = compute_driver_executable()
+        driver = resolved[0] if isinstance(resolved, tuple) else resolved
+        record("playwright.driver", Path(str(driver)).is_file(), str(driver))
+    except Exception as exc:
+        record("playwright.driver", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            browser.close()
+        record("playwright.browser", True,
+               os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "(unset)"))
+    except Exception as exc:
+        record("playwright.browser", False, f"{type(exc).__name__}: {exc}")
+
+    try:
+        store.init_db()
+        record("store.init_db", True, str(DB_PATH))
+    except Exception as exc:
+        record("store.init_db", False, f"{type(exc).__name__}: {exc}")
+
+    # Serve for real and fetch the calendar. A listening socket proves nothing
+    # here: WEB_DIR is resolved lazily inside the route, and _wait_for_server
+    # only does a TCP connect. This GET is the assertion that the UI is
+    # actually reachable.
+    try:
+        orch = Orchestrator()   # unstarted — status() reads defaults, no worker
+        threading.Thread(
+            target=_serve, args=(orch,), name="selftest-web", daemon=True
+        ).start()
+        if _wait_for_server():
+            with urllib.request.urlopen(f"{BASE_URL}/", timeout=15) as resp:
+                body = resp.read().decode("utf-8", "replace")
+            record("http.get_root", "Rotman Room Bookings" in body,
+                   f"{len(body)} bytes from {BASE_URL}/")
+        else:
+            record("http.get_root", False, f"nothing listening on {BASE_URL}")
+    except Exception as exc:
+        record("http.get_root", False, f"{type(exc).__name__}: {exc}")
+
+    report = {
+        "ok": not failures,
+        "failures": failures,
+        "checks": checks,
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "data_dir": str(DATA_DIR),
+        "bundle_dir": str(BUNDLE_DIR),
+        "web_dir": str(WEB_DIR),
+        "web_port": WEB_PORT,
+    }
+    (Path(DATA_DIR) / "selftest.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
+
+    # No-op without a console, which is the normal case for the frozen build.
+    print(json.dumps(report, indent=2))
+    return 0 if not failures else 1
+
+
 def run_app(show_window: bool = True) -> int:
     store.init_db()
 
@@ -307,8 +429,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="print session state and exit")
     parser.add_argument("--no-window", action="store_true",
                         help="run the web UI without the desktop window")
+    parser.add_argument("--selftest", action="store_true",
+                        help="check that the bundle is intact, write "
+                             "selftest.json, and exit (for build verification)")
     args = parser.parse_args(argv)
 
+    if args.selftest:
+        return run_selftest()
     if args.probe:
         return run_probe()
     if args.scrape_once:

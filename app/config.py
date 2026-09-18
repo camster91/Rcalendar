@@ -42,6 +42,29 @@ else:
 # Web assets ship inside the bundle; user data never does.
 WEB_DIR = BUNDLE_DIR / "web" if FROZEN else PROJECT_DIR / "web"
 
+# The per-user Playwright browser cache (chromium, ffmpeg, ...). Bundling it
+# would add ~150 MB to every copy of the app, so build.ps1 installs it here and
+# the packaged build reads it from here too.
+PLAYWRIGHT_BROWSERS_DIR = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ms-playwright"
+)
+
+# Playwright points *frozen* builds somewhere else entirely. Its
+# _impl/_transport.py does `env.setdefault("PLAYWRIGHT_BROWSERS_PATH", "0")`
+# when sys.frozen is set, and "0" means "<driver>/package/.local-browsers" —
+# a directory nothing ever installs into. Left alone, the package starts,
+# serves the UI, and fails every scrape with "Executable doesn't exist ...
+# _internal\playwright\driver\package\.local-browsers\...". Worse, nothing in
+# the UI says so until someone tries to sign in.
+#
+# setdefault is the lever: Playwright supplies that default only when the
+# variable is unset, so naming the real cache wins. Unfrozen this is already
+# the directory Playwright picks on its own (its defaultRegistryDirectory() is
+# <AppData>\Local\ms-playwright), so the two builds look in the same place
+# rather than merely appearing to.
+if FROZEN:
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(PLAYWRIGHT_BROWSERS_DIR))
+
 PROFILE_DIR = DATA_DIR / "profile"      # Chromium profile — holds the session cookie
 DB_PATH = DATA_DIR / "calendar.db"
 LOG_PATH = DATA_DIR / "app.log"
@@ -105,7 +128,18 @@ SLOW_MO_MS = 0
 
 # ── Web UI ───────────────────────────────────────────────────────────────
 WEB_HOST = "127.0.0.1"
-WEB_PORT = 8765                 # avoid 5000 — often taken on Windows
+# LSM_PORT mirrors LSM_DATA_DIR: it lets a packaged build or a test run on a
+# spare port without disturbing the instance already holding 8765. There is
+# deliberately no matching *host* override — this process holds a live LSM
+# session, so it must never bind anything but loopback.
+#
+# Parsed defensively because this module is imported before logging exists: a
+# malformed value must not raise at import time, which in a windowed build is
+# an invisible dialog rather than a traceback.
+try:
+    WEB_PORT = int(os.environ.get("LSM_PORT") or 8765)   # avoid 5000 — often taken
+except ValueError:
+    WEB_PORT = 8765
 WINDOW_TITLE = APP_NAME
 
 # ── Room exclusions ──────────────────────────────────────────────────────
@@ -142,9 +176,15 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
-    stream = logging.StreamHandler(sys.stderr)
-    stream.setFormatter(fmt)
-    log.addHandler(stream)
+    # In a windowed (console=False) frozen build sys.stderr is None, and it is
+    # launch-dependent rather than a property of the build. A StreamHandler on
+    # None does not raise — handleError is itself gated on sys.stderr — but
+    # attaching one anyway only churns exceptions. The FileHandler below
+    # carries the log either way.
+    if sys.stderr is not None:
+        stream = logging.StreamHandler(sys.stderr)
+        stream.setFormatter(fmt)
+        log.addHandler(stream)
 
     try:
         fileh = logging.FileHandler(LOG_PATH, encoding="utf-8")

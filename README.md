@@ -57,6 +57,7 @@ python -m app.main --scrape-once    # scrape and exit (for Task Scheduler)
 python -m app.main --backfill       # redo the one-time history fill and exit
 python -m app.main --backfill --months 6   # ...or a shorter reach
 python -m app.main --probe          # report session state and exit
+python -m app.main --selftest       # check a packaged build is intact, and exit
 ```
 
 ## Starting automatically at login
@@ -78,31 +79,70 @@ stays out of the way.
 .\packaging\build.ps1
 ```
 
-Produces `dist\RotmanLSMCalendar.exe`, about 62 MB. The Playwright
-browser is deliberately *not* embedded — it lives in the normal
-user-level cache at `%LOCALAPPDATA%\ms-playwright`, which is ~150 MB and
-only needs installing once per machine.
+Produces a **folder**, `dist\RotmanLSMCalendar\` — not a single file:
 
-> **On this machine the built exe cannot be run.** The build itself
-> succeeds and the exe sits in `dist\` quite happily — it survived a
-> four-minute watch completely untouched. But every attempt to *execute*
-> it failed with `Access is denied`, and the file was deleted within
-> about ten seconds of the attempt. The first symptom is easy to
-> misread: from Git Bash it looks like a bare `Permission denied`, exit
-> code 126.
->
-> The likely cause is the endpoint agent. This is a UofT-managed machine,
-> and Windows Defender is **switched off** in favour of **SentinelOne**
-> and **CrowdStrike Falcon**, both of which are running. A
-> freshly-compiled unsigned binary is precisely what such agents remove.
-> I could not prove that attribution beyond doubt from inside the
-> machine — but the practical answer does not depend on it: **run from
-> the venv.** It is the same app, and a signed `python.exe` is not
-> treated as hostile.
->
-> `.\packaging\build.ps1` still works, and the exe is still worth having
-> on an unmanaged machine. `install-autostart.ps1 -UseExe` will point
-> the Startup shortcut at it if it survives for you.
+| | |
+|---|---|
+| files | 915 |
+| total | ~145 MB |
+| `RotmanLSMCalendar.exe` | 7.6 MB |
+| `_internal\` | everything else |
+
+**Ship the folder: `_internal\` has to travel with the exe.** It holds the
+Python runtime, the .NET assemblies the window needs, `web\` and the Playwright
+driver. The exe on its own is not the app. It is not a thin launcher either —
+the bootloader embeds the Python archive, which is why it is a few MB rather
+than a few hundred KB.
+
+The Playwright *browser* is still deliberately **not** embedded: it is ~150 MB
+and only needs installing once per machine. `build.ps1` runs
+`playwright install chromium`, which puts it in the normal user-level cache at
+`%LOCALAPPDATA%\ms-playwright`, and the packaged build reads it from there.
+That last clause needed saying in code, not just here — Playwright points
+*frozen* builds at a browsers directory inside the bundle instead, so
+`app/config.py` names the real cache explicitly. Without that the app starts,
+serves the UI, and fails every scrape.
+
+### Verifying a build
+
+```powershell
+.\packaging\verify-build.ps1
+```
+
+Runs the packaged app's `--selftest` — which imports the GUI stack, checks the
+web assets, launches a browser, opens the database and fetches the calendar over
+HTTP — then watches the folder for 90 seconds and re-inventories every file
+afterwards. It uses a scratch data directory and a spare port, so it will not
+disturb a running instance.
+
+The dwell and the inventory are the point. A build does not have to be *deleted*
+to be broken: losing one `.pyd` leaves something that starts and misbehaves,
+which is worse than a clean kill and invisible to an existence check.
+
+### On this machine
+
+The folder build **runs here**. That is measured, not assumed:
+`verify-build.ps1` passes end to end — every check green, 915 files present and
+unchanged after the dwell — and the app launches with its window, its web UI and
+Chromium all working. (The tray starts too: it logs a line if it fails, and no
+such line appears.)
+
+This is a UofT-managed machine: Windows Defender is switched off in favour of
+**SentinelOne** and **CrowdStrike Falcon**. A freshly-compiled unsigned binary
+is what such agents remove, and the *single-file* build here was removed on
+execution. The plausible reason is the one thing the folder build does not do: a
+single-file build unpacks itself into `%TEMP%` and executes from there, and that
+self-extracting shape is what reads as hostile. That attribution was never
+proven, and nothing here depends on it — the folder build is simply measured to
+work.
+
+A 90-second dwell is evidence, not a guarantee. If a build ever stops working
+here, `verify-build.ps1` is the thing to run, and its output names the stage
+that broke.
+
+Running from the venv remains the least surprising option and is unaffected by
+any of this; `install-autostart.ps1` still defaults to it, and `-UseExe` points
+the Startup shortcut at the folder build.
 
 ## Where the data lives
 
@@ -111,7 +151,11 @@ Everything writable is under one directory:
 - **Running from the venv** — `.\data`
 - **Packaged .exe** — `%LOCALAPPDATA%\RotmanLSMCalendar`
 
-Override with the `LSM_DATA_DIR` environment variable.
+Override with the `LSM_DATA_DIR` environment variable. `LSM_PORT` does the
+same job for the web UI's port (default 8765), which is how a packaged build or
+a test runs alongside an instance already holding it. There is deliberately no
+*matching host* override — the process holds a live LSM session and binds
+loopback only.
 
 | File | Purpose |
 |---|---|
