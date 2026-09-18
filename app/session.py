@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -43,6 +44,41 @@ from app.config import (
 
 SESSION_FILE = DATA_DIR / "session.bin"
 SESSION_URL_RE = re.compile(rf"f\?p={APEX_APP_ID}:\d+:(\d+)")
+
+# How long the URL must sit unchanged on the LSM host, with no IdP bounce, before
+# the login window concludes the profile's existing cookie is still good.
+ALREADY_SIGNED_IN_S = 8.0
+
+
+def _session_id(url: str | None) -> str | None:
+    m = SESSION_URL_RE.search(url or "")
+    return m.group(1) if m else None
+
+
+def login_progress(url: str | None, start_sid: str | None, saw_login: bool) -> str:
+    """
+    Classify where the login window currently is.
+
+    "login"     — bounced to the IdP; the user still has to authenticate.
+    "signed_in" — back on LSM with evidence that we got there by
+                  authenticating, rather than by simply loading the URL we
+                  started from.
+    "waiting"   — neither yet.
+
+    The distinction matters: the portal URL we navigate to at the start is
+    itself on the LSM host and is not a login URL, so "on LSM and not a
+    login page" is true before the user has done anything. Accepting that
+    as arrival is what made the sign-in window report success and close
+    three seconds in.
+    """
+    if is_login_url(url):
+        return "login"
+    if LSM_HOST not in (url or ""):
+        return "waiting"
+    sid = _session_id(url)
+    if saw_login or (sid and sid != start_sid):
+        return "signed_in"
+    return "waiting"
 
 
 def is_login_url(url: str | None) -> bool:
@@ -125,6 +161,17 @@ def _save_cookies(ctx: Any) -> None:
     try:
         cookies = ctx.cookies()
         shib = [c for c in cookies if "shibsession" in c.get("name", "").lower()]
+        if not shib:
+            # A snapshot with no Shibboleth cookie in it can never restore a
+            # session, and writing one would clobber a snapshot that still
+            # could. This is the fingerprint of a login that did not really
+            # happen — the log used to show "6 cookies, 0 shibboleth" right
+            # before the session was found to be expired.
+            log.warning(
+                "not saving session snapshot: no Shibboleth cookie among %d",
+                len(cookies),
+            )
+            return
         blob = json.dumps({"saved_at": datetime.now().isoformat(),
                            "cookies": cookies}).encode("utf-8")
         SESSION_FILE.write_bytes(dpapi.protect(blob))
@@ -296,31 +343,80 @@ def interactive_login(on_status=None) -> SessionState:
                           timeout=NAVIGATE_TIMEOUT_MS)
 
                 say("Waiting for you to finish signing in (and approve Duo)…")
-                deadline_ms = MFA_WAIT_MS
-                try:
-                    page.wait_for_url(
-                        lambda u: LSM_HOST in u and not is_login_url(u),
-                        timeout=deadline_ms,
-                    )
-                except Exception:
+
+                # Do NOT use wait_for_url here. The page we just navigated to
+                # is already on the LSM host and is not a login URL, so a
+                # predicate like "LSM_HOST in url and not is_login_url(url)"
+                # matches the *starting* URL and resolves on the first poll —
+                # the window declared success three seconds in, saved a
+                # snapshot with zero Shibboleth cookies in it, and closed
+                # before there was any chance to approve Duo.
+                #
+                # Watch the URL instead, and only believe a landing once the
+                # page has actually been bounced through the IdP, or has come
+                # back carrying a different APEX session id than we started
+                # with.
+                start_sid = _session_id(page.url)
+                deadline = time.monotonic() + MFA_WAIT_MS / 1000.0
+                saw_login = False
+                stable_since = None
+                signed_in = False
+
+                while time.monotonic() < deadline:
+                    if page.is_closed():
+                        return SessionState(
+                            "expired",
+                            message="The sign-in window was closed before "
+                                    "sign-in finished.",
+                        )
+                    url = page.url
+                    step = login_progress(url, start_sid, saw_login)
+                    if step == "login":
+                        saw_login = True
+                        stable_since = None
+                    elif step == "signed_in":
+                        signed_in = True
+                        break
+                    elif LSM_HOST in url:
+                        # Waiting on the LSM host with no IdP bounce at all:
+                        # the profile's cookie is probably still good and the
+                        # app loaded straight away. Require the URL to sit
+                        # still before believing that, or this is the same
+                        # false positive in another shape.
+                        if stable_since is None:
+                            stable_since = time.monotonic()
+                        elif time.monotonic() - stable_since > ALREADY_SIGNED_IN_S:
+                            signed_in = True
+                            break
+                    else:
+                        stable_since = None
+                    page.wait_for_timeout(1000)
+
+                if not signed_in:
                     return SessionState(
                         "expired",
                         message="Timed out waiting for sign-in. Try again.",
                     )
 
-                page.wait_for_timeout(2500)
-                say("Signed in — saving session.")
+                page.wait_for_timeout(2000)
                 _save_cookies(ctx)
-
-                m = SESSION_URL_RE.search(page.url)
-                return SessionState(
-                    "ok",
-                    session_id=m.group(1) if m else None,
-                    message="Signed in",
-                )
         except Exception as exc:
             log.exception("interactive login failed")
             return SessionState("error", message=str(exc))
+
+    # The window is closed. Prove the session actually works rather than
+    # trusting the URL it ended on — that is what let the earlier false
+    # positive report success while the very next call found it expired.
+    state = probe(headless=True)
+    if not state.ok:
+        log.info("login window closed but the session did not stick (%s)", state.state)
+        return SessionState(
+            "expired",
+            message="The browser reached LSM but the session did not stick. "
+                    "Try again.",
+        )
+    log.info("interactive login verified by probe")
+    return SessionState("ok", session_id=state.session_id, message="Signed in")
 
 
 def ensure_session(interactive: bool = False, on_status=None) -> SessionState:
