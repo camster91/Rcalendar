@@ -87,10 +87,10 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
     <span class="badge bg-gr" id="evcnt">— events</span>
   </div>
   <div class="bar-r">
-    <a class="tab" href="/">📅 Calendar</a>
+    <a class="tab" id="tab-cal" href="/">📅 Calendar</a>
     <a class="tab on" href="/list">📋 List</a>
-    <a class="btn btn-g" href="/download/ics">⬇ .ics</a>
-    <a class="btn" href="/download/json">⬇ JSON</a>
+    <a class="btn btn-g" data-export="/download/ics" href="/download/ics">⬇ .ics</a>
+    <a class="btn" data-export="/download/json" href="/download/json">⬇ JSON</a>
   </div>
 </div>
 
@@ -104,37 +104,61 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
       <div class="tags" id="tags"></div>
     </div>
   </div>
-  <div class="gbar" id="gbar">
-    <button class="gb on" data-g="" onclick="toggleGroup('')">All</button>
-    <button class="gb" data-g="Classroom" onclick="toggleGroup('Classroom')">🏫 Classroom</button>
-    <button class="gb" data-g="North" onclick="toggleGroup('North')">North</button>
-    <button class="gb" data-g="South" onclick="toggleGroup('South')">South</button>
-    <button class="gb" data-g="Events" onclick="toggleGroup('Events')">Events</button>
-    <button class="gb" data-g="Self Serve" onclick="toggleGroup('Self Serve')">Self Serve</button>
-  </div>
+  <!-- Built from GROUPS by buildGroupBtns(). Hardcoded buttons meant a group
+       added in the config never appeared here, and the page showed a different
+       set of groups from the calendar. -->
+  <div class="gbar" id="gbar"></div>
   <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
     <button class="sort-btn on" onclick="setSort('time')" id="s-time">⏰ Time</button>
     <button class="sort-btn" onclick="setSort('room')" id="s-room">🏠 Room</button>
     <button class="sort-btn" onclick="setSort('title')" id="s-title">📝 Title</button>
-    <select class="fsel" id="roomFilter" onchange="render()"><option value="all">All Rooms</option></select>
+    <select class="fsel" id="roomFilter" onchange="onRoomSelect(this.value)"><option value="all">All Rooms</option></select>
   </div>
   <div id="list"></div>
   <div class="pgn" id="pgn"></div>
 </div>
 
+<script src="/filters.js"></script>
 <script>
 // Populated from /api/bootstrap on startup.
 let EVENTS=[],ROOMS=[],GROUPS={};
-const PAL=["#1b6df5","#e81414","#0c855d","#a26807","#8453f5","#df177a","#048096","#c35305","#0e8376","#6063f1","#54810e","#c513e0","#0b7cb0","#178640","#937005","#64748b"];
-function rcol(r){let i=ROOMS.indexOf(r);return PAL[(i<0?r.charCodeAt(0):i)%PAL.length];}
 
-let sortKey='time',page=0,PER=50,activeGroups=new Set();
-const tags=[];
+// The single source of truth for what is selected. This page used to keep the
+// selection twice -- a `tags` array pushed to imperatively, and activeGroups --
+// and that duplication is where the bugs came from: the room <select> and the
+// room tags were two filters that ANDed, so choosing a room in the dropdown and
+// then adding the same room as a tag selected nothing at all. tags is now a
+// *view* of this state, rebuilt by renderTags(), exactly as on the calendar.
+let activeRooms=new Set();   // empty = every room
+let activeGroups=new Set();
+let searchQ='';
+
+let sortKey='time',page=0,PER=50;
+
+// Generated rather than hardcoded, so a group added in the config appears here
+// without a code change. Built with DOM calls, not an html string: a group name
+// is user-controlled once the editor ships, and concatenating one into markup
+// or into an onclick attribute lets a quote in the name break out of it.
+function buildGroupBtns(){
+  const bar=document.getElementById('gbar');
+  bar.innerHTML='';
+  const add=(label,g)=>{
+    const b=document.createElement('button');
+    b.className='gb';b.dataset.g=g;b.textContent=label;
+    b.onclick=()=>toggleGroup(g);
+    bar.appendChild(b);
+  };
+  add('All','');
+  Object.keys(GROUPS).forEach(g=>add(g==='Classroom'?'🏫 '+g:g,g));
+  syncGroupBtns();
+}
 
 function buildRoomFilter(){
   const rCnt={};EVENTS.forEach(e=>{rCnt[e.room]=(rCnt[e.room]||0)+1;});
   const sel=document.getElementById('roomFilter');
+  sel.length=1;   // keep the "All Rooms" option, drop any previous rooms
   Object.keys(rCnt).sort().forEach(r=>{const o=document.createElement('option');o.value=r;o.textContent=r+' ('+rCnt[r]+')';sel.appendChild(o);});
+  syncRoomSelect();
 }
 
 // Called from boot() once EVENTS is populated. This used to be an IIFE that
@@ -150,47 +174,143 @@ function renderStats(){
     '<div class="stat"><div class="stat-l">Days</div><div class="stat-v">'+days.size+'</div></div>';
 }
 
-// The `"` matters: this page interpolates esc() into attributes (title=,
-// data-*, and the JSON payload copyCard is handed), where an unescaped quote
-// ends the attribute and the rest of the value becomes markup.
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-function fmtT(iso){if(!iso)return'?';const d=new Date(iso);return d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',hour12:true});}
-function fmtDur(s,e){if(!s||!e)return'—';const ms=new Date(e)-new Date(s);const h=Math.floor(ms/36e5);const m=Math.round((ms%36e5)/6e4);return h>0?(m>0?h+'h'+m+'m':h+'h'):(m+'m');}
-function fmtDay(iso){if(!iso)return'';return new Date(iso+'T12:00:00').toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
-
-function mergeEvts(evts){const m=new Map();evts.forEach(e=>{const k=(e.start||'')+'|'+(e.end||'')+'|'+(e.title||'')+'|'+(e.description||'');if(m.has(k))m.get(k).rooms.push(e.room);else m.set(k,{...e,rooms:[e.room]});});return Array.from(m.values());}
+// esc, fmtT, fmtDur, fmtDay and mergeEvts are in /filters.js, shared with the
+// calendar. This page's copies had drifted: its fmtDay had no full-timestamp
+// guard, so copyCard put "Invalid Date" on the clipboard, and it returned '?'
+// and '—' where the calendar returned ''. Declaring any of them here as well is
+// a parse-time error, not an override.
 
 function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).catch(()=>{});}
 
-function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;return '<div class="evcard" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span></div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+r).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;
+  // An all-day block has no meaningful clock time — its start is just midnight.
+  // Without this branch it printed "12:00 a.m. → 11:00 p.m. (23h)", which reads
+  // as a real 23-hour booking.
+  const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+'</div>'+(ev.description?'<div class="edesc">'+esc(ev.description)+'</div>':'')+'</div>';}
 
-// Multi-select groups
+// ── SELECTION ──
+// Multi-select groups. A group is its own filter, ANDed with rooms and the
+// search text, and OR'd with the other selected groups — the same rule the
+// calendar applies, so a link carrying groups lands on the same bookings.
 function toggleGroup(g){
-  if(!g){activeGroups.clear();}
+  if(!g)activeGroups.clear();
   else{if(activeGroups.has(g))activeGroups.delete(g);else activeGroups.add(g);}
-  syncGroupBtns();page=0;render();
+  syncGroupBtns();renderTags();page=0;render();
 }
-function syncGroupBtns(){document.querySelectorAll('.gb').forEach(b=>{const g=b.dataset.g;b.classList.toggle('on',!g?activeGroups.size===0:activeGroups.has(g));});}
+function syncGroupBtns(){
+  document.querySelectorAll('#gbar .gb').forEach(b=>{
+    const g=b.dataset.g;
+    b.classList.toggle('on',!g?activeGroups.size===0:activeGroups.has(g));
+  });
+}
+
+// One room filter, written from two places. The <select> and the search tags
+// are the same selection, so each writes activeRooms and reads it back.
+function onRoomSelect(v){
+  // The label shown when more than one room is selected. Choosing it is not a
+  // change, so it must not clear the selection it describes.
+  if(v==='__multi__')return;
+  activeRooms=v==='all'?new Set():new Set([v]);
+  syncRoomSelect();renderTags();page=0;render();
+}
+function syncRoomSelect(){
+  const sel=document.getElementById('roomFilter');
+  let multi=sel.querySelector('option[data-multi]');
+  const n=activeRooms.size;
+  if(n>1){
+    if(!multi){multi=document.createElement('option');multi.dataset.multi='1';sel.appendChild(multi);}
+    multi.value='__multi__';
+    multi.textContent=n+' rooms';
+  }else if(multi){multi.remove();}
+  // Never shows a room that is not the whole selection: with two rooms picked
+  // it says so instead of naming one of them.
+  sel.value=n===1?[...activeRooms][0]:'all';
+}
 
 // Search
 let debounce;
-function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('search').value.trim();if(v.length<1){closeDrop();render();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));render();},200);}
-function showDrop(d){let h='';if(d.groups.length){h+='<div class="sdrop-section">Groups</div>';d.groups.forEach(g=>{h+='<div class="sdrop-item" onmousedown="addTag(\'group\',\''+g+'\')">'+g+'</div>';});}if(d.rooms.length){h+='<div class="sdrop-section">Rooms</div>';d.rooms.forEach(r=>{h+='<div class="sdrop-item" onmousedown="addTag(\'room\',\''+r+'\')"><span class="rm-dot" style="background:'+rcol(r)+'"></span>'+r+'</div>';});}if(d.titles.length){h+='<div class="sdrop-section">Events</div>';d.titles.forEach(t=>{h+='<div class="sdrop-item" onmousedown="addTag(\'query\',\''+esc(t).replace(/'/g,'&#39;')+'\')">'+esc(t)+'</div>';});}document.getElementById('sdrop').innerHTML=h;document.getElementById('sdrop').classList.add('show');}
+function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('search').value.trim();searchQ=v.toLowerCase();if(v.length<1){closeDrop();render();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));render();},200);}
+function showDrop(d){
+  const box=document.getElementById('sdrop');
+  box.innerHTML='';
+  const section=t=>{const h=document.createElement('div');h.className='sdrop-section';h.textContent=t;box.appendChild(h);};
+  const item=(type,value,dot)=>{
+    const el=document.createElement('div');
+    el.className='sdrop-item';
+    if(dot){const s=document.createElement('span');s.className='rm-dot';s.style.background=rcol(value, ROOMS);el.appendChild(s);}
+    const s=document.createElement('span');s.textContent=value;
+    el.appendChild(s);
+    el.onmousedown=()=>addTag(type,value);
+    box.appendChild(el);
+  };
+  if(d.groups.length){section('Groups');d.groups.forEach(g=>item('group',g));}
+  if(d.rooms.length){section('Rooms');d.rooms.forEach(r=>item('room',r,true));}
+  if(d.titles.length){section('Events');d.titles.forEach(t=>item('query',t));}
+  box.classList.add('show');
+}
 function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
-function addTag(type,value){if(tags.some(t=>t.type===type&&t.value===value))return;tags.push({type,value});if(type==='group')toggleGroup(value);document.getElementById('search').value='';closeDrop();renderTags();page=0;render();}
-function removeTag(idx){const t=tags.splice(idx,1)[0];if(t.type==='group')toggleGroup(t.value);renderTags();page=0;render();}
-function renderTags(){document.getElementById('tags').innerHTML=tags.map((t,i)=>{const cls=t.type==='room'?'tag-rm':t.type==='group'?'tag-grp':'tag-q';const lbl=t.type==='room'?'Room '+t.value:t.type==='group'?'📁 '+t.value:t.value;return '<span class="tag '+cls+'">'+lbl+'<span class="tag-x" onclick="removeTag('+i+')">✕</span></span>';}).join('');}
+function addTag(type,value){
+  if(type==='group'){if(!activeGroups.has(value))toggleGroup(value);return;}
+  if(type==='query'){searchQ=value.toLowerCase();document.getElementById('search').value=value;}
+  else{
+    activeRooms=new Set([value]);
+    // The text that found the room is a search aid, not a filter, so it clears
+    // with the pick — and clears from the state too. Emptying the box alone
+    // would leave the list filtered by text no longer anywhere on screen.
+    searchQ='';document.getElementById('search').value='';
+  }
+  closeDrop();syncRoomSelect();renderTags();page=0;render();
+}
+function removeTag(type,value){
+  if(type==='room')activeRooms.delete(value);
+  else if(type==='group'){activeGroups.delete(value);syncGroupBtns();}
+  else{document.getElementById('search').value='';searchQ='';}
+  syncRoomSelect();renderTags();page=0;render();
+}
+// A view of the selection, rebuilt from it — never the store. Built as DOM
+// nodes with listeners rather than interpolated markup: a group name or an
+// event title is user-controlled, and concatenating one into an onclick
+// attribute lets a quote in it break out of the string.
+function renderTags(){
+  const box=document.getElementById('tags');
+  box.innerHTML='';
+  const add=(cls,label,onX)=>{
+    const t=document.createElement('span');
+    t.className='tag '+cls;
+    t.appendChild(document.createTextNode(label));
+    const x=document.createElement('span');
+    x.className='tag-x';x.textContent='✕';x.title='Remove';
+    x.onclick=onX;
+    t.appendChild(x);
+    box.appendChild(t);
+  };
+  if(activeRooms.size&&activeRooms.size<ROOMS.length)
+    [...activeRooms].forEach(r=>add('tag-rm','Room '+r,()=>removeTag('room',r)));
+  [...activeGroups].forEach(g=>add('tag-grp','📁 '+g,()=>removeTag('group',g)));
+  if(searchQ)add('tag-q',searchQ,()=>removeTag('query',searchQ));
+}
 
 function setSort(k){sortKey=k;page=0;document.querySelectorAll('.sort-btn').forEach(b=>b.classList.remove('on'));document.getElementById('s-'+k).classList.add('on');render();}
 
 function render(){
-  const q=document.getElementById('search').value.toLowerCase();
-  const rf=document.getElementById('roomFilter').value;
+  // The URL and the links out hang off render() for the same reason they do on
+  // the calendar: everything that changes a filter ends here, so this is the one
+  // place that sees every change.
+  writeURL();
+  const terms=searchQ?[searchQ]:[];
   let evts=EVENTS.filter(e=>{
-    if(rf!=='all'&&e.room!==rf)return false;
-    if(activeGroups.size){let ok=false;activeGroups.forEach(g=>{if(GROUPS[g]&&GROUPS[g].includes(e.room))ok=true;});if(!ok)return false;}
-    if(tags.length){const ok=tags.some(t=>{if(t.type==='room')return e.room===t.value;if(t.type==='group')return GROUPS[t.value]&&GROUPS[t.value].includes(e.room);return((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(t.value.toLowerCase());});if(!ok)return false;}
-    if(q&&!((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(q))return false;
+    // Rooms, groups and the search box are each a filter, so they AND; several
+    // selected rooms or groups OR, because picking two of a thing means either.
+    // Matches applyFilters on the calendar, which is what lets a link carry a
+    // filter between the two pages and land on the same bookings.
+    if(activeRooms.size&&!activeRooms.has(e.room))return false;
+    if(activeGroups.size){
+      let ok=false;
+      activeGroups.forEach(g=>{if(GROUPS[g]&&GROUPS[g].includes(e.room))ok=true;});
+      if(!ok)return false;
+    }
+    if(terms.length&&!terms.some(s=>((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
     return true;
   });
   evts.sort((a,b)=>{if(sortKey==='time')return(a.start||'').localeCompare(b.start||'');if(sortKey==='room')return(a.room||'').localeCompare(b.room||'');return(a.title||'').localeCompare(b.title||'');});
@@ -226,21 +346,47 @@ function render(){
 
 document.addEventListener('keydown',e=>{if(document.activeElement.tagName==='INPUT'||document.activeElement.tagName==='SELECT')return;if(e.key==='/'){e.preventDefault();document.getElementById('search').focus();}});
 
-// ── BOOT ──
+// ── URL STATE ──
 // A link copied out of the calendar should land here the same way, so this page
-// reads the same rooms / q / groups parameters. Only those three: list.html has
-// no floor, capacity, equipment or free-at controls, and the filter panel is
-// deliberately not duplicated here — that would be a second implementation of
-// everything, for the secondary page.
+// read the same rooms / q / groups parameters — but only read them: there was
+// no writeURL at all, so the URL never changed as you filtered and the link to
+// the calendar dropped everything you had selected. Both directions work now.
+// Only those three parameters: list.html has no floor, capacity, equipment or
+// free-at controls, and the filter panel is deliberately not duplicated here —
+// that would be a second implementation of everything, for the secondary page.
 function readURL(){
-  const p=new URLSearchParams(location.search);
-  const rooms=p.get('rooms');
-  if(rooms)rooms.split(',').filter(r=>ROOMS.includes(r)).forEach(r=>tags.push({type:'room',value:r}));
-  const groups=p.get('groups');
-  if(groups)groups.split(',').filter(g=>GROUPS[g]).forEach(g=>activeGroups.add(g));
-  const q=p.get('q');
-  if(q)document.getElementById('search').value=q;
+  const f=parseFilters(
+    Object.fromEntries(new URLSearchParams(location.search)),
+    {rooms:ROOMS, groups:Object.keys(GROUPS)}
+  );
+  activeRooms=new Set(f.rooms||[]);
+  activeGroups=new Set(f.groups||[]);
+  searchQ=f.q;
+  document.getElementById('search').value=f.q;
 }
+// replaceState, not pushState: with push, every chip click becomes a back-button
+// step and leaving the page takes a dozen presses. Same rule as the calendar.
+function writeURL(){
+  const p=new URLSearchParams();
+  if(activeRooms.size&&activeRooms.size<ROOMS.length)p.set('rooms',[...activeRooms].join(','));
+  if(activeGroups.size)p.set('groups',[...activeGroups].join(','));
+  if(searchQ)p.set('q',searchQ);
+  const qs=p.toString();
+  history.replaceState(null,'',location.pathname+(qs?'?'+qs:''));
+  syncLinks(qs?'?'+qs:'');
+}
+// The export links and the tab across to the calendar carry the same filters
+// the page is showing. Both used to be fixed hrefs with no query, so a .ics
+// download ignored every filter and following the tab lost them.
+//
+// No from/to here, unlike the calendar: this page has no date window, it lists
+// every booking that matches, so the export should be that same set rather than
+// one day of it.
+function syncLinks(qs){
+  document.querySelectorAll('[data-export]').forEach(a=>{a.href=a.dataset.export+qs;});
+  document.getElementById('tab-cal').href='/'+qs;
+}
+
 (async function boot(){
   try{
     const r=await fetch('/api/bootstrap');
@@ -251,9 +397,11 @@ function readURL(){
     // config's own entry dead data and silently reverted any edit to the group.
     // The union lives in app/config.py now; the server is the source.
     buildRoomFilter();
+    buildGroupBtns();
     renderStats();
     readURL();
     syncGroupBtns();
+    syncRoomSelect();
     renderTags();
   }catch(e){
     document.getElementById('list').innerHTML='<div class="empty">Could not load bookings: '+e.message+'</div>';

@@ -276,7 +276,10 @@ def run_selftest() -> int:
         record("pystray.win32", False, f"{type(exc).__name__}: {exc}")
 
     # The web assets, i.e. that datas= landed where WEB_DIR looks for them.
-    for asset in ("calendar.html", "list.html"):
+    # filters.js is listed because both pages load it: without it they render
+    # blank, and a bundle that shipped one and not the other would pass every
+    # other check in this report.
+    for asset in ("calendar.html", "list.html", "filters.js"):
         path = WEB_DIR / asset
         record(f"web/{asset}", path.is_file(), str(path))
 

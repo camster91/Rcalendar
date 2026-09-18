@@ -254,7 +254,7 @@ a.vtab{display:inline-flex;align-items:center}
       <button class="vtab" id="v-week" onclick="setView('week')">📊 Week</button>
       <button class="vtab on" id="v-today" onclick="setView('today')">📋 Today</button>
       <button class="vtab" id="v-changes" onclick="setView('changes')">🔀 Changes</button>
-      <a class="vtab" href="/list">☰ List</a>
+      <a class="vtab" id="tab-list" href="/list">☰ List</a>
     </div>
     <button class="btn btn-a" id="scrapeBtn" onclick="triggerScrape()" title="Scrape LSM now">⟳</button>
     <a class="btn btn-g" data-export="/download/ics" href="/download/ics" title="Export the current view">⬇ .ics</a>
@@ -327,6 +327,7 @@ a.vtab{display:inline-flex;align-items:center}
   </div>
 </div>
 
+<script src="/filters.js"></script>
 <script>
 // Populated from /api/bootstrap on startup (see boot() at the bottom).
 let EVENTS = [];
@@ -337,12 +338,9 @@ let GROUPS = {};
 // sidebar read as 99 unlabelled numbers.
 let ROOM_META = {};
 
-// Room colours. These fill month chips, week bars and card borders, and every
-// chip carries white text, so each one has to clear 4.5:1 against white — the
-// previous set was Tailwind 500 and 15 of the 16 sat between 1.9 and 4.5.
-// Same hues, deepened just far enough to pass.
-const PAL = ["#1b6df5","#e81414","#0c855d","#a26807","#8453f5","#df177a","#048096","#c35305","#0e8376","#6063f1","#54810e","#c513e0","#0b7cb0","#178640","#937005","#64748b"];
-function rcol(r){let i=ROOMS.indexOf(r);return PAL[(i<0?r.charCodeAt(0):i)%PAL.length];}
+// Room colours, rcol(), fmtT/fmtDur/fmtDay, esc, mergeEvts and parseFilters
+// live in /filters.js, shared with list.html. Declaring any of them here as
+// well is a parse-time error, not an override.
 
 // ── STATE ──
 let viewMode = 'today';
@@ -359,11 +357,14 @@ let advSeats = 0;            // 0 = no minimum
 let advPanopto = false;      // only rooms the report flags for Panopto
 let advFreeAt = '';          // "14:00"; empty = off
 let advFreeMins = 60;
-// Rooms free for the whole window, from /api/today. Null means "not fetched
-// yet", which applyFilters treats as no opinion rather than as "nothing is
-// free" — a filter that blanks the calendar while a request is in flight reads
-// as a bug.
-let FREE_ROOMS = null;
+// Rooms free for the window, per day, from /api/today?dates= — a Map of
+// day -> Set(room). Per day because the question is asked of a span: the month
+// and week views draw bookings from many days at once, and applying one day's
+// answer to all of them made a room booked every day of the month read as free.
+// Null means "not fetched yet", which applyFilters treats as no opinion rather
+// than as "nothing is free" — a filter that blanks the calendar while a request
+// is in flight reads as a bug.
+let FREE_DAYS = null;
 
 // Events shown per month cell before "+N more". Must match the nth-child
 // cut-off in the stylesheet — the label used to be computed as length-3 while
@@ -371,11 +372,8 @@ let FREE_ROOMS = null;
 const MONTH_MAX = 4;
 
 // ── MERGE ──
-function mergeEvts(evts){
-  const m=new Map();
-  evts.forEach(e=>{const k=(e.start||'')+'|'+(e.end||'')+'|'+(e.title||'')+'|'+(e.description||'');if(m.has(k))m.get(k).rooms.push(e.room);else m.set(k,{...e,rooms:[e.room]});});
-  return Array.from(m.values());
-}
+// mergeEvts is in /filters.js — one row per booking, `rooms` listing every room
+// it occupies.
 
 // ── ROOM CHIPS ──
 function buildChips(){
@@ -401,7 +399,7 @@ function buildChips(){
     // Elements, not an html string: a room number comes from the report and is
     // written into this chip in two places.
     const top=document.createElement('span');top.style.cssText='display:flex;align-items:center';
-    const dot=document.createElement('span');dot.className='cd';dot.style.background=rcol(r);
+    const dot=document.createElement('span');dot.className='cd';dot.style.background=rcol(r, ROOMS);
     const name=document.createElement('span');name.textContent=r;
     const cnt=document.createElement('span');cnt.className='cn';cnt.textContent=rCnt[r];
     top.append(dot,name);d.append(top,cnt);
@@ -479,7 +477,7 @@ function showDrop(d){
   const item=(type,value,dot,label)=>{
     const el=document.createElement('div');
     el.className='sdrop-item';
-    if(dot){const s=document.createElement('span');s.className='rm-dot';s.style.background=rcol(value);el.appendChild(s);}
+    if(dot){const s=document.createElement('span');s.className='rm-dot';s.style.background=rcol(value, ROOMS);el.appendChild(s);}
     const s=document.createElement('span');s.className='rm';s.textContent=label===undefined?value:label;
     el.appendChild(s);
     el.onmousedown=()=>addTag(type,value);
@@ -530,7 +528,12 @@ function applyFilters(){
     if(!activeRooms.has(e.room))return false;
     if(terms.length&&!terms.some(s=>((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
     const m=ROOM_META[e.room]||{};
-    if(advFloors.size&&!advFloors.has(m.floor||''))return false;
+    // Strict for floor, lenient for capacity, and the difference is deliberate:
+    // a floor is a partition, so a room with no recorded floor is not on the
+    // one you selected; a capacity is a threshold, so a room with no recorded
+    // capacity still passes a minimum. The panel states both, and offers
+    // "No floor" so the strict reading is something you can select for.
+    if(advFloors.size&&!advFloors.has(floorOf(e.room)))return false;
     // An unknown capacity PASSES a minimum. 49 of the 91 rooms have no recorded
     // capacity, and silently hiding half the building from "seats >= 20" is
     // worse than showing a room that might be too small. It must be Infinity,
@@ -538,9 +541,9 @@ function applyFilters(){
     // leniency is visible rather than a surprise.
     if(advSeats&&(m.capacity??Infinity)<advSeats)return false;
     if(advPanopto&&!m.panopto)return false;
-    // FREE_ROOMS === null means the fetch has not landed; showing everything
+    // FREE_DAYS === null means the fetch has not landed; showing everything
     // briefly beats showing nothing.
-    if(advFreeAt&&FREE_ROOMS&&!FREE_ROOMS.has(e.room))return false;
+    if(advFreeAt&&FREE_DAYS&&!freeOn(e))return false;
     return true;
   });
   advCount();
@@ -557,25 +560,16 @@ function advCount(){
 }
 
 // ── HELPERS ──
-const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
-function fmtT(iso){if(!iso)return'';const d=new Date(iso);return d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',hour12:true});}
-function fmtDur(s,e){if(!s||!e)return'';const ms=new Date(e)-new Date(s);const h=Math.floor(ms/36e5);const m=Math.round((ms%36e5)/6e4);return h>0?(m>0?h+'h '+m+'m':h+'h'):(m+'m');}
-// Takes either a bare date ('2026-09-17') or a full ISO timestamp. The
-// T12:00:00 is only for the bare-date case, where it keeps the parse out of
-// UTC rounding either side of midnight; appending it to an already-full
-// timestamp produced "Invalid Date" — which is what copyCard had been putting
-// on the clipboard.
-function fmtDay(iso){if(!iso)return'';const d=new Date(iso.length>10?iso:iso+'T12:00:00');return d.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+// DAYS, MONTHS, fmtT, fmtDur, fmtDay and esc are in /filters.js.
 // Tooltip payload for a month chip. Shared by the timed and all-day variants so
 // the two cannot drift apart.
 function tipAttrs(ev){return 'onclick="event.stopPropagation();showTip(event,this)" data-title="'+esc(ev.title)+'" data-start="'+esc(ev.start)+'" data-end="'+esc(ev.end||'')+'" data-rooms="'+esc(ev.rooms.join(','))+'" data-desc="'+esc(ev.description||'')+'"';}
 function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).then(()=>toast('Copied!')).catch(()=>{});}
-function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;
+function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;
   // An all-day block has no meaningful clock time — its start is just midnight.
   // Printing "12:00 a.m. → 11:00 p.m. (23h)" reads as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
 
 // ── RENDER ──
 // The export links depend on the view and the date being shown, both of which
@@ -614,7 +608,7 @@ function renderMonth(){
     // a timed bar. Sorting is stable, so same-kind events keep time order.
     de.sort((a,b)=>(b.all_day?1:0)-(a.all_day?1:0));
     de.forEach(ev=>{
-      const c=rcol(ev.rooms[0]),rl=ev.rooms.length>1?ev.rooms.length+' rms':ev.rooms[0];
+      const c=rcol(ev.rooms[0], ROOMS),rl=ev.rooms.length>1?ev.rooms.length+' rms':ev.rooms[0];
       if(ev.all_day){h+='<div class="cad" style="border-left-color:'+c+'" '+tipAttrs(ev)+'>'+esc(ev.title)+'</div>';return;}
       // Room first: "is 142 free that day?" is the question a month grid
       // answers, and the room is what the eye scans for.
@@ -643,20 +637,20 @@ function renderWeek(){
   // All-day blocks get their own strip above the grid rather than being
   // dropped: they have no hour to land on, and silently omitting them made the
   // week view disagree with the month view about the same week.
-  const adStrip=allDayWeek.length?'<div class="wkadrow">'+allDayWeek.map(ev=>'<div class="wkad" style="border-left-color:'+rcol(ev.room)+'" '+tipAttrs(ev)+'>'+esc(fmtDay(ev.start).slice(0,3)+' · '+ev.title)+'</div>').join('')+'</div>':'';
+  const adStrip=allDayWeek.length?'<div class="wkadrow">'+allDayWeek.map(ev=>'<div class="wkad" style="border-left-color:'+rcol(ev.room, ROOMS)+'" '+tipAttrs(ev)+'>'+esc(fmtDay(ev.start).slice(0,3)+' · '+ev.title)+'</div>').join('')+'</div>':'';
   let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><h2>'+MONTHS[sow.getMonth()]+' '+sow.getDate()+' – '+MONTHS[eow.getMonth()]+' '+eow.getDate()+', '+eow.getFullYear()+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>'+adStrip+'<div class="wkgrid"><div class="cdhead" style="border-left:none"></div>';
   for(let d=0;d<7;d++){const day=new Date(sow);day.setDate(sow.getDate()+d);h+='<div class="wkdh'+(day.toDateString()===now.toDateString()?' tdy':'')+'">'+DAYS[d]+'<br><span class="wn">'+day.getDate()+'</span></div>';}
   const hours=[];for(let hr=H0;hr<=H1;hr++)hours.push(hr);
   hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+fmtISO(new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d))+'" data-hour="'+hr+'"></div>';}});
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
-  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=new Date(ev.end);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
+  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=new Date(ev.end);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room, ROOMS)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
 }
 
 function renderToday(){
   const now=new Date(curDate),ds=fmtISO(now);
   const dayEvts=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
   const dStr=now.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
-  let h='<div class="today-hd"><h2>'+dStr+'</h2><div class="td-nav"><button onclick="todayNav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="todayNav(1)">▶</button></div><span class="badge bg-bl">'+dayEvts.length+' bookings</span></div>';
+  let h='<div class="today-hd"><h2>'+dStr+'</h2><div class="td-nav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><span class="badge bg-bl">'+dayEvts.length+' bookings</span></div>';
   if(!dayEvts.length){h+='<div style="text-align:center;padding:60px;color:var(--tx3);font-size:1.1rem">No bookings on this day</div>';document.getElementById('mainArea').innerHTML=h;return;}
   const allDay=dayEvts.filter(e=>e.all_day);
   const byHour={};dayEvts.filter(e=>!e.all_day).forEach(ev=>{const hr=ev.start?new Date(ev.start).getHours():0;byHour[hr]=byHour[hr]||[];byHour[hr].push(ev);});
@@ -765,12 +759,21 @@ function fmtSeen(iso){
   return d.toLocaleDateString('en-CA',{month:'short',day:'numeric'});
 }
 
-function todayNav(dir){curDate.setDate(curDate.getDate()+dir);renderToday();}
+// There is deliberately no todayNav. It used to step the date and call
+// renderToday() directly, which skipped render() — and render() is the only
+// caller of syncExportLinks, writeURL and maybeRefreshFree. So stepping a day
+// in Today view left the URL and both export links describing the day you had
+// just navigated away from, and never re-asked the free-at question. The bug
+// was the second render path, so the fix is to have one: every arrow, key and
+// view switch lands in nav() or goToday(), and both go through render().
 function nav(dir){
   // The feed is a list of changes, not a span of time. Advancing the date here
   // would change nothing on screen while quietly moving the month underneath.
   if(viewMode==='changes')return;
-  if(viewMode==='today')curDate.setDate(curDate.getDate()+dir*7);else curDate.setMonth(curDate.getMonth()+dir);
+  // One press moves one unit of the view you are looking at: a month in Month,
+  // a day in Today. Today used to step a week here while its own arrow buttons
+  // stepped a day, so ArrowRight and ▶ disagreed about how far a press went.
+  if(viewMode==='today')curDate.setDate(curDate.getDate()+dir);else curDate.setMonth(curDate.getMonth()+dir);
   render();
 }
 function goToday(){curDate=new Date();render();}
@@ -840,14 +843,35 @@ function openFilters(){
 // no 5th Floor — so a chip built from it would select nothing and read as a bug.
 // ROOMS arrives sorted by (floor, room), so first-seen order is display order
 // and FLOOR_ORDER does not need duplicating in the browser.
+//
+// NO_FLOOR stands for a room whose floor the data does not state. The floor
+// filter is a *partition*, so "not on Ground Floor" is the honest reading for
+// such a room — unlike capacity, which is a threshold and lenient about an
+// unknown (see applyFilters). But the room used to vanish under every floor
+// chip with no chip that could select it, which is a state the user could
+// neither see nor enter. The sentinel is a label rather than an empty string
+// because an empty string does not survive being comma-joined into a URL.
+const NO_FLOOR='(no floor)';
+function floorOf(room){return (ROOM_META[room]||{}).floor||NO_FLOOR;}
+
 function floorsPresent(){
   const inData=new Set(EVENTS.map(e=>e.room));
   const out=[];
+  let unknown=false;
   ROOMS.forEach(r=>{
+    if(!inData.has(r))return;
     const f=(ROOM_META[r]||{}).floor;
-    if(f&&!out.includes(f)&&inData.has(r))out.push(f);
+    if(!f){unknown=true;return;}
+    if(!out.includes(f))out.push(f);
   });
+  // Last, so the known floors keep their display order and this reads as the
+  // remainder rather than as one of them.
+  if(unknown)out.push(NO_FLOOR);
   return out;
+}
+function roomsWithNoFloor(){
+  const inData=new Set(EVENTS.map(e=>e.room));
+  return ROOMS.filter(r=>inData.has(r)&&!(ROOM_META[r]||{}).floor).length;
 }
 function roomsWithoutCapacity(){
   const seen=new Set();
@@ -893,7 +917,7 @@ function buildFilterBody(){
   if(!floors.length){fs.appendChild(el('div','fempty','No floors in the current data.'));}
   else{
     floors.forEach(f=>{
-      const b=el('button',null,f);
+      const b=el('button',null,f===NO_FLOOR?'No floor':f);
       b.classList.toggle('on',advFloors.has(f));
       b.setAttribute('aria-pressed',advFloors.has(f)?'true':'false');
       b.onclick=()=>{if(advFloors.has(f))advFloors.delete(f);else advFloors.add(f);buildFilterBody();writeURL();applyFilters();};
@@ -908,6 +932,14 @@ function buildFilterBody(){
     any.onclick=()=>{advFloors.clear();buildFilterBody();writeURL();applyFilters();};
     fbar.appendChild(any);
     fs.appendChild(fbar);
+    // Stated, not silent, and stated only when there is something to state.
+    // The rule is the opposite of the capacity one above, so leaving it
+    // unspoken would make the two look like an oversight rather than a choice.
+    const nf=roomsWithNoFloor();
+    if(nf)fs.appendChild(el('div','fnote',
+      nf+' of '+ROOMS.length+' rooms have no recorded floor. Unlike capacity, '
+      +'floor is a partition, so they are not on the floor you picked — choose '
+      +'"No floor" to see them.'));
   }
   body.appendChild(fs);
 
@@ -956,7 +988,7 @@ function buildFilterBody(){
   trow.appendChild(mins);
   if(advFreeAt){
     const off=el('button',null,'Turn off');off.className='gb';
-    off.onclick=()=>{advFreeAt='';FREE_ROOMS=null;FREE_KEY='';buildFilterBody();writeURL();applyFilters();};
+    off.onclick=()=>{advFreeAt='';FREE_DAYS=null;FREE_KEY='';buildFilterBody();writeURL();applyFilters();};
     trow.appendChild(off);
   }
   tms.appendChild(trow);
@@ -1073,43 +1105,112 @@ async function saveGroups(){
 // Asked of /api/today, the same route and the same predicate that answer Free
 // Right Now. A JS reimplementation would be a second answer to one question.
 let FREE_KEY='';
-// The key is what the held set is an answer to. The note is rebuilt from it
-// whenever the panel is redrawn, so reopening the panel does not refetch a set
-// that is already current.
-function freeKey(){return fmtISO(curDate)+'|'+advFreeAt+'|'+advFreeMins;}
+// The days the current view draws bookings from. A month cell is a whole grid,
+// so the first and last cells can fall in the neighbouring month — asking for
+// the grid is simpler than trimming it, and 42 days is well inside the
+// server's cap of 62.
+function viewDays(){
+  if(viewMode==='changes')return [];
+  if(viewMode==='month'){
+    const y=curDate.getFullYear(),m=curDate.getMonth();
+    const first=new Date(y,m,1),last=new Date(y,m+1,0);
+    const total=Math.ceil((first.getDay()+last.getDate())/7)*7;
+    const start=new Date(y,m,1-first.getDay()),out=[];
+    for(let i=0;i<total;i++){
+      const d=new Date(start);d.setDate(start.getDate()+i);out.push(fmtISO(d));
+    }
+    return out;
+  }
+  if(viewMode==='week'){
+    const sow=new Date(curDate);sow.setDate(curDate.getDate()-curDate.getDay());
+    const out=[];
+    for(let i=0;i<7;i++){
+      const d=new Date(sow);d.setDate(sow.getDate()+i);out.push(fmtISO(d));
+    }
+    return out;
+  }
+  return [fmtISO(curDate)];
+}
+// The key is what the held set is an answer to, and it names the whole span on
+// screen — not one day. The note is rebuilt from it whenever the panel is
+// redrawn, so reopening the panel does not refetch a set that is already
+// current.
+function freeKey(){
+  const d=viewDays();
+  return d.length?d[0]+'|'+d[d.length-1]+'|'+advFreeAt+'|'+advFreeMins:'';
+}
+// Which day a booking belongs to, for looking it up in the per-day answer.
+// The server buckets on the row's own `date` (falling back to the start
+// timestamp, the same way avail._span derives it), so this has to agree with
+// that or the client would look up a day the server never answered about.
+function dayKey(e){return e.date||(e.start||'').slice(0,10);}
+function freeOn(e){
+  const set=FREE_DAYS&&FREE_DAYS.get(dayKey(e));
+  return !!(set&&set.has(e.room));
+}
 function freeNoteText(){
   if(!advFreeAt)return 'Off. Checked against the day on screen, not today.';
-  if(FREE_ROOMS&&FREE_KEY===freeKey()){
-    return FREE_ROOMS.size+' of '+ROOMS.length+' rooms free from '
-      +advFreeAt+' for '+advFreeMins+' min on '+fmtISO(curDate);
+  if(!FREE_DAYS||FREE_KEY!==freeKey())return 'checking…';
+  const days=viewDays();
+  if(days.length<=1){
+    const set=FREE_DAYS.get(days[0])||new Set();
+    return set.size+' of '+ROOMS.length+' rooms free from '
+      +advFreeAt+' for '+advFreeMins+' min on '+days[0];
   }
-  return 'checking…';
+  // Across a span, the honest single number is the rooms free on *every* day
+  // of it. The old note reported one day's count, which was true of that day
+  // and false of the rest of the month it was being applied to.
+  let every=null;
+  days.forEach(d=>{
+    const set=FREE_DAYS.get(d)||new Set();
+    every=every===null?new Set(set):new Set([...every].filter(r=>set.has(r)));
+  });
+  return (every?every.size:0)+' of '+ROOMS.length+' rooms free from '+advFreeAt
+    +' for '+advFreeMins+' min on every day shown — each booking is checked'
+    +' against its own day';
+}
+// Looked up on every write, not captured once. The panel body is rebuilt
+// whenever it opens, so #freeNote is a different element before and after —
+// and a request that starts with the panel closed (a shared link carrying
+// ?free=) would otherwise write its answer into a detached node and leave the
+// panel showing "checking…" for good.
+function setFreeNote(text){
+  const note=document.getElementById('freeNote');
+  if(note)note.textContent=text;
 }
 function maybeRefreshFree(){
   if(!advFreeAt)return;
+  // The change feed is not a span of time, so there is no day to ask about.
+  // Cleared rather than left holding the last answer, which would be an answer
+  // to a question this view never asked.
+  if(!viewDays().length){FREE_DAYS=null;FREE_KEY='';return;}
   const key=freeKey();
   if(key===FREE_KEY)return;
   FREE_KEY=key;
   loadFreeRooms();
 }
 async function loadFreeRooms(){
-  const note=document.getElementById('freeNote');
-  if(!advFreeAt){FREE_ROOMS=null;applyFilters();return;}
-  if(note)note.textContent='checking…';
+  if(!advFreeAt){FREE_DAYS=null;applyFilters();return;}
+  const days=viewDays();
+  if(!days.length){FREE_DAYS=null;applyFilters();return;}
+  setFreeNote('checking…');
   try{
-    const d=await (await fetch('/api/today?date='+fmtISO(curDate)
+    // One request for the whole span. Asking per visible day would work and
+    // would be 42 round trips, each a full read of the events table.
+    const d=await (await fetch('/api/today?dates='+days.join(',')
       +'&at='+encodeURIComponent(advFreeAt)+'&for='+advFreeMins)).json();
-    const all=d.rooms||[];
-    FREE_ROOMS=new Set(all.filter(r=>r.status==='free').map(r=>r.room));
-    if(note)note.textContent=freeNoteText();
+    const m=new Map();
+    Object.keys(d.days||{}).forEach(k=>m.set(k,new Set((d.days[k].free||[]))));
+    FREE_DAYS=m;
+    setFreeNote(freeNoteText());
   }catch(e){
     // Left as no-opinion rather than empty: a failed request must not read as
     // "no room is free". FREE_KEY deliberately keeps the key it was set to —
     // clearing it here would make the render() this call ends with see a
     // changed key, refetch immediately, fail again, and spin. A failed check
-    // is retried when the date, time or length changes, not on every paint.
-    FREE_ROOMS=null;
-    if(note)note.textContent='Could not check availability: '+e.message;
+    // is retried when the day, time or length changes, not on every paint.
+    FREE_DAYS=null;
+    setFreeNote('Could not check availability: '+e.message);
   }
   applyFilters();
 }
@@ -1133,7 +1234,7 @@ function renderPresets(){
   PRESETS.forEach(p=>{
     const t=el('span','tag',p.name);
     t.title='Apply “'+p.name+'”';
-    t.onclick=()=>applyPreset(p.filters);
+    t.onclick=()=>applyPreset(p);
     const x=el('span','tag-x','✕');
     x.title='Delete';
     x.onclick=ev=>{ev.stopPropagation();deletePreset(p.name);};
@@ -1141,19 +1242,27 @@ function renderPresets(){
     box.appendChild(t);
   });
 }
-function applyPreset(f){
-  activeRooms=new Set((f.rooms||[]).filter(r=>ROOMS.includes(r)));
-  activeGroups=new Set((f.groups||[]).filter(g=>GROUPS[g]));
-  searchQ=f.q||'';
-  document.getElementById('q').value=f.q||'';
+// Takes the whole preset rather than its filters object: the toast below used
+// to read f.name off the filters, which have no name, so every application
+// announced Applied "undefined".
+function applyPreset(p){
+  const f=parseFilters((p&&p.filters)||{},{rooms:ROOMS,groups:GROUPS});
+  // No room list means every room, not none. An empty set here is what blanked
+  // the calendar for a preset that simply had not recorded any rooms.
+  activeRooms=new Set(f.rooms||ROOMS);
+  activeGroups=new Set(f.groups||[]);
+  searchQ=f.q;
+  document.getElementById('q').value=f.q;
   advFloors=new Set(f.floors||[]);
-  advSeats=+f.seats||0;
-  advPanopto=!!f.panopto;
-  advFreeAt=f.free||'';
-  advFreeMins=+f.mins||60;
-  FREE_KEY='';
+  advSeats=f.seats;
+  advPanopto=f.panopto;
+  advFreeAt=f.free;
+  advFreeMins=f.mins;
+  // Clearing the key alone would leave the previous set in place and apply it
+  // to the new filters for as long as the refetch took.
+  FREE_KEY='';FREE_DAYS=null;
   syncGroupBtns();syncChips();renderTags();buildFilterBody();applyFilters();
-  toast('Applied “'+f.name+'”',true);
+  toast('Applied “'+((p&&p.name)||'filter')+'”',true);
 }
 async function savePreset(rawName){
   const name=(rawName||'').trim();
@@ -1182,7 +1291,7 @@ function clearAllFilters(){
   searchQ='';document.getElementById('q').value='';
   tags.length=0;renderTags();
   advFloors.clear();advSeats=0;advPanopto=false;advFreeAt='';advFreeMins=60;
-  FREE_ROOMS=null;FREE_KEY='';
+  FREE_DAYS=null;FREE_KEY='';
   syncGroupBtns();syncChips();buildFilterBody();
   applyFilters();
   toast('Filters cleared',true);
@@ -1198,6 +1307,8 @@ function copyLink(){
 // replaceState, not pushState: with push, every chip click becomes a
 // back-button step and leaving the page takes a dozen presses. The cost is that
 // Back does not undo a filter — Clear all is the escape hatch for that.
+// The coercion rules both readers share live in parseFilters, in /filters.js.
+
 function writeURL(){
   const p=new URLSearchParams();
   // The rooms/q/from/to vocabulary is the one the download endpoints already
@@ -1218,23 +1329,19 @@ function writeURL(){
 // have been set up and before the first applyFilters().
 function readURL(){
   const p=new URLSearchParams(location.search);
-  const csv=k=>{const v=p.get(k);return v?v.split(',').filter(Boolean):null;};
-  const groups=csv('groups');
-  if(groups)activeGroups=new Set(groups.filter(g=>GROUPS[g]));
+  const f=parseFilters(Object.fromEntries(p),{rooms:ROOMS,groups:GROUPS});
+  if(f.groups)activeGroups=new Set(f.groups);
   // An explicit room list is the more specific statement, so it wins; with only
   // groups named, the selection implies its rooms — the same inference
   // toggleGroup makes, through the same helper.
-  const rooms=csv('rooms');
-  if(rooms)activeRooms=new Set(rooms.filter(r=>ROOMS.includes(r)));
+  if(f.rooms)activeRooms=new Set(f.rooms);
   else if(activeGroups.size)activeRooms=roomsForGroups();
-  const q=p.get('q');
-  if(q){searchQ=q.toLowerCase();document.getElementById('q').value=q;}
-  const floors=csv('floors');
-  if(floors)advFloors=new Set(floors);
-  advSeats=Math.max(0,+p.get('seats')||0);
-  advPanopto=p.get('panopto')==='1';
-  advFreeAt=/^\d{2}:\d{2}$/.test(p.get('free')||'')?p.get('free'):'';
-  advFreeMins=Math.max(1,+p.get('mins')||60);
+  if(f.q){searchQ=f.q.toLowerCase();document.getElementById('q').value=f.q;}
+  if(f.floors)advFloors=new Set(f.floors);
+  advSeats=f.seats;
+  advPanopto=f.panopto;
+  advFreeAt=f.free;
+  advFreeMins=f.mins;
   const v=p.get('view');
   if(v&&['today','week','month','changes'].includes(v))viewMode=v;
   const d=p.get('date');
@@ -1430,6 +1537,16 @@ function syncExportLinks(){
       +(activeRooms.size<ROOMS.length?' · '+activeRooms.size+' rooms':'')
       +(searchQ?' · matching “'+searchQ+'”':'');
   });
+  // The tab across to the list carries the same filters. It used to be a fixed
+  // href, so opening the list from a filtered calendar silently showed every
+  // booking — the one direction of the trip that did not work. Only the
+  // parameters the list can read: it has no floor, capacity or free-at control.
+  const lp=[];
+  if(activeRooms.size&&activeRooms.size<ROOMS.length)
+    lp.push('rooms='+encodeURIComponent([...activeRooms].join(',')));
+  if(activeGroups.size)lp.push('groups='+encodeURIComponent([...activeGroups].join(',')));
+  if(searchQ)lp.push('q='+encodeURIComponent(searchQ));
+  document.getElementById('tab-list').href='/list'+(lp.length?'?'+lp.join('&'):'');
 }
 
 async function boot(){

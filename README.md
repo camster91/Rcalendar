@@ -181,9 +181,19 @@ app/
   ics.py         .ics export
   main.py        entry point: window + tray
   dpapi.py       Windows at-rest encryption
-web/             calendar.html, list.html
+web/             calendar.html, list.html, filters.js
 tests/           parser + end-to-end tests
 ```
+
+`web/filters.js` holds the helpers both pages need — time and date formatting,
+escaping, the event merge, and the URL coercion rules. It is a plain classic
+script with **no module wrapper**, so its top-level `const`s share one global
+scope with each page's inline script: a name declared in both is a parse-time
+`Identifier … has already been declared`, which kills the page blank rather than
+degrading. Adding a helper there means deleting its duplicate from the pages in
+the same change. The server serves it from a dedicated `/filters.js` route
+(`app/server.py`), not a catch-all — this process holds a live LSM session, so
+its static surface stays exactly as wide as it needs to be.
 
 ## Tests
 
@@ -193,12 +203,26 @@ tests/           parser + end-to-end tests
 .\.venv\Scripts\python.exe tests\test_changes.py
 .\.venv\Scripts\python.exe tests\test_filters.py
 .\.venv\Scripts\python.exe tests\test_session.py
+.\.venv\Scripts\python.exe tests\test_web.py
 ```
 
 The parser tests cover the cases that actually broke against the live
 report — the `15-April    -26` date shape, HHMM times, and the
 slot-index trap where a start time under 600 is a timetable period, not
 an hour.
+
+`test_web.py` is the only suite that drives a **real browser** against a real
+server, because the defects it exists for lived in the pages and nothing else
+could see them. It serves the app with `werkzeug.serving.make_server` on an
+ephemeral loopback port and drives it with Playwright.
+
+Two things about it are deliberate. It **aborts every request that is not
+loopback** and fails the run if any requested URL mentions `utoronto`, so it
+cannot reach UofT SSO by construction rather than by promise — and it takes a
+scratch `LSM_DATA_DIR`, so it never touches the real Chromium profile or the
+live `session.bin`. It also **fails loudly if Chromium is missing** rather than
+skipping, because a suite that quietly does nothing is worse than one that is
+absent.
 
 ## History and changes
 
@@ -261,16 +285,23 @@ groups. Everything else lives behind **⚙ Filters**, which opens over the
 calendar: floor, capacity, equipment, and "free at a time".
 
 - **Floor** — one chip per floor *present in the data*, so there is no
-  5th Floor chip to select nothing.
+  5th Floor chip to select nothing. A room whose floor the data does not state
+  gets a **No floor** chip. Floor is a *partition*, unlike capacity below, so
+  such a room is not on the floor you picked — the point of the chip is that the
+  strict reading is something you can select rather than a room that silently
+  vanishes under every floor chip.
 - **Seats ≥ N** — a room with **no recorded capacity passes**. 49 of the 91
   rooms have none, and silently hiding half the building from "at least 20" is
   worse than showing a room that might be too small. The panel says the count,
   so the leniency is visible rather than a surprise.
 - **Panopto** — the 13 rooms the report flags for capture.
-- **Free at a time** — "free from 14:00 for 60 min", asked of the day on
-  screen rather than of today. The set comes from `/api/today`, which answers
-  this and Free Right Now through the same predicate (`app/avail.py`), so the
-  two cannot drift apart.
+- **Free at a time** — "free from 14:00 for 60 min", answered **per day**: each
+  booking is checked against its own date, so a room booked solid on the 11th is
+  not shown as free there just because it was free on the 10th you were looking
+  at. The answer comes from `/api/today`, which serves both the single-day form
+  and a `dates=` batch for the days on screen, and answers both this and Free
+  Right Now through the same predicate (`app/avail.py`), so the two cannot drift
+  apart.
 
 **Rooms and search also reach the Changes view; the rest do not.** A change row
 describes a booking added or removed in the past, so floor, capacity, equipment
@@ -306,9 +337,12 @@ take every group with it. Saving replaces the whole set — the file is the
 source of truth — so the calendar no longer synthesizes `Classroom` in the
 browser; it is seeded in `app/config.py` and the server is the single source.
 
-`web/list.html` reads `rooms`, `q` and `groups` from the URL so a copied link
-lands correctly there too, but it has no panel of its own. Giving it one would
-mean a second implementation of every filter, for the secondary page.
+`web/list.html` reads **and writes** `rooms`, `q` and `groups`, so a copied link
+lands correctly there and the URL stays shareable as you filter. It has no panel
+of its own — giving it one would mean a second implementation of every filter,
+for the secondary page — but the two pages apply the same three filters the same
+way (ANDed across, OR'd within), so a link means the same thing whichever opens
+it.
 
 ## Notes and limits
 

@@ -248,6 +248,73 @@ def test_today_window_and_crosscheck() -> None:
           24 * 60)
 
 
+def test_today_batch_is_per_day() -> None:
+    """The month view's question: the same window, asked of many days at once.
+
+    The defect this exists for: the free-at filter asked about the day on
+    screen and then applied that one answer to every booking in the month, so a
+    room booked all month read as free. The batch is per-day, and the
+    cross-check below is what fails if it ever becomes a second implementation
+    that drifts from the single-day form.
+    """
+    print("\n/api/today?dates= — a month of days in one call")
+    client = create_app(StubOrch()).test_client()
+
+    at = "10:30"
+    batch = client.get(
+        f"/api/today?dates={DAY},{NEXT}&at={at}&for=60"
+    ).get_json()
+
+    check("the batch reports its window length", batch["minutes"], 60)
+    check("it answers for every day asked",
+          sorted(batch["days"]), sorted([DAY, NEXT]))
+
+    # The cross-check: the batch must be the single-day question asked
+    # repeatedly, not a parallel implementation of it.
+    for d in (DAY, NEXT):
+        one = client.get(f"/api/today?date={d}&at={at}&for=60").get_json()
+        check(f"free rooms on {d} match the single-day call",
+              set(batch["days"][d]["free"]),
+              {r["room"] for r in one["rooms"] if r["status"] == "free"})
+        check(f"the booking count on {d} matches",
+              batch["days"][d]["total_bookings"], one["total_bookings"])
+
+    # And the point of the whole thing. 147 is booked on NEXT and free on DAY;
+    # 142 is the other way round. One answer applied to both days would have to
+    # get one of these wrong.
+    check("147 is free on the first day", "147" in batch["days"][DAY]["free"], True)
+    check("147 is booked on the next day", "147" in batch["days"][NEXT]["free"], False)
+    check("142 is booked on the first day", "142" in batch["days"][DAY]["free"], False)
+    check("142 is free on the next day", "142" in batch["days"][NEXT]["free"], True)
+    check("a room free on both days is free on both",
+          "368" in batch["days"][DAY]["free"]
+          and "368" in batch["days"][NEXT]["free"], True)
+
+    # One day at a time, for a caller that wants both forms to agree.
+    single = client.get(f"/api/today?dates={DAY}&at={at}&for=60").get_json()
+    check("a batch of one matches that day's entry",
+          single["days"][DAY]["free"], batch["days"][DAY]["free"])
+
+    # Rejections. A batch is the wrong place to guess at a date.
+    check("a loose date is refused rather than guessed",
+          client.get("/api/today?dates=2026-3-1&at=10:00").status_code, 400)
+    check("a date carrying a time is refused",
+          client.get("/api/today?dates=2026-03-01T10:00&at=10:00").status_code, 400)
+    check("an empty list is refused",
+          client.get("/api/today?dates=&at=10:00").status_code, 400)
+    check("a junk date among good ones is refused",
+          client.get(f"/api/today?dates={DAY},nonsense&at=10:00").status_code, 400)
+
+    # The cap: a month cell is 42 days, so 62 covers every view and still
+    # refuses unbounded work.
+    base = date(2026, 3, 1)
+    span = lambda n: ",".join((base + timedelta(days=i)).isoformat() for i in range(n))
+    check("the cap itself is served",
+          client.get(f"/api/today?dates={span(62)}&at=10:00").status_code, 200)
+    check("one day over the cap is refused",
+          client.get(f"/api/today?dates={span(63)}&at=10:00").status_code, 400)
+
+
 # ── 2.8 the feed ─────────────────────────────────────────────────────────
 
 def test_changes_filters() -> None:
@@ -397,6 +464,7 @@ def main() -> int:
     test_busy_between()
     test_all_day()
     test_today_window_and_crosscheck()
+    test_today_batch_is_per_day()
     test_changes_filters()
     test_groups()
     test_presets()
