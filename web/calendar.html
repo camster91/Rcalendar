@@ -6,7 +6,12 @@
 <title>Rotman LSM Calendar</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#f4f6f9;--sf:#fff;--sf2:#f0f3f8;--sf3:#e4e9f0;--bd:#dce2ea;--bd2:#bfc8d4;--tx:#1a2133;--tx2:#4a5568;--tx3:#8896a6;--ac:#3b82f6;--ac2:#6099f8;--acg:#eff6ff;--gn:#10b981;--gn2:#059669;--rd:#ef4444;--og:#f59e0b;--r:12px;--rs:8px;--sh:0 1px 3px rgba(0,0,0,.06);--sh2:0 8px 24px rgba(0,0,0,.08)}
+/* Every value below is set so its worst-case pairing clears WCAG AA (4.5:1)
+   for normal text — the accent and status colours are used both as text on
+   white and as button backgrounds under white text, and the muted greys sit
+   on --sf2 rather than pure white. The originals were Tailwind-500-ish and
+   mostly landed between 2.1 and 3.8. */
+:root{--bg:#f4f6f9;--sf:#fff;--sf2:#f0f3f8;--sf3:#e4e9f0;--bd:#dce2ea;--bd2:#bfc8d4;--tx:#1a2133;--tx2:#4a5568;--tx3:#617082;--ac:#0d64f4;--ac2:#1e6ef5;--acg:#eff6ff;--gn:#0b7e58;--gn2:#04865e;--rd:#dc1313;--og:#a46907;--r:12px;--rs:8px;--sh:0 1px 3px rgba(0,0,0,.06);--sh2:0 8px 24px rgba(0,0,0,.08)}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:16px}
 
@@ -259,7 +264,11 @@ let GROUPS = {};
 // sidebar read as 99 unlabelled numbers.
 let ROOM_META = {};
 
-const PAL = ["#3b82f6","#ef4444","#10b981","#f59e0b","#8b5cf6","#ec4899","#06b6d4","#f97316","#14b8a6","#6366f1","#84cc16","#d946ef","#0ea5e9","#22c55e","#eab308","#64748b"];
+// Room colours. These fill month chips, week bars and card borders, and every
+// chip carries white text, so each one has to clear 4.5:1 against white — the
+// previous set was Tailwind 500 and 15 of the 16 sat between 1.9 and 4.5.
+// Same hues, deepened just far enough to pass.
+const PAL = ["#1b6df5","#e81414","#0c855d","#a26807","#8453f5","#df177a","#048096","#c35305","#0e8376","#6063f1","#54810e","#c513e0","#0b7cb0","#178640","#937005","#64748b"];
 function rcol(r){let i=ROOMS.indexOf(r);return PAL[(i<0?r.charCodeAt(0):i)%PAL.length];}
 
 // ── STATE ──
