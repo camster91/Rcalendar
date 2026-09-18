@@ -327,6 +327,7 @@ a.vtab{display:inline-flex;align-items:center}
   </div>
 </div>
 
+<script src="/filters.js"></script>
 <script>
 // Populated from /api/bootstrap on startup (see boot() at the bottom).
 let EVENTS = [];
@@ -337,12 +338,9 @@ let GROUPS = {};
 // sidebar read as 99 unlabelled numbers.
 let ROOM_META = {};
 
-// Room colours. These fill month chips, week bars and card borders, and every
-// chip carries white text, so each one has to clear 4.5:1 against white — the
-// previous set was Tailwind 500 and 15 of the 16 sat between 1.9 and 4.5.
-// Same hues, deepened just far enough to pass.
-const PAL = ["#1b6df5","#e81414","#0c855d","#a26807","#8453f5","#df177a","#048096","#c35305","#0e8376","#6063f1","#54810e","#c513e0","#0b7cb0","#178640","#937005","#64748b"];
-function rcol(r){let i=ROOMS.indexOf(r);return PAL[(i<0?r.charCodeAt(0):i)%PAL.length];}
+// Room colours, rcol(), fmtT/fmtDur/fmtDay, esc, mergeEvts and parseFilters
+// live in /filters.js, shared with list.html. Declaring any of them here as
+// well is a parse-time error, not an override.
 
 // ── STATE ──
 let viewMode = 'today';
@@ -374,11 +372,8 @@ let FREE_DAYS = null;
 const MONTH_MAX = 4;
 
 // ── MERGE ──
-function mergeEvts(evts){
-  const m=new Map();
-  evts.forEach(e=>{const k=(e.start||'')+'|'+(e.end||'')+'|'+(e.title||'')+'|'+(e.description||'');if(m.has(k))m.get(k).rooms.push(e.room);else m.set(k,{...e,rooms:[e.room]});});
-  return Array.from(m.values());
-}
+// mergeEvts is in /filters.js — one row per booking, `rooms` listing every room
+// it occupies.
 
 // ── ROOM CHIPS ──
 function buildChips(){
@@ -404,7 +399,7 @@ function buildChips(){
     // Elements, not an html string: a room number comes from the report and is
     // written into this chip in two places.
     const top=document.createElement('span');top.style.cssText='display:flex;align-items:center';
-    const dot=document.createElement('span');dot.className='cd';dot.style.background=rcol(r);
+    const dot=document.createElement('span');dot.className='cd';dot.style.background=rcol(r, ROOMS);
     const name=document.createElement('span');name.textContent=r;
     const cnt=document.createElement('span');cnt.className='cn';cnt.textContent=rCnt[r];
     top.append(dot,name);d.append(top,cnt);
@@ -482,7 +477,7 @@ function showDrop(d){
   const item=(type,value,dot,label)=>{
     const el=document.createElement('div');
     el.className='sdrop-item';
-    if(dot){const s=document.createElement('span');s.className='rm-dot';s.style.background=rcol(value);el.appendChild(s);}
+    if(dot){const s=document.createElement('span');s.className='rm-dot';s.style.background=rcol(value, ROOMS);el.appendChild(s);}
     const s=document.createElement('span');s.className='rm';s.textContent=label===undefined?value:label;
     el.appendChild(s);
     el.onmousedown=()=>addTag(type,value);
@@ -565,25 +560,16 @@ function advCount(){
 }
 
 // ── HELPERS ──
-const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
-function fmtT(iso){if(!iso)return'';const d=new Date(iso);return d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',hour12:true});}
-function fmtDur(s,e){if(!s||!e)return'';const ms=new Date(e)-new Date(s);const h=Math.floor(ms/36e5);const m=Math.round((ms%36e5)/6e4);return h>0?(m>0?h+'h '+m+'m':h+'h'):(m+'m');}
-// Takes either a bare date ('2026-09-17') or a full ISO timestamp. The
-// T12:00:00 is only for the bare-date case, where it keeps the parse out of
-// UTC rounding either side of midnight; appending it to an already-full
-// timestamp produced "Invalid Date" — which is what copyCard had been putting
-// on the clipboard.
-function fmtDay(iso){if(!iso)return'';const d=new Date(iso.length>10?iso:iso+'T12:00:00');return d.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+// DAYS, MONTHS, fmtT, fmtDur, fmtDay and esc are in /filters.js.
 // Tooltip payload for a month chip. Shared by the timed and all-day variants so
 // the two cannot drift apart.
 function tipAttrs(ev){return 'onclick="event.stopPropagation();showTip(event,this)" data-title="'+esc(ev.title)+'" data-start="'+esc(ev.start)+'" data-end="'+esc(ev.end||'')+'" data-rooms="'+esc(ev.rooms.join(','))+'" data-desc="'+esc(ev.description||'')+'"';}
 function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).then(()=>toast('Copied!')).catch(()=>{});}
-function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;
+function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;
   // An all-day block has no meaningful clock time — its start is just midnight.
   // Printing "12:00 a.m. → 11:00 p.m. (23h)" reads as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
 
 // ── RENDER ──
 // The export links depend on the view and the date being shown, both of which
@@ -622,7 +608,7 @@ function renderMonth(){
     // a timed bar. Sorting is stable, so same-kind events keep time order.
     de.sort((a,b)=>(b.all_day?1:0)-(a.all_day?1:0));
     de.forEach(ev=>{
-      const c=rcol(ev.rooms[0]),rl=ev.rooms.length>1?ev.rooms.length+' rms':ev.rooms[0];
+      const c=rcol(ev.rooms[0], ROOMS),rl=ev.rooms.length>1?ev.rooms.length+' rms':ev.rooms[0];
       if(ev.all_day){h+='<div class="cad" style="border-left-color:'+c+'" '+tipAttrs(ev)+'>'+esc(ev.title)+'</div>';return;}
       // Room first: "is 142 free that day?" is the question a month grid
       // answers, and the room is what the eye scans for.
@@ -651,13 +637,13 @@ function renderWeek(){
   // All-day blocks get their own strip above the grid rather than being
   // dropped: they have no hour to land on, and silently omitting them made the
   // week view disagree with the month view about the same week.
-  const adStrip=allDayWeek.length?'<div class="wkadrow">'+allDayWeek.map(ev=>'<div class="wkad" style="border-left-color:'+rcol(ev.room)+'" '+tipAttrs(ev)+'>'+esc(fmtDay(ev.start).slice(0,3)+' · '+ev.title)+'</div>').join('')+'</div>':'';
+  const adStrip=allDayWeek.length?'<div class="wkadrow">'+allDayWeek.map(ev=>'<div class="wkad" style="border-left-color:'+rcol(ev.room, ROOMS)+'" '+tipAttrs(ev)+'>'+esc(fmtDay(ev.start).slice(0,3)+' · '+ev.title)+'</div>').join('')+'</div>':'';
   let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><h2>'+MONTHS[sow.getMonth()]+' '+sow.getDate()+' – '+MONTHS[eow.getMonth()]+' '+eow.getDate()+', '+eow.getFullYear()+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>'+adStrip+'<div class="wkgrid"><div class="cdhead" style="border-left:none"></div>';
   for(let d=0;d<7;d++){const day=new Date(sow);day.setDate(sow.getDate()+d);h+='<div class="wkdh'+(day.toDateString()===now.toDateString()?' tdy':'')+'">'+DAYS[d]+'<br><span class="wn">'+day.getDate()+'</span></div>';}
   const hours=[];for(let hr=H0;hr<=H1;hr++)hours.push(hr);
   hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+fmtISO(new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d))+'" data-hour="'+hr+'"></div>';}});
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
-  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=new Date(ev.end);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
+  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=new Date(ev.end);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room, ROOMS)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
 }
 
 function renderToday(){
@@ -1321,47 +1307,7 @@ function copyLink(){
 // replaceState, not pushState: with push, every chip click becomes a
 // back-button step and leaving the page takes a dozen presses. The cost is that
 // Back does not undo a filter — Clear all is the escape hatch for that.
-// Coerce an untrusted bag of filter values into the shape the state variables
-// expect. One answer for two callers: readURL, whose values are strings off the
-// query string, and applyPreset, whose values are whatever JSON is on disk.
-//
-// applyPreset used to assign straight through, and a preset is a user file that
-// can hold anything. floors:"Ground Floor" became new Set("Ground Floor") — a
-// set of individual *characters*, matching no room's floor, which blanked the
-// calendar with no error to explain it. A non-array rooms threw on .filter and
-// left the rest half-applied. Both are handled here rather than at the call
-// site, because the bad presets are already on disk: validating future writes
-// on the server would not rescue the ones already saved.
-function parseFilters(raw, ctx){
-  const rooms=(ctx&&ctx.rooms)||[], groups=(ctx&&ctx.groups)||{};
-  const src=(raw&&typeof raw==='object')?raw:{};
-  // A list of names, from an array or a comma-joined string, keeping only
-  // strings and intersecting with what actually exists — so a name that is no
-  // longer in the data drops out instead of selecting nothing. An absent *or
-  // empty* list returns null, which every caller reads as "no opinion", the
-  // same rule roomClear documents.
-  const names=(v,valid)=>{
-    let list=null;
-    if(Array.isArray(v))list=v.filter(x=>typeof x==='string'&&x);
-    else if(typeof v==='string'&&v)list=v.split(',').filter(Boolean);
-    if(!list||!list.length)return null;
-    return valid?list.filter(x=>valid.indexOf(x)>=0):list;
-  };
-  return {
-    rooms:names(src.rooms,rooms),
-    groups:names(src.groups,Object.keys(groups)),
-    q:typeof src.q==='string'?src.q:'',
-    floors:names(src.floors,null),
-    // +x||0 turns a non-number into 0 rather than NaN, which would poison
-    // every comparison it reached.
-    seats:Math.max(0,+src.seats||0),
-    panopto:src.panopto===true||src.panopto===1||src.panopto==='1',
-    free:typeof src.free==='string'&&/^\d{2}:\d{2}$/.test(src.free)?src.free:'',
-    // Clamped to a day: the longest the question is meaningful for, and the
-    // same cap the server puts on `for`.
-    mins:Math.min(1440,Math.max(1,+src.mins||60)),
-  };
-}
+// The coercion rules both readers share live in parseFilters, in /filters.js.
 
 function writeURL(){
   const p=new URLSearchParams();

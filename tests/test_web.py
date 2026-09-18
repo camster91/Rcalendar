@@ -235,6 +235,52 @@ def apply_preset(page, name: str):
     )
 
 
+# ── The shared module ────────────────────────────────────────────────────
+
+def test_shared_helpers_are_served(browser, base: str) -> None:
+    """The extraction is only real if the file the pages load is actually served.
+
+    create_app is built with static_folder=None, so there is no /static and
+    /filters.js is a route of its own. A 404 there would not degrade the page:
+    every helper it defines would be undefined, and a page that throws while
+    reading the URL comes up blank rather than partially working.
+
+    The other half of this -- that a page must not re-declare what the module
+    already declares -- needs no assertion of its own, because the collision is
+    a parse-time error and every test above would fail on a page that never
+    boots.
+    """
+    page = browser.new_page()
+    page.set_default_timeout(PAGE_TIMEOUT_MS)
+    page.route("**/*", _guard)
+    try:
+        resp = page.goto(base + "/filters.js")
+        check("filters.js: served", resp.status, 200)
+        ok("filters.js: is javascript",
+           "javascript" in (resp.headers.get("content-type") or ""))
+        ok("filters.js: carries the shared helpers",
+           "function parseFilters" in resp.text()
+           and "function mergeEvts" in resp.text())
+    finally:
+        page.close()
+
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    try:
+        missing = page.evaluate(
+            """() => ['rcol','fmtT','fmtDur','fmtDay','esc','mergeEvts',
+                      'parseFilters','PAL','DAYS','MONTHS']
+                 .filter(n => typeof window[n] === 'undefined')"""
+        )
+        # PAL/DAYS/MONTHS are consts in the module's own scope, so they are
+        # deliberately NOT window properties -- checking them would be the wrong
+        # test. The functions are what the page calls.
+        missing = [n for n in missing if n not in ("PAL", "DAYS", "MONTHS")]
+        check("filters.js: the calendar page sees the shared functions",
+              missing, [])
+    finally:
+        page.close()
+
+
 # ── R1: every nav path goes through render() ─────────────────────────────
 
 def test_today_nav_keeps_url_and_exports_current(browser, base: str) -> None:
@@ -543,6 +589,7 @@ def test_free_at_note_describes_the_span(browser, base: str) -> None:
 # failure. A test that throws would otherwise end the run, skip every test
 # after it and print no summary -- a suite that looks truncated, not failed.
 TESTS = [
+    test_shared_helpers_are_served,
     test_today_nav_keeps_url_and_exports_current,
     test_today_back_arrow_is_symmetric,
     test_nav_agrees_between_arrow_and_keyboard,

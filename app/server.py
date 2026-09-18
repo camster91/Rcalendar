@@ -34,6 +34,15 @@ def create_app(orchestrator: Any) -> Flask:
     def listing() -> Any:
         return send_from_directory(WEB_DIR, "list.html")
 
+    # The helpers both pages share. A dedicated route rather than the usual
+    # static folder: create_app is built with static_folder=None, so there is no
+    # /static to put it in, and a <path:filename> catch-all would expose the
+    # whole web directory to serve one file on an app that binds loopback only
+    # and holds a live LSM session. One named file is the smaller surface.
+    @app.get("/filters.js")
+    def filters_js() -> Any:
+        return send_from_directory(WEB_DIR, "filters.js", mimetype="text/javascript")
+
     @app.get("/favicon.ico")
     def favicon() -> Response:
         return Response(status=204)
