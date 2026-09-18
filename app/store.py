@@ -14,12 +14,12 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Iterable, Iterator, Sequence
 
 from app.config import (
-    CHANGES_KEEP_DAYS, DB_PATH, GROUPS_PATH, KEEP_DAYS, ROOM_GROUPS,
-    ROOMS_PATH, log,
+    BACKFILL_MONTHS, CHANGES_KEEP_DAYS, DB_PATH, GROUPS_PATH, KEEP_DAYS,
+    ROOM_GROUPS, ROOMS_PATH, log,
 )
 
 _local = threading.local()
@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS changes (
     date        TEXT,
     description TEXT NOT NULL DEFAULT '',
     class_code  TEXT NOT NULL DEFAULT '',
+    all_day     INTEGER NOT NULL DEFAULT 0,
     detected_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_changes_detected ON changes(detected_at);
@@ -129,6 +130,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE events ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0"
         )
         log.info("migrated: added events.all_day")
+
+    # Same retrofit for the feed. Without this, a database created before the
+    # column existed keeps the old shape and every INSERT that names it fails —
+    # which is every scrape, not just the ones that found a change.
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(changes)")}
+    if "all_day" not in cols:
+        conn.execute(
+            "ALTER TABLE changes ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0"
+        )
+        log.info("migrated: added changes.all_day")
 
 
 def init_db() -> None:
@@ -216,8 +227,12 @@ def replace_events(
             before = {
                 r["uid"]: r
                 for r in conn.execute(
+                    # all_day is here for the feed, not the reconcile: a removal
+                    # row is built from this snapshot, and _change_rows reads
+                    # the flag off it. Leaving it out raises IndexError on the
+                    # first removal of any scrape.
                     "SELECT uid, title, room, start_iso, end_iso, date, "
-                    "  description, class_code FROM events "
+                    "  description, class_code, all_day FROM events "
                     "WHERE date BETWEEN ? AND ?",
                     (iso_from, iso_to),
                 )
@@ -250,8 +265,9 @@ def replace_events(
             conn.executemany(
                 """INSERT INTO changes
                      (run_id, trigger, kind, uid, title, room, start_iso,
-                      end_iso, date, description, class_code, detected_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      end_iso, date, description, class_code, all_day,
+                      detected_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 _change_rows(added, removed, by_uid, before,
                              run_id, trigger, now),
             )
@@ -301,6 +317,7 @@ def _change_rows(
             ev.get("start"), ev.get("end"),
             (ev.get("start") or "")[:10] or None,
             ev.get("description") or "", ev.get("class_code") or "",
+            1 if ev.get("all_day") else 0,
             now,
         ))
     for uid in removed:
@@ -310,6 +327,7 @@ def _change_rows(
             r["title"] or "", r["room"] or "",
             r["start_iso"], r["end_iso"], r["date"],
             r["description"] or "", r["class_code"] or "",
+            1 if r["all_day"] else 0,
             now,
         ))
     return out
@@ -434,25 +452,62 @@ def last_backfill() -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def _ddmmyyyy(s: str | None) -> date | None:
+    """Parse the dd/mm/yyyy a backfill window is written in."""
+    try:
+        return datetime.strptime(s or "", "%d/%m/%Y").date()
+    except ValueError:
+        return None
+
+
+def _first_of_month_months_ago(months: int, when_iso: str | None) -> date:
+    """First day of the month `months` before the one `when_iso` falls in."""
+    try:
+        when = datetime.fromisoformat(when_iso or "").date()
+    except ValueError:
+        when = date.today()
+    m = when.month - 1 - months          # 0-based, may go negative
+    return date(when.year + m // 12, m % 12 + 1, 1)
+
+
 def backfill_done() -> bool:
     """Has the one-time history fill already landed?
 
     The gate for the automatic first-run backfill. A run only counts when it
-    finished `ok` *and* stored something: _do_backfill records a run that
-    skipped a month, hit an expired session, or threw as `error` /
-    `auth_required`, so `ok` means the whole reach came back. Anything less
-    leaves the debt outstanding, which is what makes an interrupted backfill
-    resume on the next launch instead of being silently written off.
+    finished `ok`, stored something, *and reached far enough back*.
 
-    `events_count > 0` closes the degenerate case: a run asked for a reach
-    that yields no windows at all finishes `ok` having fetched nothing, and
-    must not retire the fill for good.
+    The reach is the part that is easy to get wrong. Asking only "did a
+    backfill succeed" lets `--backfill --months 6` retire the fill for good:
+    the run is honest and clean, it just never fetched the six oldest months,
+    and nothing afterwards reaches them — the daily window is four months wide
+    and the automatic fill will not run again. So the run's own `date_from`
+    (the oldest day it covered, written by _do_backfill) has to clear the floor
+    that BACKFILL_MONTHS implies.
+
+    Measured against the run's `started_at` rather than against today, because
+    a reach that was complete when it ran must stay complete. Compared with
+    today, the floor would drift forward a month at a time until a finished
+    fill un-settled itself and refetched eleven months to no purpose.
+
+    `events_count > 0` closes the degenerate case: a run asked for a reach that
+    yields no windows at all finishes `ok` having fetched nothing, and must not
+    retire the fill for good.
     """
-    row = _conn().execute(
-        "SELECT 1 FROM scrape_runs WHERE trigger = 'backfill' "
-        "AND status = 'ok' AND events_count > 0 LIMIT 1"
-    ).fetchone()
-    return row is not None
+    rows = _conn().execute(
+        "SELECT started_at, date_from FROM scrape_runs "
+        "WHERE trigger = 'backfill' AND status = 'ok' AND events_count > 0"
+    ).fetchall()
+    for row in rows:
+        # Any one qualifying run settles it, rather than only the newest. A
+        # later short repair run — `--backfill --months 6` on an already-filled
+        # install — must not un-settle a fill that genuinely reached the floor.
+        reached = _ddmmyyyy(row["date_from"])
+        if reached is None:
+            continue
+        if reached <= _first_of_month_months_ago(BACKFILL_MONTHS,
+                                                 row["started_at"]):
+            return True
+    return False
 
 
 def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
@@ -517,6 +572,10 @@ def _row_to_change(r: sqlite3.Row) -> dict[str, Any]:
         "date": r["date"],
         "description": r["description"] or "",
         "class_code": r["class_code"] or "",
+        # The column is no use unless it reaches the wire: the feed branches on
+        # this to print "All day" instead of the 00:00 → 23:00 a service block
+        # actually carries.
+        "all_day": bool(r["all_day"]),
         "detected_at": r["detected_at"],
     }
 

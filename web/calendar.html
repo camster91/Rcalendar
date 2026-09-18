@@ -563,7 +563,10 @@ function paintChanges(){
 
 function chgHTML(c){
   const added=c.kind==='added';
-  const when=c.start?'<span class="mono">'+fmtT(c.start)+(c.end?' → '+fmtT(c.end):'')+'</span>':'';
+  // Same trap cardHTML documents above: an all-day row's start is just
+  // midnight, so printing the clock times reads as a real 23-hour booking.
+  // The feed carries all_day precisely so this can branch.
+  const when=c.all_day?'<span class="mono">All day</span>':(c.start?'<span class="mono">'+fmtT(c.start)+(c.end?' → '+fmtT(c.end):'')+'</span>':'');
   const room=c.room?'Room '+esc(c.room):'';
   const meta=[when,room,c.description?esc(c.description):''].filter(Boolean).join(' · ');
   return '<div class="chg '+(added?'added':'removed')+'">'
@@ -723,7 +726,13 @@ async function loadStatus(){
     const bf=d.backfill||{};
     let tail;
     if(bf.running)      tail=esc(d.progress||'Filling history…');
-    else if(d.backfill_done) tail=d.last_backfill?'Filled '+esc(d.last_backfill.when||''):'';
+    else if(d.backfill_done){
+      // A run can finish ok having stepped over a month that came back empty.
+      // "Filled" alone would hide that, and an unfilled month is invisible in
+      // the calendar itself — it just reads as a quiet month.
+      const lb=d.last_backfill||{};
+      tail='Filled '+esc(lb.when||'')+(lb.note?' — '+esc(lb.note):'');
+    }
     else                tail='History fill pending';
     document.getElementById('histInfo').innerHTML=
       '<strong>'+(d.total_events||0).toLocaleString()+' bookings</strong>'

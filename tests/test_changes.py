@@ -10,6 +10,7 @@ readable trace, and that a year of history survives the prune that follows it.
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
 from datetime import date, datetime, time as dtime, timedelta
@@ -26,7 +27,7 @@ _tmp = tempfile.mkdtemp(prefix="lsm-changes-")
 os.environ["LSM_DATA_DIR"] = _tmp
 
 from app import store  # noqa: E402
-from app.config import BACKFILL_MONTHS, KEEP_DAYS  # noqa: E402
+from app.config import BACKFILL_MONTHS, KEEP_DAYS, SCRAPE_MONTHS_BACK  # noqa: E402
 from app.scrape import backfill_windows  # noqa: E402
 from app.server import create_app  # noqa: E402
 
@@ -121,6 +122,40 @@ def test_change_detection() -> None:
           len(store.get_events(room="147")), 0)
 
 
+def test_all_day_changes_keep_the_flag() -> None:
+    print("\nan all-day change row carries all_day")
+    w_from, w_to = win(-60, -10)
+    day = date.today() - timedelta(days=35)
+    block = {
+        "title": "003/RENOVATIONS", "room": "L1045",
+        "start": datetime.combine(day, dtime(0, 0)).isoformat(),
+        "end": datetime.combine(day, dtime(23, 0)).isoformat(),
+        "description": "Service block", "class_code": "", "cancelled": False,
+        "all_day": True,
+    }
+    keeper = ev("Iota Keeper", "L1045", -35, hour=13)
+    store.replace_events([block, keeper], w_from, w_to, run_id=60)
+
+    added = {r["title"]: r for r in store.get_changes(kind="added", limit=500)
+             if r["room"] == "L1045"}
+    check("both additions are logged", sorted(added), ["003/RENOVATIONS",
+                                                       "Iota Keeper"])
+    # Without this the feed renders 00:00 → 23:00 as a real 23-hour booking,
+    # which is the same display bug the card view already carries a fix for.
+    check("the service block is marked all-day",
+          added["003/RENOVATIONS"]["all_day"], True)
+    check("the ordinary booking is not", added["Iota Keeper"]["all_day"], False)
+
+    # The removal side reads a snapshot of `events`, which has the column — but
+    # only if the reconcile SELECT actually fetches it. Leaving it out raises
+    # IndexError on the first removal of any scrape.
+    store.replace_events([keeper], w_from, w_to, run_id=61)
+    gone = [r for r in store.get_changes(kind="removed", limit=500)
+            if r["room"] == "L1045"]
+    check("the block's removal is logged", len(gone), 1)
+    check("and it is still marked all-day", gone[0]["all_day"], True)
+
+
 def test_narrow_rescrape_adds_nothing() -> None:
     print("\na narrow re-scrape of wider data adds nothing")
     w_from, w_to = win(-120, -60)
@@ -194,7 +229,9 @@ def test_empty_report_does_not_wipe() -> None:
 def test_runs_and_retention() -> None:
     print("\nruns and retention")
     rid = store.start_run("backfill")
-    store.finish_run(rid, "ok", events_count=99)
+    # With the reach it really reaches, because test_api asserts against
+    # backfill_done() and the gate now reads date_from.
+    store.finish_run(rid, "ok", events_count=99, date_from=_full_reach())
     # A backfill is a run but not a scrape: if it counted as the last run, the
     # startup scrape would think it had just run and skip itself.
     check("a backfill is not the last scrape", store.last_run(), None)
@@ -299,13 +336,55 @@ def test_api() -> None:
     check("no read truncation",
           len(store.get_events()), store.stats()["total_events"])
 
+    # A run that finished clean but stepped over an empty month carries that
+    # as a parenthetical. The sidebar shows the note without reprinting the
+    # booking count it has already given, so it has to come out of the string —
+    # the run row has no column for it.
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "ok", events_count=23000, date_from=_full_reach(),
+                     message="23000 bookings over 11 months (2 month(s) empty)")
+    bf = client.get("/api/status").get_json()["last_backfill"]
+    check("the note is split out for the sidebar",
+          bf["note"], "2 month(s) empty")
+    check("the run still reports its bookings", bf["events"], 23000)
+
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "ok", events_count=24016, date_from=_full_reach(),
+                     message="24016 bookings over 11 months")
+    bf = client.get("/api/status").get_json()["last_backfill"]
+    check("a clean run has no note", bf["note"], "")
+
 
 def _clear_backfills() -> None:
     """Drop every backfill run so the gate can be exercised from scratch."""
-    import sqlite3
-
     with sqlite3.connect(store.DB_PATH) as conn:
         conn.execute("DELETE FROM scrape_runs WHERE trigger = 'backfill'")
+
+
+def _reach_for(months: int) -> str:
+    """The oldest window a `months`-month backfill covers, dd/mm/yyyy.
+
+    Taken from the window builder rather than recomputed, so the gate is
+    checked against what a backfill actually asks for — including the short
+    reaches, which is where the gate can go wrong.
+    """
+    return backfill_windows(months, SCRAPE_MONTHS_BACK)[0][0]
+
+
+def _full_reach() -> str:
+    """The oldest window a full backfill covers, dd/mm/yyyy."""
+    return _reach_for(BACKFILL_MONTHS)
+
+
+def _full_reach_at(days_ago: int) -> str:
+    """The reach a full backfill covered if it ran `days_ago` days back.
+
+    Mirrors store._first_of_month_months_ago on purpose: backfill_windows()
+    always works from today, so a run dated in the past cannot use it.
+    """
+    when = date.today() - timedelta(days=days_ago)
+    m = when.month - 1 - BACKFILL_MONTHS
+    return date(when.year + m // 12, m % 12 + 1, 1).strftime("%d/%m/%Y")
 
 
 def test_backfill_gate() -> None:
@@ -316,29 +395,72 @@ def test_backfill_gate() -> None:
     # A run that skipped a month finishes 'error'. That is what keeps the fill
     # resumable instead of writing off the months it never fetched.
     rid = store.start_run("backfill")
-    store.finish_run(rid, "error", events_count=1200,
+    store.finish_run(rid, "error", events_count=1200, date_from=_full_reach(),
                      message="1200 bookings over 11 months; 3 month(s) skipped")
     check("a partial run leaves it owed", store.backfill_done(), False)
 
     rid = store.start_run("backfill")
     store.finish_run(rid, "auth_required", events_count=400,
+                     date_from=_full_reach(),
                      message="Session expired after 4/11 months")
     check("an interrupted run leaves it owed", store.backfill_done(), False)
 
     # A reach with no windows finishes 'ok' having fetched nothing. Counting
     # that would retire the fill for good without a single booking stored.
     rid = store.start_run("backfill")
-    store.finish_run(rid, "ok", events_count=0)
+    store.finish_run(rid, "ok", events_count=0, date_from=_full_reach())
     check("an empty run does not settle it", store.backfill_done(), False)
 
+    # The reach check. `--backfill --months 6` is documented as a repair
+    # command, and its run is genuinely clean — it just never went back past
+    # six months. Without this the fill retires and the six oldest months are
+    # never fetched, by the app or by anything else.
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "ok", events_count=9000, date_from=_reach_for(6),
+                     message="9000 bookings over 5 months")
+    check("a six-month repair run does not settle it", store.backfill_done(), False)
+
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "ok", events_count=24016, date_from=_full_reach(),
+                     message="24016 bookings over 11 months")
+    check("a full-reach run settles it", store.backfill_done(), True)
+
+    # A later short run must not *un*-settle it. This is why the floor is
+    # measured against each run's own started_at instead of against today: a
+    # today-relative floor drifts forward, so this good fill would expire on
+    # its own and refetch eleven months to no purpose.
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "ok", events_count=9000, date_from=_reach_for(6))
+    check("a later short run does not unsettle it", store.backfill_done(), True)
+
+    # ...and the no-drift property itself, which the case above cannot show:
+    # it is the *old* run that has to keep qualifying as time passes.
+    _clear_backfills()
     rid = store.start_run("backfill")
     store.finish_run(rid, "ok", events_count=24016,
-                     message="24016 bookings over 11 months")
-    check("a clean run settles it", store.backfill_done(), True)
+                     date_from=_full_reach_at(200))
+    with sqlite3.connect(store.DB_PATH) as conn:
+        conn.execute("UPDATE scrape_runs SET started_at = ? WHERE id = ?",
+                     ((date.today() - timedelta(days=200)).isoformat(), rid))
+    check("a fill that reached the floor keeps reaching it 200 days on",
+          store.backfill_done(), True)
 
+    _clear_backfills()
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "ok", events_count=24016, date_from=_full_reach())
+    with sqlite3.connect(store.DB_PATH) as conn:
+        conn.execute("UPDATE scrape_runs SET started_at = ? WHERE id = ?",
+                     ((date.today() - timedelta(days=200)).isoformat(), rid))
+    check("a reach from today does not reach the floor 200 days ago",
+          store.backfill_done(), False)
+
+    # A scrape is a different job and must never settle the fill on its own.
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "ok", events_count=24016, date_from=_full_reach())
     sid = store.start_run("schedule")
     store.finish_run(sid, "ok", events_count=6520)
-    check("a later scrape does not unsettle it", store.backfill_done(), True)
+    check("a later scrape does not unsettle a good fill",
+          store.backfill_done(), True)
 
 
 def test_auto_queue() -> None:
@@ -355,9 +477,22 @@ def test_auto_queue() -> None:
     check("...and marked as the app's own", queued[0][1].get("auto"), True)
 
     rid = store.start_run("backfill")
-    store.finish_run(rid, "ok", events_count=24016)
+    store.finish_run(rid, "ok", events_count=24016, date_from=_full_reach())
     orch._queue_backfill_if_owed()
     check("settled -> nothing queued", orch._q.empty(), True)
+
+    # The other half of the same rule, and the one the review found: a clean
+    # six-month repair run must not read as a finished fill, or the app stops
+    # asking for the months it still does not have.
+    _clear_backfills()
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "ok", events_count=9000, date_from=_reach_for(6))
+    orch._queue_backfill_if_owed()
+    queued = []
+    while not orch._q.empty():
+        queued.append(orch._q.get_nowait())
+    check("a short fill is still owed -> queued again",
+          [c for c, _ in queued], [CMD_BACKFILL])
 
 
 def test_backfill_progress_label() -> None:
@@ -408,6 +543,64 @@ def test_backfill_progress_label() -> None:
           orch.status()["progress"], "")
 
 
+def test_backfill_with_no_windows() -> None:
+    print("\na reach with no windows fails loudly instead of crashing")
+    from app.main import run_backfill  # noqa: PLC0415
+    from app.scheduler import Orchestrator  # noqa: PLC0415
+
+    # months=1 yields no windows at all: backfill_windows() is
+    # range(months, 1, -1). This used to index windows[0] at the finish_run
+    # call and raise IndexError, which the except then swallowed into a run
+    # that reported success — on the one command a person runs when the fill
+    # has already gone wrong. The early return sits before session.probe, so
+    # this needs no browser and no network.
+    orch = Orchestrator()
+    orch._do_backfill(months=1)
+    bf = orch.status()["backfill"]
+    check("the run is counted as a failure", bf["failed"], 1)
+    check("it stored nothing", bf["stored"], 0)
+    check("it says what happened", bool(bf["message"]), True)
+
+    row = store.last_backfill() or {}
+    check("the run row is an error", row.get("status"), "error")
+    check("the run row names the reach asked for",
+          "months=1" in (row.get("message") or ""), True)
+
+    check("the CLI exits non-zero", run_backfill(1) != 0, True)
+
+
+def test_changes_limit_is_clamped() -> None:
+    print("\nthe change feed's limit is clamped at both ends")
+    store.init_db()
+    client = create_app(StubOrch()).test_client()
+
+    # More rows than the cap, so the clamp is observable at all. Without it a
+    # negative limit reached SQLite as `LIMIT -1`, which it reads as
+    # *unlimited* — so the endpoint returned the whole table while `truncated`
+    # compared the row count against -1 and reported false.
+    today_iso = date.today().isoformat()
+    now = datetime.now().isoformat()
+    with sqlite3.connect(store.DB_PATH) as conn:
+        conn.executemany(
+            "INSERT INTO changes (run_id, trigger, kind, uid, title, room, "
+            "  start_iso, end_iso, date, description, class_code, all_day, "
+            "  detected_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(None, "manual", "added", f"burst{i}", f"Burst {i}", "1099",
+              None, None, today_iso, "", "", 0, now) for i in range(2100)],
+        )
+    check("the fixture really did exceed the cap",
+          len(store.get_changes(limit=5000)) > 2000, True)
+
+    body = client.get("/api/changes?limit=-1").get_json()
+    check("a negative limit falls back to the default, not the whole table",
+          body["count"], 200)
+    check("...and reports the truncation", body["truncated"], True)
+    check("an enormous limit is capped too",
+          client.get("/api/changes?limit=999999").get_json()["count"], 2000)
+    check("an ordinary limit is left alone",
+          client.get("/api/changes?limit=5").get_json()["count"], 5)
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — retention and change feed")
@@ -415,6 +608,7 @@ def main() -> int:
 
     store.init_db()
     test_change_detection()
+    test_all_day_changes_keep_the_flag()
     test_narrow_rescrape_adds_nothing()
     test_edited_booking_is_a_remove_and_an_add()
     test_backfill_logs_no_changes()
@@ -427,6 +621,9 @@ def main() -> int:
     test_backfill_gate()
     test_auto_queue()
     test_backfill_progress_label()
+    test_backfill_with_no_windows()
+    # Last: it inserts a burst of rows, and test_api counts them.
+    test_changes_limit_is_clamped()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

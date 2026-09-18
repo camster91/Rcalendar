@@ -171,14 +171,28 @@ again. There is no button for it and no tray item; the sidebar shows the
 progress and then reports what is kept. The work is a first-run job the app
 gives itself, so the only thing to decide is nothing.
 
-If a fill is cut short — the session expires partway, LSM returns an empty
-month — it stays owed and resumes on the next launch, or the next time you
+If a fill is cut short — the session expires partway, a month fails to come
+back — it stays owed and resumes on the next launch, or the next time you
 sign in. Signing in is enough; there is no need to restart.
+
+A month that comes back *empty* does not count as cut short. An eleven-month
+reach into the past always spans a summer, and "no data found" is the normal
+answer for a month in which no Rotman room was booked, so such a month is
+recorded and stepped over rather than treated as a failure. The cost is that a
+genuinely failed report is indistinguishable from a quiet month and goes
+unfilled. Nothing is lost by that: an empty report is never reconciled against
+stored bookings, so the month is simply never populated rather than emptied.
 
 `python -m app.main --backfill` is the repair path, and the only way to ask
 for it a second time. Use it if a fill failed and you do not want to wait for
 the next launch. **It is safe to repeat**: a month already fetched reports no
 changes and writes nothing.
+
+`--backfill --months 6` fetches a shorter reach, and it does **not** retire
+the fill: the app keeps asking for the full `BACKFILL_MONTHS` until a run has
+actually reached that far back. Without that, a six-month repair run on a
+fresh install would look like a finished fill and the six oldest months would
+never be fetched by anything.
 
 The **🔀 Changes** view lists what has appeared and disappeared between
 scrapes — the only trace a cancelled booking leaves, since a booking that

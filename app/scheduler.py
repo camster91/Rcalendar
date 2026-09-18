@@ -378,6 +378,10 @@ class Orchestrator:
         * prune() is NOT called per chunk. It runs once at the end, against
           the whole year rather than a half-filled window.
 
+        A chunk that comes back EMPTY is a skip, not a failure. See the
+        comment at the empty branch below — treating it as a failure is what
+        stopped the one-time fill from ever settling.
+
         Each chunk is its own committed transaction, so a session that dies
         partway leaves the finished months in place and the run can simply be
         started again — a completed month re-scrapes to zero changes.
@@ -385,20 +389,44 @@ class Orchestrator:
         months = int(months or BACKFILL_MONTHS)
         windows = backfill_windows(months, SCRAPE_MONTHS_BACK)
         what = "first-run backfill" if auto else "backfill"
+        # Guarded once, here. The reach is written to the run row at two points
+        # ninety lines apart, and `windows` is empty for any reach of one month
+        # or less — backfill_windows() is range(months, 1, -1). Indexing
+        # windows[0] at the finish_run call is what turned
+        # `--backfill --months 1` into an IndexError.
+        reach_from = windows[0][0] if windows else ""
+        reach_to = windows[-1][1] if windows else ""
         log.info("%s: %d window(s), %s → %s", what, len(windows),
-                 windows[0][0] if windows else "—",
-                 windows[-1][1] if windows else "—")
+                 reach_from or "—", reach_to or "—")
         self._set(busy=True,
                   busy_action="Backfilling history" + (" (first run)" if auto else ""),
                   progress="Starting…")
         self._set_backfill(running=True, months=months, done=0,
-                           total=len(windows), stored=0, failed=0,
+                           total=len(windows), stored=0, failed=0, empty=0,
                            message="", finished_at=None)
         run_id = store.start_run("backfill")
         stored = 0
-        failed: list[str] = []
+        errored: list[str] = []      # fatal: threw, or reported a real failure
+        empty: list[str] = []        # skipped: the report had nothing to give
 
         try:
+            if not windows:
+                # The reach asked for starts inside the daily window, so there
+                # is nothing to fetch. Finishing `ok` here would print
+                # "0 bookings over 0 months" and retire the one-time fill
+                # without a single booking stored.
+                store.finish_run(
+                    run_id, "error",
+                    message=f"No backfill window for months={months} — the "
+                            f"daily scrape already covers that reach",
+                )
+                errored.append("")
+                self._set_backfill(running=False, failed=1,
+                                   finished_at=datetime.now().isoformat(),
+                                   message=f"Nothing to fetch for months={months}")
+                log.warning("%s: no windows for months=%d", what, months)
+                return
+
             state = session.probe(headless=True)
             self._set_session(state)
             if not state.ok:
@@ -419,8 +447,8 @@ class Orchestrator:
                 except Exception:
                     log.exception("backfill chunk threw (%s → %s)",
                                   win_from, win_to)
-                    failed.append(win_from)
-                    self._set_backfill(failed=len(failed))
+                    errored.append(win_from)
+                    self._set_backfill(failed=len(errored))
                     continue
 
                 if result.status == "auth_required":
@@ -428,7 +456,7 @@ class Orchestrator:
                     # same way. Stop, and leave the finished months standing.
                     store.finish_run(
                         run_id, "auth_required", events_count=stored,
-                        date_from=windows[0][0], date_to=windows[-1][1],
+                        date_from=reach_from, date_to=reach_to,
                         message=f"Session expired after {i - 1}/{len(windows)} months",
                     )
                     self._set(session="expired",
@@ -440,19 +468,31 @@ class Orchestrator:
                     return
 
                 if result.status == "empty":
-                    # A historical month that renders as "no data" is far more
-                    # likely to be a failed report than a month that was fully
-                    # booked and then emptied. Skip it rather than reconciling
-                    # it away.
+                    # A skip, NOT a failure. The daily scrape treats an empty
+                    # window as suspicious because it covers a live four-month
+                    # reach; an eleven-month reach into the past always spans a
+                    # summer, and "no data found" is the normal answer for a
+                    # month in which no Rotman room was booked. Counting those
+                    # as failures made the whole run `error`, so
+                    # store.backfill_done() never settled and every launch
+                    # refetched all eleven months — three minutes of busy and
+                    # eleven report runs, forever.
+                    #
+                    # The cost of the leniency: an empty month and a failed
+                    # render are indistinguishable here, so a genuinely failed
+                    # render goes unfilled. That is bounded and safe — nothing
+                    # is destroyed, because replace_events refuses to reconcile
+                    # an empty report, so the month is simply never populated
+                    # rather than emptied.
                     log.info("backfill: %s → %s came back empty — skipped",
                              win_from, win_to)
-                    failed.append(win_from)
-                    self._set_backfill(failed=len(failed))
+                    empty.append(win_from)
+                    self._set_backfill(empty=len(empty))
                     continue
 
                 if result.status != "ok":
-                    failed.append(win_from)
-                    self._set_backfill(failed=len(failed))
+                    errored.append(win_from)
+                    self._set_backfill(failed=len(errored))
                     continue
 
                 excluded = _excluded_rooms(result.rooms)
@@ -472,26 +512,41 @@ class Orchestrator:
 
             store.prune()
 
-            status = "ok" if not failed else "error"
+            # `ok` turns on errored alone. store.backfill_done() gates the
+            # one-time fill on this status, so a run whose only blemish is a
+            # genuinely empty month has to be able to settle.
+            status = "ok" if not errored else "error"
+            notes = []
+            if empty:
+                notes.append(f"{len(empty)} month(s) empty")
+            if errored:
+                notes.append(f"{len(errored)} errored")
             store.finish_run(
                 run_id, status, events_count=stored,
-                date_from=windows[0][0], date_to=windows[-1][1],
+                date_from=reach_from, date_to=reach_to,
                 message=(f"{stored} bookings over {len(windows)} months"
-                         + (f"; {len(failed)} month(s) skipped" if failed else "")),
+                         + ("; " + "; ".join(notes) if notes else "")),
             )
-            self._set_backfill(running=False, failed=len(failed),
+            self._set_backfill(running=False, failed=len(errored),
+                               empty=len(empty),
                                finished_at=datetime.now().isoformat(),
                                message=f"{stored} bookings over "
-                                       f"{len(windows)} months")
-            log.info("%s complete — %d bookings, %d month(s) skipped",
-                     what, stored, len(failed))
+                                       f"{len(windows)} months"
+                                       + (f" ({'; '.join(notes)})" if notes else ""))
+            log.info("%s complete — %d bookings, %d empty, %d errored",
+                     what, stored, len(empty), len(errored))
         except Exception as exc:
             log.exception("backfill failed")
             try:
                 store.finish_run(run_id, "error", message=str(exc))
             except Exception:
                 pass
-            self._set_backfill(running=False,
+            # Counted, not merely logged. run_backfill derives its exit code
+            # from this count, so without it a run that threw outright still
+            # reported success — the worst possible answer from the one command
+            # a person runs when the fill has already gone wrong.
+            errored.append("")
+            self._set_backfill(running=False, failed=len(errored),
                                finished_at=datetime.now().isoformat(),
                                message=f"Failed: {exc}")
         finally:

@@ -192,7 +192,13 @@ def create_app(orchestrator: Any) -> Flask:
     @app.get("/api/changes")
     def api_changes() -> Any:
         """Additions and removals between scrapes, newest first."""
-        limit = min(request.args.get("limit", 200, type=int) or 200, 2000)
+        # A negative or zero limit is nonsense rather than a request for one
+        # row, so it falls back to the default. It must never reach SQLite:
+        # `LIMIT -1` means *unlimited* there, so the cap would invert and
+        # `truncated` below would compare the row count against -1 and report
+        # false on a full-table response.
+        raw = request.args.get("limit", 200, type=int)
+        limit = min(raw, 2000) if raw and raw > 0 else 200
         rows = store.get_changes(
             since=request.args.get("since"),
             kind=request.args.get("kind"),
@@ -327,11 +333,20 @@ def _backfill_label(run: dict[str, Any] | None) -> dict[str, Any] | None:
     """Last backfill, shaped for the sidebar."""
     if not run:
         return None
+    message = run.get("message") or ""
+    # The run row is where the empty and errored counts end up: they are notes
+    # on an otherwise clean run rather than a status of their own. Split the
+    # parenthetical out so the sidebar can show it without reprinting the
+    # booking count the line above already gives.
+    note = ""
+    if message.endswith(")") and "(" in message:
+        note = message[message.index("(") + 1:-1]
     return {
         "when": _human_when(run.get("finished_at")),
         "status": run.get("status"),
         "events": run.get("events_count") or 0,
-        "message": run.get("message") or "",
+        "message": message,
+        "note": note,
     }
 
 
