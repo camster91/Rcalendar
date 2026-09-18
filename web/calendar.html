@@ -213,6 +213,30 @@ a.vtab{display:inline-flex;align-items:center}
 .chg-m .mono{font-family:'JetBrains Mono',monospace}
 .chg-when{font-size:.75rem;color:var(--tx3);white-space:nowrap;flex-shrink:0;padding-top:2px}
 
+/* ── FILTER PANEL ── */
+/* Reuses .mover/.modal/.mcl from the day modal, and the sidebar's own chip
+   classes (.gbar/.gb, .stit, .rc/.rfloor, .tag) rather than inventing a second
+   vocabulary for the same controls. */
+.fmodal{width:min(680px,94vw);max-height:86vh;overflow-y:auto}
+.fsec{margin-bottom:20px}
+.fsec:last-of-type{margin-bottom:12px}
+.fnote{font-size:.78rem;color:var(--tx3);margin-top:6px;line-height:1.45}
+.frow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
+.frow label{font-size:.85rem;color:var(--tx2);min-width:74px}
+.frow input[type=time],.frow input[type=number],.frow input[type=text],.frow select{background:var(--sf);border:1px solid var(--bd2);border-radius:var(--rs);color:var(--tx);padding:5px 8px;font:inherit;font-size:.85rem}
+.frow input[type=text]{min-width:150px}
+.fempty{font-size:.85rem;color:var(--tx3);padding:4px 0}
+.fgrp{border:1px solid var(--bd);border-radius:var(--rs);padding:10px 12px;margin-bottom:10px;background:var(--sf)}
+.fgrp-hd{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.fgrp-hd input{flex:1;background:var(--bg);border:1px solid var(--bd2);border-radius:var(--rs);color:var(--tx);padding:5px 8px;font:inherit;font-size:.85rem;font-weight:600}
+.fgrp-rooms{max-height:132px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:4px;padding:2px 0}
+.fgrp-rooms .rc{font-size:.74rem;padding:2px 7px}
+.fdel{background:none;border:1px solid var(--bd2);border-radius:var(--rs);color:var(--rd);cursor:pointer;font:inherit;font-size:.8rem;padding:4px 9px}
+.fdel:hover{border-color:var(--rd)}
+.ftags{display:flex;flex-wrap:wrap;gap:6px}
+.ftags .tag{cursor:pointer}
+.facts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--bd)}
+
 @media(max-width:900px){.side{display:none}.wrap{flex-direction:column}}
 </style>
 </head>
@@ -251,17 +275,16 @@ a.vtab{display:inline-flex;align-items:center}
       <div class="sdrop" id="sdrop"></div>
     </div>
     <div class="tags" id="tags"></div>
+    <!-- Opens the filter panel. Floor, seats, Panopto and free-at need more
+         room than the column has left, so they live over the calendar in a
+         panel rather than in a sidebar that is already full. -->
+    <button class="btn" id="filterBtn" onclick="openFilters()">⚙ Filters <span id="advN"></span></button>
   </div>
   <div>
     <div class="stit">Filter by Group</div>
-    <div class="gbar" id="gbar">
-      <button class="gb on" data-g="" onclick="toggleGroup('')">All</button>
-      <button class="gb" data-g="Classroom" onclick="toggleGroup('Classroom')">🏫 Classroom</button>
-      <button class="gb" data-g="North" onclick="toggleGroup('North')">North</button>
-      <button class="gb" data-g="South" onclick="toggleGroup('South')">South</button>
-      <button class="gb" data-g="Events" onclick="toggleGroup('Events')">Events</button>
-      <button class="gb" data-g="Self Serve" onclick="toggleGroup('Self Serve')">Self Serve</button>
-    </div>
+    <!-- Built by buildGroupBtns(), not written out here: a renamed or added
+         group would otherwise never appear. -->
+    <div class="gbar" id="gbar"></div>
   </div>
   <div class="sgrow">
     <div class="stit">Rooms <span style="font-weight:400;text-transform:none;letter-spacing:0;cursor:pointer;font-size:.78rem;color:var(--ac)" onclick="roomClear()">clear</span></div>
@@ -287,9 +310,20 @@ a.vtab{display:inline-flex;align-items:center}
 <div class="toast" id="toast"></div>
 <div class="mover" id="dayModal">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">
-    <button class="mcl" onclick="closeModal()" aria-label="Close">✕</button>
+    <button class="mcl" onclick="closeOverlays()" aria-label="Close">✕</button>
     <h2 id="modalTitle"></h2>
     <div id="modalBody"></div>
+  </div>
+</div>
+
+<!-- The filter panel. Same overlay machinery as the day modal, and outside
+     .bar and .side so the modal's tabindex suppression does not disable its
+     own controls. -->
+<div class="mover" id="filterModal">
+  <div class="modal fmodal" role="dialog" aria-modal="true" aria-labelledby="filterTitle" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">
+    <button class="mcl" onclick="closeOverlays()" aria-label="Close">✕</button>
+    <h2 id="filterTitle">Filters</h2>
+    <div id="filterBody"></div>
   </div>
 </div>
 
@@ -316,6 +350,20 @@ let curDate = new Date();
 let activeRooms = new Set(ROOMS);
 let activeGroups = new Set(); // multi-select
 let searchQ = '';
+
+// Advanced filters, ANDed onto the room/search core by applyFilters(). Each
+// defaults to "no opinion", so with none of them set the filter pass is exactly
+// the one it has always been.
+let advFloors = new Set();   // empty = every floor
+let advSeats = 0;            // 0 = no minimum
+let advPanopto = false;      // only rooms the report flags for Panopto
+let advFreeAt = '';          // "14:00"; empty = off
+let advFreeMins = 60;
+// Rooms free for the whole window, from /api/today. Null means "not fetched
+// yet", which applyFilters treats as no opinion rather than as "nothing is
+// free" — a filter that blanks the calendar while a request is in flight reads
+// as a bug.
+let FREE_ROOMS = null;
 
 // Events shown per month cell before "+N more". Must match the nth-child
 // cut-off in the stylesheet — the label used to be computed as length-3 while
@@ -350,13 +398,22 @@ function buildChips(){
     d.tabIndex=0;
     d.title=(meta.display||('Room '+r))+(meta.capacity?(' · '+meta.capacity+' seats'):'')+(meta.notes?(' · '+meta.notes):'');
     d.setAttribute('aria-label',(meta.display||('Room '+r))+', '+rCnt[r]+' bookings');
-    d.innerHTML='<span style="display:flex;align-items:center"><span class="cd" style="background:'+rcol(r)+'"></span>'+r+'</span><span class="cn">'+rCnt[r]+'</span>';
+    // Elements, not an html string: a room number comes from the report and is
+    // written into this chip in two places.
+    const top=document.createElement('span');top.style.cssText='display:flex;align-items:center';
+    const dot=document.createElement('span');dot.className='cd';dot.style.background=rcol(r);
+    const name=document.createElement('span');name.textContent=r;
+    const cnt=document.createElement('span');cnt.className='cn';cnt.textContent=rCnt[r];
+    top.append(dot,name);d.append(top,cnt);
     d.onclick=()=>toggleRoom(r);cDiv.appendChild(d);
   });
   syncChips();
 }
 function toggleRoom(r){if(activeRooms.has(r))activeRooms.delete(r);else activeRooms.add(r);syncChips();applyFilters();}
-function syncChips(){document.querySelectorAll('.rc').forEach(c=>{const on=activeRooms.has(c.dataset.room);c.classList.toggle('on',on);c.classList.toggle('off',!on);c.setAttribute('aria-pressed',on?'true':'false')});}
+// Scoped to #rchips. The filter panel's group editor also draws room toggles,
+// and a global .rc selector would repaint those from the room filter — which is
+// a different question from group membership. Same for the group buttons.
+function syncChips(){document.querySelectorAll('#rchips .rc').forEach(c=>{const on=activeRooms.has(c.dataset.room);c.classList.toggle('on',on);c.classList.toggle('off',!on);c.setAttribute('aria-pressed',on?'true':'false')});}
 // With no group filter active there is nothing to fall back to, so clearing
 // used to leave activeRooms empty and blank the entire calendar with no way
 // back. Falling back to "all rooms" is the only sane meaning of clear.
@@ -368,6 +425,23 @@ function roomClear(){
 }
 
 // ── MULTI-SELECT GROUP FILTER ──
+// Generated rather than hardcoded, so a group added in the editor appears here
+// without a code change. Built with DOM calls, not an html string: a group name
+// is user-controlled once the editor ships, and concatenating one into markup
+// or into an onclick attribute lets a quote in the name break out of it.
+function buildGroupBtns(){
+  const bar=document.getElementById('gbar');
+  bar.innerHTML='';
+  const add=(label,g)=>{
+    const b=document.createElement('button');
+    b.className='gb';b.dataset.g=g;b.textContent=label;
+    b.onclick=()=>toggleGroup(g);
+    bar.appendChild(b);
+  };
+  add('All','');
+  Object.keys(GROUPS).forEach(g=>add(g==='Classroom'?'🏫 '+g:g,g));
+  syncGroupBtns();
+}
 function toggleGroup(g){
   if(!g){activeGroups.clear();activeRooms=new Set(ROOMS);}
   else{
@@ -380,7 +454,7 @@ function toggleGroup(g){
   syncGroupBtns();syncChips();applyFilters();
 }
 function syncGroupBtns(){
-  document.querySelectorAll('.gb').forEach(b=>{
+  document.querySelectorAll('#gbar .gb').forEach(b=>{
     const g=b.dataset.g;
     b.classList.toggle('on',!g?activeGroups.size===0:activeGroups.has(g));
   });
@@ -389,23 +463,92 @@ function syncGroupBtns(){
 // ── SEARCH ──
 let debounce;
 function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('q').value.trim();if(v.length<1){closeDrop();applyFilters();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));searchQ=v.toLowerCase();applyFilters();},200);}
-function showDrop(d){let h='';if(d.groups.length){h+='<div class="sdrop-section">Groups</div>';d.groups.forEach(g=>{h+='<div class="sdrop-item" onmousedown="addTag(\'group\',\''+g+'\')">'+g+'</div>';});}if(d.rooms.length){h+='<div class="sdrop-section">Rooms</div>';d.rooms.forEach(r=>{h+='<div class="sdrop-item" onmousedown="addTag(\'room\',\''+r+'\')"><span class="rm-dot" style="background:'+rcol(r)+'"></span><span class="rm">'+r+'</span></div>';});}if(d.titles.length){h+='<div class="sdrop-section">Events</div>';d.titles.forEach(t=>{h+='<div class="sdrop-item" onmousedown="addTag(\'query\',\''+esc(t).replace(/'/g,'&#39;')+'\')">'+esc(t)+'</div>';});}document.getElementById('sdrop').innerHTML=h;document.getElementById('sdrop').classList.add('show');}
+// Built as elements with textContent. The old version interpolated each value
+// straight into an onmousedown attribute, so a group name or event title
+// containing an apostrophe broke out of the string and injected markup — and
+// group names became user-controlled the moment the group editor shipped.
+function showDrop(d){
+  const box=document.getElementById('sdrop');
+  box.innerHTML='';
+  const section=t=>{const h=document.createElement('div');h.className='sdrop-section';h.textContent=t;box.appendChild(h);};
+  const item=(type,value,dot,label)=>{
+    const el=document.createElement('div');
+    el.className='sdrop-item';
+    if(dot){const s=document.createElement('span');s.className='rm-dot';s.style.background=rcol(value);el.appendChild(s);}
+    const s=document.createElement('span');s.className='rm';s.textContent=label===undefined?value:label;
+    el.appendChild(s);
+    el.onmousedown=()=>addTag(type,value);
+    box.appendChild(el);
+  };
+  if(d.groups.length){section('Groups');d.groups.forEach(g=>item('group',g));}
+  if(d.rooms.length){section('Rooms');d.rooms.forEach(r=>item('room',r,true));}
+  if(d.titles.length){section('Events');d.titles.forEach(t=>item('query',t));}
+  box.classList.add('show');
+}
 function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
 const tags=[];
 function addTag(type,value){if(tags.some(t=>t.type===type&&t.value===value))return;tags.push({type,value});if(type==='group')toggleGroup(value);else if(type==='room'){activeRooms.clear();activeRooms.add(value);syncChips();}else{searchQ=value.toLowerCase();document.getElementById('q').value='';}closeDrop();renderTags();applyFilters();}
 function removeTag(idx){const t=tags.splice(idx,1)[0];if(t.type==='group'){toggleGroup(t.value);}else if(t.type==='room'){activeRooms=new Set(ROOMS);syncChips();}else{searchQ='';document.getElementById('q').value='';}renderTags();applyFilters();}
-function renderTags(){document.getElementById('tags').innerHTML=tags.map((t,i)=>{const cls=t.type==='room'?'tag-rm':t.type==='group'?'tag-grp':'tag-q';const lbl=t.type==='room'?'Room '+t.value:t.type==='group'?'📁 '+t.value:t.value;return '<span class="tag '+cls+'">'+lbl+'<span class="tag-x" onclick="removeTag('+i+')">✕</span></span>';}).join('');}
+// textContent again: t.value is the raw search text or a group name, and the
+// old version wrote it into the page as markup.
+function renderTags(){
+  const box=document.getElementById('tags');
+  box.innerHTML='';
+  tags.forEach((t,i)=>{
+    const cls=t.type==='room'?'tag-rm':t.type==='group'?'tag-grp':'tag-q';
+    const lbl=t.type==='room'?'Room '+t.value:t.type==='group'?'📁 '+t.value:t.value;
+    const el=document.createElement('span');
+    el.className='tag '+cls;el.textContent=lbl;
+    const x=document.createElement('span');
+    x.className='tag-x';x.textContent='✕';
+    x.onclick=()=>removeTag(i);
+    el.appendChild(x);
+    box.appendChild(el);
+  });
+}
 
 // ── VIEW ──
 function setView(v){viewMode=v;document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));document.getElementById('v-'+v).classList.add('on');render();}
 
 // ── FILTER ──
+// The search box and searchQ are the same value kept in two places: onSearch
+// rewrites searchQ from the box, and addTag clears the box. They are deduped
+// rather than concatenated — the feed used to join them into a single LIKE term
+// and send "smith smith", which matches nothing.
+function searchTerms(){
+  return [...new Set([searchQ,document.getElementById('q').value.trim().toLowerCase()].filter(Boolean))];
+}
 let filtered=EVENTS;
 function applyFilters(){
-  const q=document.getElementById('q').value.toLowerCase();
-  const terms=[searchQ,q].filter(Boolean);
-  filtered=EVENTS.filter(e=>{if(!activeRooms.has(e.room))return false;if(terms.length&&!terms.some(s=>((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;return true;});
+  const terms=searchTerms();
+  filtered=EVENTS.filter(e=>{
+    if(!activeRooms.has(e.room))return false;
+    if(terms.length&&!terms.some(s=>((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
+    const m=ROOM_META[e.room]||{};
+    if(advFloors.size&&!advFloors.has(m.floor||''))return false;
+    // An unknown capacity PASSES a minimum. 49 of the 91 rooms have no recorded
+    // capacity, and silently hiding half the building from "seats >= 20" is
+    // worse than showing a room that might be too small. It must be Infinity,
+    // not 0 — 0 would hide every one of them. The panel states the count so the
+    // leniency is visible rather than a surprise.
+    if(advSeats&&(m.capacity??Infinity)<advSeats)return false;
+    if(advPanopto&&!m.panopto)return false;
+    // FREE_ROOMS === null means the fetch has not landed; showing everything
+    // briefly beats showing nothing.
+    if(advFreeAt&&FREE_ROOMS&&!FREE_ROOMS.has(e.room))return false;
+    return true;
+  });
+  advCount();
   document.getElementById('evcnt').textContent=filtered.length+' events';render();
+}
+
+// How many advanced filters are on, so the sidebar button says so with the
+// panel closed. Rooms and search are not counted — they have their own chips
+// and their own place in the column.
+function advCount(){
+  const n=advFloors.size+(advSeats?1:0)+(advPanopto?1:0)+(advFreeAt?1:0);
+  const el=document.getElementById('advN');
+  if(el)el.textContent=n?'· '+n:'';
 }
 
 // ── HELPERS ──
@@ -427,14 +570,20 @@ function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.roo
   // An all-day block has no meaningful clock time — its start is just midnight.
   // Printing "12:00 a.m. → 11:00 p.m. (23h)" reads as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+r).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
 
 // ── RENDER ──
 // The export links depend on the view and the date being shown, both of which
 // change without going through applyFilters() — setView(), nav() and goToday()
 // all call render() directly, so hanging the sync off the filter pass left the
 // month view advertising today's single-day export.
-function render(){syncExportLinks();if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else if(viewMode==='changes')renderChanges();else renderToday();}
+// writeURL and maybeRefreshFree hang off render() for the same reason the
+// export links do: setView(), nav() and goToday() all reach render() without
+// going through applyFilters(), and both the URL's `date`/`view` and the
+// free-at answer depend on which day is on screen. maybeRefreshFree is a no-op
+// unless the free-at filter is on, and it is keyed on date+time+length, so the
+// extra call from applyFilters' own render cannot loop.
+function render(){syncExportLinks();writeURL();maybeRefreshFree();if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else if(viewMode==='changes')renderChanges();else renderToday();}
 
 function renderMonth(){
   const y=curDate.getFullYear(),m=curDate.getMonth(),first=new Date(y,m,1),last=new Date(y,m+1,0),so=first.getDay(),td=last.getDate(),now=new Date();
@@ -444,7 +593,10 @@ function renderMonth(){
   for(let i=0;i<total;i++){
     const dn=i-so+1;let date,oth=false;
     if(dn<1){date=new Date(y,m,dn);oth=true;}else if(dn>td){date=new Date(y,m,dn);oth=true;}else{date=new Date(y,m,dn);}
-    const tdy=date.toDateString()===now.toDateString(),ds=date.toISOString().slice(0,10);
+    // fmtISO, not toISOString().slice(0,10): the latter converts to UTC, and
+    // these dates are local midnight, so west of Greenwich every cell was
+    // labelled with the day before. Same bug in renderWeek and renderToday.
+    const tdy=date.toDateString()===now.toDateString(),ds=fmtISO(date);
     const de=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)));
     // Focusable with a spoken label: the cell opens the day's full list, and
     // making all 150 chips individually tabbable would bury that behind a
@@ -490,13 +642,13 @@ function renderWeek(){
   let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><h2>'+MONTHS[sow.getMonth()]+' '+sow.getDate()+' – '+MONTHS[eow.getMonth()]+' '+eow.getDate()+', '+eow.getFullYear()+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>'+adStrip+'<div class="wkgrid"><div class="cdhead" style="border-left:none"></div>';
   for(let d=0;d<7;d++){const day=new Date(sow);day.setDate(sow.getDate()+d);h+='<div class="wkdh'+(day.toDateString()===now.toDateString()?' tdy':'')+'">'+DAYS[d]+'<br><span class="wn">'+day.getDate()+'</span></div>';}
   const hours=[];for(let hr=H0;hr<=H1;hr++)hours.push(hr);
-  hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d).toISOString().slice(0,10)+'" data-hour="'+hr+'"></div>';}});
+  hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+fmtISO(new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d))+'" data-hour="'+hr+'"></div>';}});
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
-  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=new Date(ev.end);const ds=st.toISOString().slice(0,10),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
+  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=new Date(ev.end);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
 }
 
 function renderToday(){
-  const now=new Date(curDate),ds=now.toISOString().slice(0,10);
+  const now=new Date(curDate),ds=fmtISO(now);
   const dayEvts=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
   const dStr=now.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
   let h='<div class="today-hd"><h2>'+dStr+'</h2><div class="td-nav"><button onclick="todayNav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="todayNav(1)">▶</button></div><span class="badge bg-bl">'+dayEvts.length+' bookings</span></div>';
@@ -518,6 +670,9 @@ function renderToday(){
 // disappears from the window. Cached, because applyFilters() re-renders on
 // every keystroke and refetching 200 rows per letter would be silly.
 let CHANGES=null;
+// What the cached feed is a snapshot of: limit plus the filters it was asked
+// for. Empty means nothing is cached for the current filter set.
+let CHANGE_KEY='';
 
 // The app fills a year of history by itself on first run, while this page is
 // already open on an almost-empty calendar. Watch for that fill ending and
@@ -525,14 +680,30 @@ let CHANGES=null;
 let BF_WAS_RUNNING=false;
 function renderChanges(force){
   const el=document.getElementById('mainArea');
-  if(!force&&CHANGES){paintChanges();return;}
+  const terms=searchTerms();
+  const p=new URLSearchParams({limit:'200'});
+  // Only when the room set is a real narrowing. store.get_events documents that
+  // an *empty* `rooms` means no restriction, and an all-rooms CSV is that same
+  // request spelled out ninety-one times.
+  if(activeRooms.size&&activeRooms.size<ROOMS.length)p.set('rooms',[...activeRooms].join(','));
+  // One term, not all of them: the endpoint takes a single `q` and LIKEs it.
+  // The last is the box's value when the two differ, which is the most recent
+  // thing typed.
+  if(terms.length)p.set('q',terms[terms.length-1]);
+  const key=p.toString();
+  // The feed is filtered on the server because /api/changes applies its limit
+  // before any client-side filter could: "no changes for room 142" computed
+  // here could be a lie about the newest 200 rows. The key is what the memo is
+  // good for, so changing a filter refetches.
+  if(!force&&CHANGES&&key===CHANGE_KEY){paintChanges();return;}
   if(force||!el.querySelector('#chgList')){
     el.innerHTML='<div class="chead"><h2>Changes</h2>'
       +'<span class="badge bg-bl" id="chgCnt">loading…</span>'
       +'<button class="btn" onclick="renderChanges(true)" title="Fetch the feed again">⟳ Refresh</button></div>'
       +'<div id="chgList"><div class="freeload">loading…</div></div>';
   }
-  fetch('/api/changes?limit=200').then(r=>r.json()).then(d=>{CHANGES=d;paintChanges();})
+  CHANGE_KEY=key;
+  fetch('/api/changes?'+key).then(r=>r.json()).then(d=>{CHANGES=d;paintChanges();})
     .catch(e=>{const l=document.getElementById('chgList');
       if(l)l.innerHTML='<div class="freeload">Could not load changes: '+esc(e.message)+'</div>';});
 }
@@ -599,28 +770,474 @@ function nav(dir){
 }
 function goToday(){curDate=new Date();render();}
 
-// ── DAY MODAL — only close from overlay background ──
-let modalOpener=null;
+// ── OVERLAYS — day modal and filter panel share the focus machinery ──
+// These used to be single-instance, bound to #dayModal: one module-level
+// `modalOpener` and one suppression pass. A second overlay would have clobbered
+// the first one's focus restore, so both now go through trapFocus/releaseFocus.
+const SUPPRESS='.bar a,.bar button,.side button,.side [role="button"],.cday';
+let overlayOpener=null;
+function trapFocus(modal){
+  overlayOpener=document.activeElement;
+  modal.classList.add('show');
+  // Move focus into the dialog so the keyboard follows the eye, and keep the
+  // page behind it from being tabbed into while it is open. Both openers are
+  // inside .side, so they are suppressed too — the panel's own controls are not,
+  // because the panel sits outside .bar and .side.
+  const first=modal.querySelector('.mcl');
+  if(first)first.focus();
+  document.querySelectorAll(SUPPRESS).forEach(el=>{el.dataset.tab=el.tabIndex;el.tabIndex=-1;});
+}
+function releaseFocus(modal){
+  modal.classList.remove('show');
+  document.querySelectorAll('[data-tab]').forEach(el=>{el.tabIndex=Number(el.dataset.tab);delete el.dataset.tab;});
+  if(overlayOpener&&overlayOpener.focus)overlayOpener.focus();
+  overlayOpener=null;
+}
+// One closer for Esc, for both ✕ buttons and for a click on either backdrop.
+function closeOverlays(){
+  document.querySelectorAll('.mover.show').forEach(releaseFocus);
+}
+function closeModal(){closeOverlays();}
+
 function openDay(ds){
   const dayEvts=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
   if(!dayEvts.length)return;
   document.getElementById('modalTitle').textContent=new Date(ds+'T12:00:00').toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+' — '+dayEvts.length+' bookings';
   document.getElementById('modalBody').innerHTML=dayEvts.map(ev=>cardHTML(ev)).join('');
-  modalOpener=document.activeElement;
-  document.getElementById('dayModal').classList.add('show');
-  // Move focus into the dialog so the keyboard follows the eye, and keep the
-  // page behind it from being tabbed into while it is open.
-  document.querySelector('#dayModal .mcl').focus();
-  document.querySelectorAll('.bar a,.bar button,.side [role="button"],.cday').forEach(el=>{el.dataset.tab=el.tabIndex;el.tabIndex=-1;});
+  trapFocus(document.getElementById('dayModal'));
 }
-function closeModal(){
-  if(!document.getElementById('dayModal').classList.contains('show'))return;
-  document.getElementById('dayModal').classList.remove('show');
-  document.querySelectorAll('[data-tab]').forEach(el=>{el.tabIndex=Number(el.dataset.tab);delete el.dataset.tab;});
-  if(modalOpener&&modalOpener.focus)modalOpener.focus();
-  modalOpener=null;
+document.querySelectorAll('.mover').forEach(m=>m.addEventListener('mousedown',e=>{if(e.target===m)closeOverlays();}));
+
+// ── FILTER PANEL ──
+// Floor, capacity, equipment and free-at need more room than the sidebar has
+// left, so they live over the calendar. The panel reuses the overlay machinery
+// above and the sidebar's chip classes rather than inventing a second set.
+const SEAT_STEPS=[0,10,20,30,40,50,75,100,150,200];
+const MINUTE_STEPS=[15,30,45,60,90,120,180];
+let PRESETS=[];
+// A working copy of the groups while the editor is open. Nothing reaches GROUPS
+// — and so nothing reaches the sidebar — until Save groups, so an edit that is
+// abandoned by closing the panel leaves the real groups untouched.
+let GEDIT={};
+
+function openFilters(){
+  GEDIT=Object.fromEntries(Object.entries(GROUPS).map(([k,v])=>[k,[...v]]));
+  buildFilterBody();
+  trapFocus(document.getElementById('filterModal'));
+  // Keyed, so reopening the panel does not refetch a set that is already for
+  // the day, time and length on screen — the note is rebuilt from it instead.
+  maybeRefreshFree();
+  loadPresets();
 }
-document.getElementById('dayModal').addEventListener('mousedown',e=>{if(e.target===document.getElementById('dayModal'))closeModal();});
+
+// The floors to offer, taken from the data rather than from FLOOR_ORDER: the
+// constant lists twelve floors and the bookings only ever use eleven — there is
+// no 5th Floor — so a chip built from it would select nothing and read as a bug.
+// ROOMS arrives sorted by (floor, room), so first-seen order is display order
+// and FLOOR_ORDER does not need duplicating in the browser.
+function floorsPresent(){
+  const inData=new Set(EVENTS.map(e=>e.room));
+  const out=[];
+  ROOMS.forEach(r=>{
+    const f=(ROOM_META[r]||{}).floor;
+    if(f&&!out.includes(f)&&inData.has(r))out.push(f);
+  });
+  return out;
+}
+function roomsWithoutCapacity(){
+  const seen=new Set();
+  EVENTS.forEach(e=>{
+    const m=ROOM_META[e.room];
+    if(m&&m.capacity==null)seen.add(e.room);
+  });
+  return seen.size;
+}
+
+function el(tag,cls,text){
+  const e=document.createElement(tag);
+  if(cls)e.className=cls;
+  if(text!==undefined)e.textContent=text;
+  return e;
+}
+function sec(title){
+  const s=el('div','fsec');
+  s.appendChild(el('div','stit',title));
+  return s;
+}
+
+function buildFilterBody(){
+  const body=document.getElementById('filterBody');
+  body.innerHTML='';
+
+  // Stated, not silently ignored. A change row describes a booking that was
+  // added or removed in the past, so "free at 2pm" and "seats ≥ 20" have
+  // nothing to say about it. Rooms and the search box do, and only those reach
+  // the feed.
+  if(viewMode==='changes'){
+    const cw=el('div','fnote');
+    cw.textContent='The Changes view reads room and search only. Floor, capacity, '
+      +'equipment and free-at describe what a room is like now, and a change row '
+      +'is about the past — so they are not applied here.';
+    body.appendChild(cw);
+  }
+
+  // ── Floor ──
+  const fs=sec('Floor');
+  const fbar=el('div','gbar');
+  const floors=floorsPresent();
+  if(!floors.length){fs.appendChild(el('div','fempty','No floors in the current data.'));}
+  else{
+    floors.forEach(f=>{
+      const b=el('button',null,f);
+      b.classList.toggle('on',advFloors.has(f));
+      b.setAttribute('aria-pressed',advFloors.has(f)?'true':'false');
+      b.onclick=()=>{if(advFloors.has(f))advFloors.delete(f);else advFloors.add(f);buildFilterBody();writeURL();applyFilters();};
+      fbar.appendChild(b);
+    });
+    // "Any floor" belongs in the same row as the floors, the way "All" does in
+    // the sidebar's group bar — appended to the section instead it wrapped onto
+    // a line of its own and read as a separate control.
+    const any=el('button','gb','Any floor');
+    any.classList.toggle('on',!advFloors.size);
+    any.setAttribute('aria-pressed',advFloors.size?'false':'true');
+    any.onclick=()=>{advFloors.clear();buildFilterBody();writeURL();applyFilters();};
+    fbar.appendChild(any);
+    fs.appendChild(fbar);
+  }
+  body.appendChild(fs);
+
+  // ── Capacity ──
+  const cs=sec('Capacity');
+  const crow=el('div','frow');
+  crow.appendChild(el('label',null,'Seats ≥'));
+  const sel=el('select');
+  SEAT_STEPS.forEach(n=>{
+    const o=el('option',null,n?'at least '+n:'any size');
+    o.value=String(n);o.selected=(n===advSeats);sel.appendChild(o);
+  });
+  sel.onchange=()=>{advSeats=+sel.value;buildFilterBody();writeURL();applyFilters();};
+  crow.appendChild(sel);
+  cs.appendChild(crow);
+  // Stated, not silent. Almost half the rooms have no recorded capacity, and the
+  // rule is that they pass the minimum rather than being hidden by it.
+  cs.appendChild(el('div','fnote',
+    roomsWithoutCapacity()+' of '+ROOMS.length+' rooms have no recorded capacity. '
+    +'They are kept by a minimum rather than hidden — a room that might be too '
+    +'small is a better answer than half the building disappearing.'));
+  body.appendChild(cs);
+
+  // ── Equipment ──
+  const es=sec('Equipment');
+  const ebar=el('div','gbar');
+  const pb=el('button',null,'🎥 Panopto');
+  pb.classList.toggle('on',advPanopto);
+  pb.setAttribute('aria-pressed',advPanopto?'true':'false');
+  pb.onclick=()=>{advPanopto=!advPanopto;buildFilterBody();writeURL();applyFilters();};
+  ebar.appendChild(pb);
+  es.appendChild(ebar);
+  body.appendChild(es);
+
+  // ── Free at a time ──
+  const tms=sec('Free at a time');
+  const trow=el('div','frow');
+  trow.appendChild(el('label',null,'Free from'));
+  const time=el('input');time.type='time';time.value=advFreeAt;
+  time.onchange=()=>{advFreeAt=time.value;FREE_KEY='';buildFilterBody();writeURL();loadFreeRooms();};
+  trow.appendChild(time);
+  trow.appendChild(el('label',null,'for'));
+  const mins=el('select');
+  MINUTE_STEPS.forEach(n=>{const o=el('option',null,n+' min');o.value=String(n);o.selected=(n===advFreeMins);mins.appendChild(o);});
+  mins.onchange=()=>{advFreeMins=+mins.value;FREE_KEY='';buildFilterBody();writeURL();loadFreeRooms();};
+  trow.appendChild(mins);
+  if(advFreeAt){
+    const off=el('button',null,'Turn off');off.className='gb';
+    off.onclick=()=>{advFreeAt='';FREE_ROOMS=null;FREE_KEY='';buildFilterBody();writeURL();applyFilters();};
+    trow.appendChild(off);
+  }
+  tms.appendChild(trow);
+  const fnote=el('div','fnote','');
+  fnote.id='freeNote';
+  fnote.textContent=freeNoteText();
+  tms.appendChild(fnote);
+  body.appendChild(tms);
+
+  // ── Groups ──
+  const gs=sec('Groups');
+  Object.keys(GEDIT).forEach(name=>gs.appendChild(groupEditorRow(name)));
+  const addb=el('button',null,'+ Add group');
+  addb.className='btn';
+  addb.onclick=()=>{
+    let n='New group',i=2;
+    while(GEDIT[n])n='New group '+(i++);
+    GEDIT[n]=[];
+    buildFilterBody();
+  };
+  gs.appendChild(addb);
+  const saveb=el('button',null,'Save groups');
+  saveb.className='btn btn-a';saveb.style.marginLeft='8px';
+  saveb.onclick=saveGroups;
+  gs.appendChild(saveb);
+  gs.appendChild(el('div','fnote',
+    'Saved to data/room_groups.json and shared by both views. Clearing every '
+    +'room from a group keeps the group but selects nothing.'));
+  body.appendChild(gs);
+
+  // ── Presets ──
+  const ps=sec('Saved filters');
+  const ptags=el('div','ftags');ptags.id='presetTags';
+  ps.appendChild(ptags);
+  const prow=el('div','frow');
+  const pname=el('input');pname.type='text';pname.placeholder='Name this filter…';pname.id='presetName';
+  prow.appendChild(pname);
+  const psave=el('button',null,'Save');psave.className='btn';
+  psave.onclick=()=>savePreset(pname.value);
+  prow.appendChild(psave);
+  ps.appendChild(prow);
+  ps.appendChild(el('div','fnote',
+    'A preset holds the filters only — not the day or the view, which would make '
+    +'it useless tomorrow. The link below is the opposite: it does carry the date.'));
+  body.appendChild(ps);
+  renderPresets();
+
+  // ── Actions ──
+  const acts=el('div','facts');
+  const copy=el('button',null,'🔗 Copy link');copy.className='btn';
+  copy.onclick=()=>copyLink();
+  const clear=el('button',null,'Clear all');clear.className='btn';
+  clear.onclick=clearAllFilters;
+  acts.append(copy,clear);
+  body.appendChild(acts);
+}
+
+// One group: a name, its rooms, and a delete.
+function groupEditorRow(name){
+  const row=el('div','fgrp');
+  const hd=el('div','fgrp-hd');
+  const inp=el('input');inp.type='text';inp.value=name;
+  inp.setAttribute('aria-label','Group name');
+  // Written straight into the working copy, with no re-render: rebuilding here
+  // would take focus out of the field on every keystroke.
+  inp.oninput=()=>{const v=inp.value;if(v===name)return;GEDIT[v]=GEDIT[name];delete GEDIT[name];name=v;};
+  hd.appendChild(inp);
+  const del=el('button','fdel','Delete');
+  del.onclick=()=>{delete GEDIT[name];buildFilterBody();};
+  hd.appendChild(del);
+  row.appendChild(hd);
+
+  const rooms=el('div','fgrp-rooms');
+  ROOMS.forEach(r=>{
+    const c=el('div','rc');
+    // The editor's chips show group membership. They carry .rc for the look,
+    // but syncChips is scoped to #rchips so it cannot repaint them.
+    c.textContent=r;
+    const on=(GEDIT[name]||[]).includes(r);
+    c.classList.toggle('on',on);c.classList.toggle('off',!on);
+    c.setAttribute('role','button');c.tabIndex=0;
+    c.setAttribute('aria-pressed',on?'true':'false');
+    c.onclick=()=>{
+      const list=GEDIT[name]||(GEDIT[name]=[]);
+      const i=list.indexOf(r);
+      if(i<0)list.push(r);else list.splice(i,1);
+      const now=list.includes(r);
+      c.classList.toggle('on',now);c.classList.toggle('off',!now);
+      c.setAttribute('aria-pressed',now?'true':'false');
+    };
+    rooms.appendChild(c);
+  });
+  row.appendChild(rooms);
+  return row;
+}
+
+async function saveGroups(){
+  const clean={};
+  Object.entries(GEDIT).forEach(([k,v])=>{if(k.trim())clean[k.trim()]=v;});
+  if(!Object.keys(clean).length){toast('⚠️ Every group needs a name');return;}
+  try{
+    const r=await fetch('/api/room-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(clean)});
+    const d=await r.json();
+    if(!r.ok){toast('⚠️ '+(d.error||'Could not save groups'));return;}
+    GROUPS=clean;
+    // A group that was just deleted may still be in the active set.
+    activeGroups=new Set([...activeGroups].filter(g=>GROUPS[g]));
+    buildGroupBtns();buildChips();buildFilterBody();
+    toast('Groups saved',true);
+  }catch(e){toast('⚠️ '+e.message);}
+}
+
+// ── FREE AT A TIME (server-side) ──
+// Asked of /api/today, the same route and the same predicate that answer Free
+// Right Now. A JS reimplementation would be a second answer to one question.
+let FREE_KEY='';
+// The key is what the held set is an answer to. The note is rebuilt from it
+// whenever the panel is redrawn, so reopening the panel does not refetch a set
+// that is already current.
+function freeKey(){return fmtISO(curDate)+'|'+advFreeAt+'|'+advFreeMins;}
+function freeNoteText(){
+  if(!advFreeAt)return 'Off. Checked against the day on screen, not today.';
+  if(FREE_ROOMS&&FREE_KEY===freeKey()){
+    return FREE_ROOMS.size+' of '+ROOMS.length+' rooms free from '
+      +advFreeAt+' for '+advFreeMins+' min on '+fmtISO(curDate);
+  }
+  return 'checking…';
+}
+function maybeRefreshFree(){
+  if(!advFreeAt)return;
+  const key=freeKey();
+  if(key===FREE_KEY)return;
+  FREE_KEY=key;
+  loadFreeRooms();
+}
+async function loadFreeRooms(){
+  const note=document.getElementById('freeNote');
+  if(!advFreeAt){FREE_ROOMS=null;applyFilters();return;}
+  if(note)note.textContent='checking…';
+  try{
+    const d=await (await fetch('/api/today?date='+fmtISO(curDate)
+      +'&at='+encodeURIComponent(advFreeAt)+'&for='+advFreeMins)).json();
+    const all=d.rooms||[];
+    FREE_ROOMS=new Set(all.filter(r=>r.status==='free').map(r=>r.room));
+    if(note)note.textContent=freeNoteText();
+  }catch(e){
+    // Left as no-opinion rather than empty: a failed request must not read as
+    // "no room is free". FREE_KEY deliberately keeps the key it was set to —
+    // clearing it here would make the render() this call ends with see a
+    // changed key, refetch immediately, fail again, and spin. A failed check
+    // is retried when the date, time or length changes, not on every paint.
+    FREE_ROOMS=null;
+    if(note)note.textContent='Could not check availability: '+e.message;
+  }
+  applyFilters();
+}
+
+// ── PRESETS ──
+function currentFilters(){
+  return {rooms:[...activeRooms],groups:[...activeGroups],q:searchQ,
+          floors:[...advFloors],seats:advSeats,panopto:advPanopto,
+          free:advFreeAt,mins:advFreeMins};
+}
+async function loadPresets(){
+  try{const d=await (await fetch('/api/presets')).json();PRESETS=d.presets||[];}
+  catch(e){PRESETS=[];}
+  renderPresets();
+}
+function renderPresets(){
+  const box=document.getElementById('presetTags');
+  if(!box)return;
+  box.innerHTML='';
+  if(!PRESETS.length){box.appendChild(el('div','fempty','No saved filters yet.'));return;}
+  PRESETS.forEach(p=>{
+    const t=el('span','tag',p.name);
+    t.title='Apply “'+p.name+'”';
+    t.onclick=()=>applyPreset(p.filters);
+    const x=el('span','tag-x','✕');
+    x.title='Delete';
+    x.onclick=ev=>{ev.stopPropagation();deletePreset(p.name);};
+    t.appendChild(x);
+    box.appendChild(t);
+  });
+}
+function applyPreset(f){
+  activeRooms=new Set((f.rooms||[]).filter(r=>ROOMS.includes(r)));
+  activeGroups=new Set((f.groups||[]).filter(g=>GROUPS[g]));
+  searchQ=f.q||'';
+  document.getElementById('q').value=f.q||'';
+  advFloors=new Set(f.floors||[]);
+  advSeats=+f.seats||0;
+  advPanopto=!!f.panopto;
+  advFreeAt=f.free||'';
+  advFreeMins=+f.mins||60;
+  FREE_KEY='';
+  syncGroupBtns();syncChips();renderTags();buildFilterBody();applyFilters();
+  toast('Applied “'+f.name+'”',true);
+}
+async function savePreset(rawName){
+  const name=(rawName||'').trim();
+  if(!name){toast('⚠️ Name the preset first');return;}
+  if(name.length>60){toast('⚠️ Name is too long');return;}
+  try{
+    const r=await fetch('/api/presets',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name,filters:currentFilters()})});
+    const d=await r.json();
+    if(!r.ok){toast('⚠️ '+(d.error||'Could not save'));return;}
+    PRESETS=d.presets||[];renderPresets();
+    const inp=document.getElementById('presetName');if(inp)inp.value='';
+    toast('Saved “'+name+'”',true);
+  }catch(e){toast('⚠️ '+e.message);}
+}
+async function deletePreset(name){
+  try{
+    const d=await (await fetch('/api/presets?name='+encodeURIComponent(name),{method:'DELETE'})).json();
+    PRESETS=d.presets||[];renderPresets();
+  }catch(e){toast('⚠️ '+e.message);}
+}
+
+function clearAllFilters(){
+  activeRooms=new Set(ROOMS);
+  activeGroups.clear();
+  searchQ='';document.getElementById('q').value='';
+  tags.length=0;renderTags();
+  advFloors.clear();advSeats=0;advPanopto=false;advFreeAt='';advFreeMins=60;
+  FREE_ROOMS=null;FREE_KEY='';
+  syncGroupBtns();syncChips();buildFilterBody();
+  applyFilters();
+  toast('Filters cleared',true);
+}
+
+function copyLink(){
+  const url=location.href;
+  navigator.clipboard.writeText(url).then(()=>toast('Link copied',true))
+    .catch(()=>toast('⚠️ Could not copy — '+url));
+}
+
+// ── URL STATE ──
+// replaceState, not pushState: with push, every chip click becomes a
+// back-button step and leaving the page takes a dozen presses. The cost is that
+// Back does not undo a filter — Clear all is the escape hatch for that.
+function writeURL(){
+  const p=new URLSearchParams();
+  // The rooms/q/from/to vocabulary is the one the download endpoints already
+  // read, so a copied link works against them too.
+  if(activeRooms.size&&activeRooms.size<ROOMS.length)p.set('rooms',[...activeRooms].join(','));
+  if(searchQ)p.set('q',searchQ);
+  if(activeGroups.size)p.set('groups',[...activeGroups].join(','));
+  if(advFloors.size)p.set('floors',[...advFloors].join(','));
+  if(advSeats)p.set('seats',advSeats);
+  if(advPanopto)p.set('panopto','1');
+  if(advFreeAt){p.set('free',advFreeAt);p.set('mins',advFreeMins);}
+  p.set('view',viewMode);
+  p.set('date',fmtISO(curDate));
+  const qs=p.toString();
+  history.replaceState(null,'',qs?'?'+qs:location.pathname);
+}
+// Read once at the end of boot(), after activeRooms and the Classroom union
+// have been set up and before the first applyFilters().
+function readURL(){
+  const p=new URLSearchParams(location.search);
+  const csv=k=>{const v=p.get(k);return v?v.split(',').filter(Boolean):null;};
+  const rooms=csv('rooms');
+  if(rooms)activeRooms=new Set(rooms.filter(r=>ROOMS.includes(r)));
+  const groups=csv('groups');
+  if(groups)activeGroups=new Set(groups.filter(g=>GROUPS[g]));
+  const q=p.get('q');
+  if(q){searchQ=q.toLowerCase();document.getElementById('q').value=q;}
+  const floors=csv('floors');
+  if(floors)advFloors=new Set(floors);
+  advSeats=Math.max(0,+p.get('seats')||0);
+  advPanopto=p.get('panopto')==='1';
+  advFreeAt=/^\d{2}:\d{2}$/.test(p.get('free')||'')?p.get('free'):'';
+  advFreeMins=Math.max(1,+p.get('mins')||60);
+  const v=p.get('view');
+  if(v&&['today','week','month','changes'].includes(v))viewMode=v;
+  const d=p.get('date');
+  // Noon, so the local-date round-trip through fmtISO cannot slip a day — the
+  // same reason fmtDay appends T12:00:00.
+  if(d&&/^\d{4}-\d{2}-\d{2}$/.test(d))curDate=new Date(d+'T12:00:00');
+  document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
+  const tab=document.getElementById('v-'+viewMode);
+  if(tab)tab.classList.add('on');
+  syncGroupBtns();syncChips();renderTags();
+  return p.toString().length>0;
+}
 
 // ── TOOLTIP — stays open while hovering/selecting ──
 function showTip(e,el){
@@ -812,10 +1429,18 @@ async function boot(){
     if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
     EVENTS=d.events||[];ROOMS=d.rooms||[];GROUPS=d.groups||{};ROOM_META=d.room_meta||{};
-    GROUPS.Classroom=[...(GROUPS.North||[]),...(GROUPS.South||[])];
+    // GROUPS.Classroom used to be synthesized here as North ∪ South. That made
+    // the config's own Classroom entry dead data, and worse, silently reverted
+    // any edit made to the group in the panel — the override ran after every
+    // load. The union now lives in app/config.py where it is visible and
+    // editable, and the server is the single source for the group set.
     activeRooms=new Set(ROOMS);
     document.getElementById('roomcnt').textContent=ROOMS.length+' rooms';
     buildChips();
+    buildGroupBtns();
+    // After ROOMS and GROUPS are populated and before the first applyFilters:
+    // readURL validates its room and group names against both.
+    readURL();
   }catch(e){toast('Could not load bookings: '+e.message);}
   applyFilters();
   loadStatus();

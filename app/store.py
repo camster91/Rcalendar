@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -526,6 +527,8 @@ def get_changes(
     run_id: int | None = None,
     include_backfill: bool = False,
     limit: int = 200,
+    q: str | None = None,
+    rooms: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Reported additions and removals, newest first.
@@ -534,6 +537,12 @@ def get_changes(
     lexicographically — the same trick the date filters use. `kind` is only
     applied when it is one of the two real values, so a junk value widens the
     filter rather than silently emptying it.
+
+    `q` and `rooms` mirror get_events so the Changes view narrows with the same
+    vocabulary the calendar does. The filtering is deliberately here rather than
+    in the browser: `limit` is applied before any client-side filter, so a feed
+    narrowed in JS could report "no changes for room 142" about the newest 200
+    rows while older ones exist.
     """
     sql = ["SELECT * FROM changes WHERE 1=1"]
     args: list[Any] = []
@@ -548,6 +557,16 @@ def get_changes(
     if room:
         sql.append("AND room = ?")
         args.append(room)
+    if rooms:
+        # Same trap get_events documents: an empty selection means "no
+        # restriction", not "match nothing". The caller must omit the argument
+        # rather than send an empty list.
+        sql.append(f"AND room IN ({','.join('?' for _ in rooms)})")
+        args += list(rooms)
+    if q:
+        sql.append("AND (title LIKE ? OR room LIKE ? OR description LIKE ?)")
+        like = f"%{q}%"
+        args += [like, like, like]
     if run_id is not None:
         sql.append("AND run_id = ?")
         args.append(run_id)
@@ -704,11 +723,78 @@ def load_groups() -> dict[str, list[str]]:
                 return data
         except (ValueError, OSError):
             log.warning("room_groups.json unreadable — using defaults")
-    return dict(ROOM_GROUPS)
+    # A fresh set of lists, not a shallow copy: dict() would share the list
+    # objects with the module constant, so an editor mutating a group in place
+    # would rewrite app.config.ROOM_GROUPS for the life of the process.
+    return {name: list(rooms) for name, rooms in ROOM_GROUPS.items()}
 
 
 def save_groups(groups: dict[str, list[str]]) -> None:
-    GROUPS_PATH.write_text(json.dumps(groups, indent=2), encoding="utf-8")
+    """Replace the group set, atomically.
+
+    Written to a sibling temp file and moved into place. A plain write that is
+    interrupted — a crash, a full disk — leaves truncated JSON behind, and
+    load_groups rejects unparseable JSON in favour of the built-in defaults, so
+    the failure mode of a half-write is losing *every* user group at once.
+    os.replace is atomic within a filesystem, so a reader sees the old file or
+    the new one, never a partial one.
+    """
+    tmp = GROUPS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(groups, indent=2), encoding="utf-8")
+    os.replace(tmp, GROUPS_PATH)
+
+
+def valid_groups(groups: Any) -> bool:
+    """Is this a usable group map? A dict of name -> list of room numbers."""
+    if not isinstance(groups, dict) or not groups:
+        return False
+    for name, rooms in groups.items():
+        if not isinstance(name, str) or not name.strip():
+            return False
+        if not isinstance(rooms, list):
+            return False
+        if not all(isinstance(r, str) and r.strip() for r in rooms):
+            return False
+    return True
+
+
+# ── Saved filter presets ─────────────────────────────────────────────────
+
+PRESETS_KEY = "filter_presets"
+PRESET_LIMIT = 20
+
+
+def load_presets() -> list[dict[str, Any]]:
+    """Saved filter sets, newest last. Never raises — a bad blob reads empty."""
+    raw = get_kv(PRESETS_KEY, [])
+    if not isinstance(raw, list):
+        log.warning("presets: expected a list, got %s — ignoring", type(raw))
+        return []
+    out = []
+    for item in raw:
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            filters = item.get("filters")
+            out.append({
+                "name": item["name"],
+                "filters": filters if isinstance(filters, dict) else {},
+            })
+    return out[:PRESET_LIMIT]
+
+
+def save_preset(name: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+    """Add a preset, or overwrite the one with the same name. Name-insensitive."""
+    presets = [p for p in load_presets() if p["name"] != name]
+    presets.append({"name": name, "filters": filters})
+    # Oldest first, so the newest arrival is the one dropped at the cap.
+    presets = presets[-PRESET_LIMIT:]
+    set_kv(PRESETS_KEY, presets)
+    return presets
+
+
+def delete_preset(name: str) -> list[dict[str, Any]]:
+    presets = [p for p in load_presets() if p["name"] != name]
+    set_kv(PRESETS_KEY, presets)
+    return presets
 
 
 def room_display(room: str) -> str:

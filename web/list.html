@@ -150,7 +150,10 @@ function renderStats(){
     '<div class="stat"><div class="stat-l">Days</div><div class="stat-v">'+days.size+'</div></div>';
 }
 
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+// The `"` matters: this page interpolates esc() into attributes (title=,
+// data-*, and the JSON payload copyCard is handed), where an unescaped quote
+// ends the attribute and the rest of the value becomes markup.
+function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function fmtT(iso){if(!iso)return'?';const d=new Date(iso);return d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',hour12:true});}
 function fmtDur(s,e){if(!s||!e)return'—';const ms=new Date(e)-new Date(s);const h=Math.floor(ms/36e5);const m=Math.round((ms%36e5)/6e4);return h>0?(m>0?h+'h'+m+'m':h+'h'):(m+'m');}
 function fmtDay(iso){if(!iso)return'';return new Date(iso+'T12:00:00').toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
@@ -224,15 +227,34 @@ function render(){
 document.addEventListener('keydown',e=>{if(document.activeElement.tagName==='INPUT'||document.activeElement.tagName==='SELECT')return;if(e.key==='/'){e.preventDefault();document.getElementById('search').focus();}});
 
 // ── BOOT ──
+// A link copied out of the calendar should land here the same way, so this page
+// reads the same rooms / q / groups parameters. Only those three: list.html has
+// no floor, capacity, equipment or free-at controls, and the filter panel is
+// deliberately not duplicated here — that would be a second implementation of
+// everything, for the secondary page.
+function readURL(){
+  const p=new URLSearchParams(location.search);
+  const rooms=p.get('rooms');
+  if(rooms)rooms.split(',').filter(r=>ROOMS.includes(r)).forEach(r=>tags.push({type:'room',value:r}));
+  const groups=p.get('groups');
+  if(groups)groups.split(',').filter(g=>GROUPS[g]).forEach(g=>activeGroups.add(g));
+  const q=p.get('q');
+  if(q)document.getElementById('search').value=q;
+}
 (async function boot(){
   try{
     const r=await fetch('/api/bootstrap');
     if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
     EVENTS=d.events||[];ROOMS=d.rooms||[];GROUPS=d.groups||{};
-    GROUPS.Classroom=[...(GROUPS.North||[]),...(GROUPS.South||[])];
+    // GROUPS.Classroom was synthesized here as North ∪ South, which made the
+    // config's own entry dead data and silently reverted any edit to the group.
+    // The union lives in app/config.py now; the server is the source.
     buildRoomFilter();
     renderStats();
+    readURL();
+    syncGroupBtns();
+    renderTags();
   }catch(e){
     document.getElementById('list').innerHTML='<div class="empty">Could not load bookings: '+e.message+'</div>';
     return;

@@ -9,12 +9,12 @@ authentication because there is no remote surface.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
-from app import store
+from app import avail, store
 from app.config import APP_NAME, WEB_DIR, log
 from app.ics import build_ics
 from app.rooms import floor_sort_key
@@ -84,10 +84,37 @@ def create_app(orchestrator: Any) -> Flask:
     @app.post("/api/room-groups")
     def api_set_groups() -> Any:
         payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return jsonify({"error": "expected a JSON object"}), 400
+        # Validated, not merely type-checked. load_groups has no merge, so
+        # whatever arrives here *becomes* the whole set — anything malformed
+        # that got written would take every user group with it.
+        if not store.valid_groups(payload):
+            return jsonify({"error": "expected {name: [room, ...]}"}), 400
         store.save_groups(payload)
         return jsonify({"status": "ok", "groups": payload})
+
+    @app.get("/api/presets")
+    def api_get_presets() -> Any:
+        return jsonify({"presets": store.load_presets()})
+
+    @app.post("/api/presets")
+    def api_save_preset() -> Any:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "expected a JSON object"}), 400
+        name = (payload.get("name") or "").strip()
+        filters = payload.get("filters")
+        if not name or len(name) > 60:
+            return jsonify({"error": "name must be 1-60 characters"}), 400
+        if not isinstance(filters, dict):
+            return jsonify({"error": "expected a filters object"}), 400
+        return jsonify({"status": "ok", "presets": store.save_preset(name, filters)})
+
+    @app.delete("/api/presets")
+    def api_delete_preset() -> Any:
+        name = (request.args.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        return jsonify({"status": "ok", "presets": store.delete_preset(name)})
 
     @app.get("/api/autocomplete")
     def autocomplete() -> Any:
@@ -107,14 +134,39 @@ def create_app(orchestrator: Any) -> Flask:
 
     @app.get("/api/today")
     def today() -> Any:
-        """Per-room availability for today — booked vs free, with the next slot."""
-        now = datetime.now()
-        today_iso = now.strftime("%Y-%m-%d")
-        all_events = store.get_events()
-        events = [e for e in all_events if e.get("date") == today_iso]
+        """
+        Per-room availability at an instant — booked vs free, with the next slot.
 
-        # Seed every known room, not just the ones with a booking today.
-        # Building this map from today's bookings alone meant a room with a
+        Answers two questions through one predicate: the sidebar's Free Right
+        Now, which passes nothing, and the filter panel's "free at a time",
+        which passes the viewed date, a clock time and a length. Both go through
+        app.avail, so the two cannot drift apart.
+        """
+        now = datetime.now()
+        date_arg = request.args.get("date") or ""
+        at_arg = request.args.get("at") or ""
+        try:
+            # Either may be omitted on its own: a date with no time means "as of
+            # now, on that date", and a time with no date means "today, then".
+            when = datetime.fromisoformat(
+                f"{date_arg or f'{now:%Y-%m-%d}'}T{at_arg or f'{now:%H:%M}'}:00"
+            )
+        except ValueError:
+            return jsonify({"error": "date is YYYY-MM-DD, at is HH:MM"}), 400
+
+        # Absent or zero means the point in time itself, which is what Free
+        # Right Now asks and what the old implementation did. A window is
+        # capped at a day because that is the longest the question is meaningful
+        # for — the payload it filters is one date's bookings.
+        minutes = max(0, min(request.args.get("for", 0, type=int) or 0, 24 * 60))
+        when_iso = when.isoformat()
+        day_iso = when.strftime("%Y-%m-%d")
+
+        all_events = store.get_events()
+        events = [e for e in all_events if e.get("date") == day_iso]
+
+        # Seed every known room, not just the ones with a booking that day.
+        # Building this map from the day's bookings alone meant a room with a
         # completely empty day was absent from the response entirely — so the
         # emptiest rooms, the ones you actually want, were the ones missing.
         by_room: dict[str, list[dict[str, Any]]] = {
@@ -123,16 +175,13 @@ def create_app(orchestrator: Any) -> Flask:
         for ev in events:
             by_room.setdefault(ev["room"], []).append(ev)
 
-        now_iso = now.isoformat()
+        until_iso = (when + timedelta(minutes=minutes)).isoformat()
         rooms = []
         for room, bookings in by_room.items():
             bookings.sort(key=lambda e: e.get("start") or "")
-            current = next(
-                (b for b in bookings
-                 if (b.get("start") or "") <= now_iso < (b.get("end") or "")),
-                None,
-            )
-            upcoming = [b for b in bookings if (b.get("start") or "") > now_iso]
+            current = (avail.busy_between(bookings, when_iso, until_iso) if minutes
+                       else avail.busy_at(bookings, when_iso))
+            upcoming = [b for b in bookings if (b.get("start") or "") > when_iso]
             rooms.append({
                 "room": room,
                 "status": "booked" if current else "free",
@@ -145,7 +194,9 @@ def create_app(orchestrator: Any) -> Flask:
 
         rooms.sort(key=lambda r: (r["status"] != "booked", r["room"]))
         return jsonify({
-            "date": today_iso,
+            "date": day_iso,
+            "at": when_iso,
+            "minutes": minutes,
             "total_bookings": len(events),
             "free": sum(1 for r in rooms if r["status"] == "free"),
             "booked": sum(1 for r in rooms if r["status"] == "booked"),
@@ -199,6 +250,9 @@ def create_app(orchestrator: Any) -> Flask:
         # false on a full-table response.
         raw = request.args.get("limit", 200, type=int)
         limit = min(raw, 2000) if raw and raw > 0 else 200
+        # An empty `rooms` means "no restriction", so it is omitted rather than
+        # passed as a list — the same trap get_events documents.
+        rooms = [r for r in (request.args.get("rooms") or "").split(",") if r]
         rows = store.get_changes(
             since=request.args.get("since"),
             kind=request.args.get("kind"),
@@ -206,6 +260,8 @@ def create_app(orchestrator: Any) -> Flask:
             run_id=request.args.get("run_id", type=int),
             include_backfill=request.args.get("include_backfill") == "1",
             limit=limit,
+            q=request.args.get("q") or None,
+            rooms=rooms or None,
         )
         return jsonify({
             "since": request.args.get("since"),
