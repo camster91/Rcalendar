@@ -142,6 +142,17 @@ def seeded_presets() -> None:
                                "free": "afternoon", "panopto": "yes"})
 
 
+def seeded_groups() -> None:
+    """Two groups with a deliberately awkward name.
+
+    The list page hardcoded its group buttons, so a group that exists only in
+    the config had no button at all. The apostrophe is the other half: the
+    buttons used to interpolate the name into an onclick attribute, where a
+    quote in the name breaks out of the string.
+    """
+    store.save_groups({"North": ["142"], "Dean's Suite": ["157"]})
+
+
 # ── Browser harness ──────────────────────────────────────────────────────
 
 # assertable clipboard: navigator.clipboard needs permissions and a secure
@@ -583,6 +594,162 @@ def test_free_at_note_describes_the_span(browser, base: str) -> None:
         page.close()
 
 
+# ── list.html ────────────────────────────────────────────────────────────
+# The secondary page was a stale fork of the calendar that predated several
+# fixes, which is why it is tested at all: nothing loaded it, so nothing
+# noticed. These cover the defects that fork had.
+
+def test_list_has_a_url_and_the_links_carry_it(browser, base: str) -> None:
+    """list.html had no writeURL at all.
+
+    The URL never changed as you filtered, so it could not be copied or
+    bookmarked, and both export links and the tab across to the calendar were
+    fixed hrefs — a .ics download ignored every filter you had set.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        check("list: opens with an empty query", param(page, "rooms"), None)
+        page.select_option("#roomFilter", "142")
+        check("list: selecting a room writes it to the URL",
+              param(page, "rooms"), "142")
+        check("list: the .ics link carries the filter",
+              exports(page).get("/download/ics"), "/download/ics?rooms=142")
+        check("list: and so does the tab back to the calendar",
+              page.eval_on_selector("#tab-cal", "el => el.getAttribute('href')"),
+              "/?rooms=142")
+    finally:
+        page.close()
+
+
+def test_list_select_and_tags_are_one_filter(browser, base: str) -> None:
+    """They were two filters that ANDed, so combining them selected nothing.
+
+    The <select> ANDed against the OR'd room tags. Picking room 142 in the
+    dropdown and room 157 from the search results asked for bookings in 142 and
+    in 157 — which is no booking at all. There is one selection now, and both
+    controls write it.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        check("list: the corpus is the six seeded bookings",
+              events_shown(page), 6)
+        page.select_option("#roomFilter", "142")
+        check("list: the dropdown narrows to that room", events_shown(page), 2)
+
+        page.evaluate("() => addTag('room','157')")
+        check("list: picking another room moves the selection, not ANDs it",
+              events_shown(page), 1)
+        check("list: the dropdown follows the tag",
+              page.eval_on_selector("#roomFilter", "el => el.value"), "157")
+    finally:
+        page.close()
+
+
+def test_list_groups_come_from_the_config(browser, base: str) -> None:
+    """The group buttons were hardcoded, so a configured group had none.
+
+    Built from GROUPS as DOM nodes with listeners. The apostrophe in the seeded
+    group name is the reason for that: the old buttons interpolated the name
+    into an onclick attribute, where a quote in it ends the attribute.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        labels = page.evaluate(
+            "() => [...document.querySelectorAll('#gbar .gb')]"
+            ".map(b => b.textContent)"
+        )
+        ok("list: every configured group has a button",
+           "North" in labels and "Dean's Suite" in labels)
+        ok("list: plus the All button", "All" in labels)
+
+        page.evaluate(
+            """() => [...document.querySelectorAll('#gbar .gb')]
+                 .find(b => b.textContent === 'North').click()"""
+        )
+        check("list: a group button filters to its rooms",
+              events_shown(page), 2)
+    finally:
+        page.close()
+
+
+def test_list_renders_an_all_day_block_as_all_day(browser, base: str) -> None:
+    """Its cardHTML had no all-day branch, unlike the calendar's.
+
+    Without it a service block printed "12:00 a.m. → 11:00 p.m. (23h)", which
+    reads as a real 23-hour booking.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        when = page.evaluate(
+            """() => {
+                 const c = [...document.querySelectorAll('.evcard')]
+                   .find(el => el.textContent.includes('RENOVATIONS'));
+                 return c ? c.querySelector('.etime').textContent.trim() : null;
+               }"""
+        )
+        check("list: an all-day block says All day", when, "All day")
+    finally:
+        page.close()
+
+
+def test_list_copies_a_real_date(browser, base: str) -> None:
+    """Its fmtDay had no full-timestamp guard, so the clipboard got "Invalid Date".
+
+    ev.start is a full ISO timestamp, and appending T12:00:00 to one produces
+    "Invalid Date" — which is what copyCard was putting on the clipboard. The
+    guard lives in the shared fmtDay now.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        page.evaluate(
+            """() => copyCard({room:'142', title:'RSM 6307', description:'',
+                 start:'2026-03-10T09:00:00', end:'2026-03-10T12:00:00'})"""
+        )
+        copied = page.evaluate("() => window.__copied") or ""
+        ok("list: the copied card is not 'Invalid Date'", "Invalid" not in copied)
+        ok("list: and names the day", "Mar 10" in copied)
+    finally:
+        page.close()
+
+
+def test_list_reads_the_calendars_link(browser, base: str) -> None:
+    """A link from the calendar lands on the same bookings, and on the same count.
+
+    The calendar's tab now carries rooms/groups/q, and this page reads them
+    through the same parseFilters and applies them with the same AND-across /
+    OR-within rule, so the two cannot disagree about what a filter means. That
+    rule was the other half of the select-vs-tags defect: this page OR'd
+    everything together, so a room and a search term widened each other instead
+    of narrowing.
+    """
+    page = open_page(browser, base, "/list?rooms=142,147")
+    try:
+        # Two rooms is either, so this is 142's two bookings plus 147's two.
+        check("list: two rooms select either", events_shown(page), 4)
+    finally:
+        page.close()
+
+    page = open_page(browser, base, "/list?rooms=142,147&q=rsm")
+    try:
+        # The search text is a filter, so it narrows the rooms rather than
+        # widening them: only 142's "RSM 6307" matches.
+        check("list: the search text narrows the rooms",
+              events_shown(page), 1)
+        check("list: the search text is in the box",
+              page.eval_on_selector("#search", "el => el.value"), "rsm")
+    finally:
+        page.close()
+
+    # The same URL on the calendar must give the same answer, or a copied link
+    # means two different things depending on which page opens it.
+    page = open_page(browser, base, "/?rooms=142,147&q=rsm")
+    try:
+        check("calendar: the same link gives the same answer",
+              events_shown(page), 1)
+    finally:
+        page.close()
+
+
 # ── Runner ───────────────────────────────────────────────────────────────
 
 # Listed rather than called one by one so the run can report a crash as a
@@ -604,6 +771,12 @@ TESTS = [
     test_free_at_is_per_day_for_a_single_day_window,
     test_free_at_clears_the_rooms_booked_that_day,
     test_free_at_note_describes_the_span,
+    test_list_has_a_url_and_the_links_carry_it,
+    test_list_select_and_tags_are_one_filter,
+    test_list_groups_come_from_the_config,
+    test_list_renders_an_all_day_block_as_all_day,
+    test_list_copies_a_real_date,
+    test_list_reads_the_calendars_link,
 ]
 
 
@@ -626,6 +799,7 @@ def main() -> int:
     store.init_db()
     seeded()
     seeded_presets()
+    seeded_groups()
 
     try:
         from playwright.sync_api import sync_playwright

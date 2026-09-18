@@ -254,7 +254,7 @@ a.vtab{display:inline-flex;align-items:center}
       <button class="vtab" id="v-week" onclick="setView('week')">📊 Week</button>
       <button class="vtab on" id="v-today" onclick="setView('today')">📋 Today</button>
       <button class="vtab" id="v-changes" onclick="setView('changes')">🔀 Changes</button>
-      <a class="vtab" href="/list">☰ List</a>
+      <a class="vtab" id="tab-list" href="/list">☰ List</a>
     </div>
     <button class="btn btn-a" id="scrapeBtn" onclick="triggerScrape()" title="Scrape LSM now">⟳</button>
     <a class="btn btn-g" data-export="/download/ics" href="/download/ics" title="Export the current view">⬇ .ics</a>
@@ -1537,6 +1537,16 @@ function syncExportLinks(){
       +(activeRooms.size<ROOMS.length?' · '+activeRooms.size+' rooms':'')
       +(searchQ?' · matching “'+searchQ+'”':'');
   });
+  // The tab across to the list carries the same filters. It used to be a fixed
+  // href, so opening the list from a filtered calendar silently showed every
+  // booking — the one direction of the trip that did not work. Only the
+  // parameters the list can read: it has no floor, capacity or free-at control.
+  const lp=[];
+  if(activeRooms.size&&activeRooms.size<ROOMS.length)
+    lp.push('rooms='+encodeURIComponent([...activeRooms].join(',')));
+  if(activeGroups.size)lp.push('groups='+encodeURIComponent([...activeGroups].join(',')));
+  if(searchQ)lp.push('q='+encodeURIComponent(searchQ));
+  document.getElementById('tab-list').href='/list'+(lp.length?'?'+lp.join('&'):'');
 }
 
 async function boot(){
