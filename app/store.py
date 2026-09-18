@@ -15,7 +15,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Sequence
 
 from app.config import DB_PATH, GROUPS_PATH, ROOM_GROUPS, ROOMS_PATH, log
 
@@ -278,6 +278,7 @@ def get_events(
     date_to: str | None = None,
     include_cancelled: bool = False,
     limit: int = 20_000,
+    rooms: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     sql = ["SELECT * FROM events WHERE 1=1"]
     args: list[Any] = []
@@ -286,6 +287,11 @@ def get_events(
     if room:
         sql.append("AND room = ?")
         args.append(room)
+    if rooms:
+        # A room filter with nothing selected means "no restriction", not
+        # "match nothing" — the UI sends an empty set when every room is on.
+        sql.append(f"AND room IN ({','.join('?' for _ in rooms)})")
+        args += list(rooms)
     if date:
         sql.append("AND date = ?")
         args.append(date)

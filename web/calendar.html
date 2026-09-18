@@ -18,7 +18,8 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .bar-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .vtabs{display:flex;gap:2px;background:var(--sf2);border-radius:var(--rs);padding:2px}
-.vtab{padding:6px 14px;border-radius:6px;font-size:.88rem;font-weight:500;color:var(--tx2);cursor:pointer;border:none;background:none;transition:.15s}
+.vtab{padding:6px 14px;border-radius:6px;font-size:.88rem;font-weight:500;color:var(--tx2);cursor:pointer;border:none;background:none;transition:.15s;text-decoration:none}
+a.vtab{display:inline-flex;align-items:center}
 .vtab:hover{color:var(--tx)}.vtab.on{background:var(--ac);color:#fff}
 .badge{padding:4px 10px;border-radius:99px;font-size:.8rem;font-weight:600}
 .bg-bl{background:var(--acg);color:var(--ac)}.bg-gr{background:var(--sf2);color:var(--tx2)}
@@ -190,10 +191,11 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
       <button class="vtab" id="v-month" onclick="setView('month')">📅 Month</button>
       <button class="vtab" id="v-week" onclick="setView('week')">📊 Week</button>
       <button class="vtab on" id="v-today" onclick="setView('today')">📋 Today</button>
+      <a class="vtab" href="/list">☰ List</a>
     </div>
     <button class="btn btn-a" onclick="triggerScrape()">⟳</button>
-    <a class="btn btn-g" href="/download/ics">⬇ .ics</a>
-    <a class="btn" href="/download/json">⬇ JSON</a>
+    <a class="btn btn-g" data-export="/download/ics" href="/download/ics" title="Export the current view">⬇ .ics</a>
+    <a class="btn" data-export="/download/json" href="/download/json" title="Export the current view">⬇ JSON</a>
   </div>
 </div>
 
@@ -377,7 +379,11 @@ function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room);const bc=ev.roo
   return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r)+'"></span>'+r).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
 
 // ── RENDER ──
-function render(){if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else renderToday();}
+// The export links depend on the view and the date being shown, both of which
+// change without going through applyFilters() — setView(), nav() and goToday()
+// all call render() directly, so hanging the sync off the filter pass left the
+// month view advertising today's single-day export.
+function render(){syncExportLinks();if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else renderToday();}
 
 function renderMonth(){
   const y=curDate.getFullYear(),m=curDate.getMonth(),first=new Date(y,m,1),last=new Date(y,m+1,0),so=first.getDay(),td=last.getDate(),now=new Date();
@@ -544,6 +550,41 @@ async function loadFree(){
 }
 
 function freePick(room){activeRooms=new Set([room]);syncChips();applyFilters();setView('today');}
+
+// The date span currently on screen, as [from, to] ISO dates.
+function viewWindow(){
+  const y=curDate.getFullYear(),m=curDate.getMonth();
+  if(viewMode==='month'){
+    const last=new Date(y,m+1,0);
+    return [fmtISO(new Date(y,m,1)),fmtISO(last)];
+  }
+  if(viewMode==='week'){
+    const sow=new Date(curDate);sow.setDate(curDate.getDate()-curDate.getDay());
+    const eow=new Date(sow);eow.setDate(sow.getDate()+6);
+    return [fmtISO(sow),fmtISO(eow)];
+  }
+  return [fmtISO(curDate),fmtISO(curDate)];
+}
+function fmtISO(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+
+// Keep the download links pointing at what is on screen, so ".ics" means
+// "export this view" rather than "export everything, every time".
+function syncExportLinks(){
+  if(!ROOMS.length)return;
+  const p=[];
+  if(activeRooms.size&&activeRooms.size<ROOMS.length)
+    p.push('rooms='+encodeURIComponent([...activeRooms].join(',')));
+  if(searchQ)p.push('q='+encodeURIComponent(searchQ));
+  const w=viewWindow();
+  p.push('from='+w[0],'to='+w[1]);
+  const qs='?'+p.join('&');
+  document.querySelectorAll('[data-export]').forEach(a=>{
+    a.href=a.dataset.export+qs;
+    a.title='Export '+(viewMode==='today'?'this day':viewMode==='week'?'this week':'this month')
+      +(activeRooms.size<ROOMS.length?' · '+activeRooms.size+' rooms':'')
+      +(searchQ?' · matching “'+searchQ+'”':'');
+  });
+}
 
 async function boot(){
   try{

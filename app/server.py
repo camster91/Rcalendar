@@ -207,7 +207,7 @@ def create_app(orchestrator: Any) -> Flask:
 
     @app.get("/download/ics")
     def download_ics() -> Any:
-        events = store.get_events()
+        events = _download_events()
         body = build_ics(events)
         return Response(
             body,
@@ -217,7 +217,7 @@ def create_app(orchestrator: Any) -> Flask:
 
     @app.get("/download/json")
     def download_json() -> Any:
-        events = store.get_events()
+        events = _download_events()
         payload = {
             "generated_at": datetime.now().isoformat(),
             "total_events": len(events),
@@ -244,6 +244,23 @@ def create_app(orchestrator: Any) -> Flask:
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
+
+def _download_events() -> list[dict[str, Any]]:
+    """Events for a download, narrowed by whatever the caller is looking at.
+
+    Both download endpoints used to ignore the UI's filters entirely, so
+    "download .ics" always exported the whole four-month database no matter
+    what was on screen. They now accept the same room, text and date
+    narrowing the calendar applies, and no parameters still means everything.
+    """
+    rooms = [r for r in (request.args.get("rooms") or "").split(",") if r]
+    return store.get_events(
+        rooms=rooms or None,
+        q=request.args.get("q") or None,
+        date_from=request.args.get("from") or None,
+        date_to=request.args.get("to") or None,
+    )
+
 
 def _active_rooms(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Rooms that actually appear in current data, sorted by floor then name."""
