@@ -198,8 +198,25 @@ function render(){
   const listEl=document.getElementById('list');
   if(!evts.length){listEl.innerHTML='<div class="empty" style="font-size:1.1rem">📭 No events match your filters</div>';document.getElementById('pgn').innerHTML='';return;}
   let html='',lastDay='';
-  pe.forEach(e=>{const d=(e.start||'').slice(0,10);if(d!==lastDay&&sortKey==='time'){lastDay=d;const dayObj=new Date(d+'T12:00:00');const dc=evts.filter(x=>(x.start||'').slice(0,10)===d).length;html+='<div class="daysep"><span>'+dayObj.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+'</span><span class="dc">'+dc+' events</span></div>';}});
-  merged.forEach(ev=>{html+=cardHTML(ev);});
+  if(sortKey==='time'){
+    // One pass, so each day heading lands directly above that day's cards.
+    // This was two passes over the same page — every separator first, then
+    // every card — which stacked all the headings at the top of the list,
+    // decoupled from the bookings they name.
+    const dc={};
+    merged.forEach(ev=>{const d=(ev.start||'').slice(0,10);if(d)dc[d]=(dc[d]||0)+1;});
+    merged.forEach(ev=>{
+      const d=(ev.start||'').slice(0,10);
+      if(d&&d!==lastDay){
+        lastDay=d;
+        const n=dc[d];
+        html+='<div class="daysep"><span>'+new Date(d+'T12:00:00').toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'})+'</span><span class="dc">'+n+(n===1?' event':' events')+'</span></div>';
+      }
+      html+=cardHTML(ev);
+    });
+  }else{
+    merged.forEach(ev=>{html+=cardHTML(ev);});
+  }
   listEl.innerHTML=html;
   if(tp>1){let pg='<button class="pb" onclick="page--;render()"'+(page===0?' disabled':'')+'>◀</button>';const ms=5;let ps=Math.max(0,page-2),pe2=Math.min(tp,ps+ms);if(pe2-ps<ms)ps=Math.max(0,pe2-ms);for(let i=ps;i<pe2;i++)pg+='<button class="pb'+(i===page?' on':'')+'" onclick="page='+i+';render()">'+(i+1)+'</button>';pg+='<button class="pb" onclick="page++;render()"'+(page>=tp-1?' disabled':'')+'>▶</button>';pg+='<span style="font-size:.78rem;color:var(--tx3);margin-left:8px">'+evts.length+' events</span>';document.getElementById('pgn').innerHTML=pg;}else{document.getElementById('pgn').innerHTML='';}
 }
