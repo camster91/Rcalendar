@@ -361,14 +361,16 @@ def interactive_login(on_status=None) -> SessionState:
                 saw_login = False
                 stable_since = None
                 signed_in = False
+                closed_early = False
 
                 while time.monotonic() < deadline:
                     if page.is_closed():
-                        return SessionState(
-                            "expired",
-                            message="The sign-in window was closed before "
-                                    "sign-in finished.",
-                        )
+                        # Closing the window is a perfectly normal way to
+                        # finish — the session may well be signed in. Do not
+                        # call it a failure here; fall out and let the probe
+                        # below decide.
+                        closed_early = True
+                        break
                     url = page.url
                     step = login_progress(url, start_sid, saw_login)
                     if step == "login":
@@ -392,31 +394,35 @@ def interactive_login(on_status=None) -> SessionState:
                         stable_since = None
                     page.wait_for_timeout(1000)
 
-                if not signed_in:
-                    return SessionState(
-                        "expired",
-                        message="Timed out waiting for sign-in. Try again.",
-                    )
-
-                page.wait_for_timeout(2000)
-                _save_cookies(ctx)
+                if signed_in:
+                    # Give the portal a moment to finish writing cookies
+                    # before the context goes away.
+                    page.wait_for_timeout(2000)
+                    _save_cookies(ctx)
         except Exception as exc:
             log.exception("interactive login failed")
             return SessionState("error", message=str(exc))
 
-    # The window is closed. Prove the session actually works rather than
-    # trusting the URL it ended on — that is what let the earlier false
+    # The window is closed or gone. Prove the session actually works rather
+    # than trusting the URL it ended on — that is what let the earlier false
     # positive report success while the very next call found it expired.
     state = probe(headless=True)
-    if not state.ok:
-        log.info("login window closed but the session did not stick (%s)", state.state)
-        return SessionState(
-            "expired",
-            message="The browser reached LSM but the session did not stick. "
-                    "Try again.",
-        )
-    log.info("interactive login verified by probe")
-    return SessionState("ok", session_id=state.session_id, message="Signed in")
+    if state.ok:
+        log.info("interactive login verified by probe")
+        return SessionState("ok", session_id=state.session_id, message="Signed in")
+
+    log.info("login window ended without a usable session (%s, closed_early=%s)",
+             state.state, closed_early)
+    if closed_early:
+        message = ("The sign-in window was closed before sign-in finished.")
+    elif signed_in:
+        # We thought we landed, but LSM disagrees — say so plainly instead of
+        # repeating "try again" and letting the user wonder what happened.
+        message = ("The browser reached LSM but the session did not stick. "
+                   "Try again.")
+    else:
+        message = "Timed out waiting for sign-in. Try again."
+    return SessionState("expired", message=message)
 
 
 def ensure_session(interactive: bool = False, on_status=None) -> SessionState:

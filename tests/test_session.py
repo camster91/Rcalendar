@@ -96,6 +96,43 @@ def test_junk() -> None:
           "waiting")
 
 
+def test_snapshot_guard() -> None:
+    print("\na snapshot with no Shibboleth cookie is never written")
+    import tempfile
+    from pathlib import Path as _Path
+
+    from app import session
+
+    class FakeCtx:
+        def __init__(self, cookies):
+            self._c = cookies
+
+        def cookies(self):
+            return self._c
+
+    def cookie(name):
+        return {"name": name, "value": "x", "domain": "lsm.utoronto.ca", "path": "/"}
+
+    real = session.SESSION_FILE
+    with tempfile.TemporaryDirectory() as tmp:
+        target = _Path(tmp) / "session.bin"
+        session.SESSION_FILE = target
+        try:
+            # The fingerprint of the reported bug: six cookies, none of them
+            # Shibboleth. Writing this would clobber a working snapshot with
+            # one that can never restore a session.
+            session._save_cookies(FakeCtx([cookie("ORA_WWV_APP_143"),
+                                           cookie("JSESSIONID")]))
+            check("no shibboleth -> nothing written", target.exists(), False)
+
+            # But a real one must still be saved.
+            session._save_cookies(FakeCtx([cookie("_shibsession_6465666"),
+                                           cookie("JSESSIONID")]))
+            check("shibboleth present -> written", target.exists(), True)
+        finally:
+            session.SESSION_FILE = real
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — sign-in window tests")
@@ -105,6 +142,7 @@ def main() -> int:
     test_login_page()
     test_arrival()
     test_junk()
+    test_snapshot_guard()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")
