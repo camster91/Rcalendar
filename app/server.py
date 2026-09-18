@@ -9,7 +9,7 @@ authentication because there is no remote surface.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
@@ -141,6 +141,9 @@ def create_app(orchestrator: Any) -> Flask:
         Now, which passes nothing, and the filter panel's "free at a time",
         which passes the viewed date, a clock time and a length. Both go through
         app.avail, so the two cannot drift apart.
+
+        A `dates` list asks the same window question of many days at once, which
+        is what the month and week views need. See _availability_by_day.
         """
         now = datetime.now()
         date_arg = request.args.get("date") or ""
@@ -163,6 +166,14 @@ def create_app(orchestrator: Any) -> Flask:
         day_iso = when.strftime("%Y-%m-%d")
 
         all_events = store.get_events()
+
+        # Read once, above, and shared: the batch form is the same question
+        # asked of a month of days, and reading the table per day would be a
+        # full scan up to 42 times over.
+        dates_arg = request.args.get("dates")
+        if dates_arg is not None:
+            return _availability_by_day(all_events, dates_arg, when, minutes)
+
         events = [e for e in all_events if e.get("date") == day_iso]
 
         # Seed every known room, not just the ones with a booking that day.
@@ -355,6 +366,80 @@ def _download_events() -> list[dict[str, Any]]:
         date_from=request.args.get("from") or None,
         date_to=request.args.get("to") or None,
     )
+
+
+# The most days one batch request may ask about. A month cell is 42 days at
+# worst, so this covers every view the UI has and still refuses a request that
+# would make the server do unbounded work.
+MAX_DATES = 62
+
+
+def _availability_by_day(
+    all_events: list[dict[str, Any]], dates_arg: str, when: datetime, minutes: int
+) -> Any:
+    """The window question asked of many days, answered per day.
+
+    "Free at 14:00" is asked of the day on screen, but the month and week views
+    draw bookings from every day in the range at once. Answering for the viewed
+    day alone and applying that one set to all of them made a room booked every
+    day of the month read as free: the answer was about the 3rd, and the
+    calendar was showing the whole of September.
+
+    The generalisation is per-day — a booking belongs on screen when its *own*
+    room is free for the window on its *own* day. That is still app.avail, asked
+    once per day, so there is one predicate and one answer, rather than a second
+    implementation in JavaScript that would drift from this one.
+    """
+    days = [d.strip() for d in (dates_arg or "").split(",") if d.strip()]
+    if not days or len(days) > MAX_DATES:
+        return jsonify(
+            {"error": f"dates is 1-{MAX_DATES} comma-separated YYYY-MM-DD dates"}
+        ), 400
+    for d in days:
+        try:
+            # Strict on purpose: "2026-3-1" parses but is not the shape the
+            # client sends, and a batch is the wrong place to guess.
+            if date.fromisoformat(d).isoformat() != d:
+                raise ValueError(d)
+        except ValueError:
+            return jsonify(
+                {"error": "dates is comma-separated YYYY-MM-DD dates"}
+            ), 400
+
+    clock = when.strftime("%H:%M")
+    wanted = set(days)
+    # Seeded with every active room, for the same reason the single-day form
+    # seeds it: a room with nothing booked is free, and it is the one you want.
+    active = [r["room"] for r in _active_rooms(all_events)]
+    by_day: dict[str, dict[str, list[dict[str, Any]]]] = {
+        d: {room: [] for room in active} for d in days
+    }
+    for ev in all_events:
+        # The row's own date — the same field the single-day form buckets on,
+        # so the two cannot disagree about which day a booking belongs to.
+        day = ev.get("date")
+        if day in wanted:
+            by_day[day].setdefault(ev["room"], []).append(ev)
+
+    out: dict[str, Any] = {}
+    for day in days:
+        # The clock time is the caller's; the date is this day's. Asking each
+        # day at its own date is the whole point of the batch.
+        start = datetime.fromisoformat(f"{day}T{clock}:00")
+        start_iso = start.isoformat()
+        end_iso = (start + timedelta(minutes=minutes)).isoformat()
+        free: list[str] = []
+        bookings = 0
+        for room, rows in by_day[day].items():
+            rows.sort(key=lambda e: e.get("start") or "")
+            bookings += len(rows)
+            busy = (avail.busy_between(rows, start_iso, end_iso) if minutes
+                    else avail.busy_at(rows, start_iso))
+            if not busy:
+                free.append(room)
+        out[day] = {"free": sorted(free), "total_bookings": bookings}
+
+    return jsonify({"at": clock, "minutes": minutes, "days": out})
 
 
 def _active_rooms(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
