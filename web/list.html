@@ -399,6 +399,12 @@ function writeURL(){
 // No from/to here, unlike the calendar: this page has no date window, it lists
 // every booking that matches, so the export should be that same set rather than
 // one day of it.
+//
+// groups= is in there because the download endpoints resolve a group name into
+// its rooms. Do not drop it as an unused key: this page filters by group name
+// (the calendar expands a group into rooms instead), so groups= is the *only*
+// way the export learns which group you are looking at, and removing it puts
+// the whole database back in the .ics.
 function syncLinks(qs){
   document.querySelectorAll('[data-export]').forEach(a=>{a.href=a.dataset.export+qs;});
   document.getElementById('tab-cal').href='/'+qs;

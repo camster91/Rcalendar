@@ -435,8 +435,33 @@ def _download_events() -> list[dict[str, Any]]:
     "download .ics" always exported the whole four-month database no matter
     what was on screen. They now accept the same room, text and date
     narrowing the calendar applies, and no parameters still means everything.
+
+    Groups are resolved here rather than by the page. The calendar expands a
+    group into its rooms when you pick it, so its own export links carry rooms
+    and were already right. The list page keeps rooms and groups as separate
+    filters that AND — one mechanism each, which is what stopped the two
+    disagreeing — so its links carry the group *name*, and this endpoint is the
+    only thing that turns a name into rooms. Without that, "download .ics"
+    while looking at the North group returned the entire database: the one
+    filter on the page the download could not see.
     """
     rooms = [r for r in (request.args.get("rooms") or "").split(",") if r]
+    groups = [g for g in (request.args.get("groups") or "").split(",") if g]
+
+    if groups:
+        named = store.load_groups()
+        members = {r for g in groups for r in (named.get(g) or [])}
+        # The intersection, because naming both means both must hold — the same
+        # AND the page applies. With only a group named, its rooms are the
+        # answer.
+        rooms = [r for r in rooms if r in members] if rooms else sorted(members)
+        if not rooms:
+            # An empty list is not "no filter" to get_events — that is the
+            # convention for "every room is selected", which is why the check
+            # is here and not there. A group name that matches no room would
+            # otherwise export the whole database, which is the bug above.
+            return []
+
     return store.get_events(
         rooms=rooms or None,
         q=request.args.get("q") or None,

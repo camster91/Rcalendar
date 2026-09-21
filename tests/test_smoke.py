@@ -434,6 +434,66 @@ def test_cross_site_writes() -> None:
           client.get("/api/bootstrap", headers=evil).status_code, 200)
 
 
+def test_download_groups() -> None:
+    """A group filter has to reach the download, not stop at the page.
+
+    Rooms, text and dates were already accepted by the downloads; groups were
+    not. The calendar expands a group into its rooms in the URL, so its own
+    links worked — but the list page keeps rooms and groups as two separate
+    filters (which is what stopped them ANDing to nothing), so its links carry
+    the group *name*, and nothing turned a name into rooms. A .ics taken while
+    filtered to a group therefore held every booking in the database, which is
+    worse than an absent filter: the file looked like an answer.
+
+    The dangerous direction is asserted too. store.get_events reads an empty
+    room list as "no restriction" — the UI's convention for "every room is
+    on" — so a group name that matches no room would export everything.
+    """
+    print("\ndownload by group")
+
+    client = create_app(StubOrch()).test_client()
+
+    # A day and two rooms no other test uses, so the corpus the rest of this
+    # file leaves behind cannot move these counts.
+    day = "2027-05-03"
+    real_groups = store.load_groups()
+    store.save_groups({"Only9001": ["9001"], "Nowhere": ["99999"]})
+    try:
+        def ev(room: str, title: str) -> dict:
+            return {"title": title, "room": room, "start": f"{day}T09:00",
+                    "end": f"{day}T10:00", "date": day, "description": "",
+                    "class_code": "", "cancelled": False, "all_day": False}
+
+        store.replace_events([ev("9001", "In the group"),
+                              ev("9002", "Not in the group")], day, day)
+
+        def titles(**params) -> list[str]:
+            r = client.get("/download/json", query_string=params)
+            return sorted(e["title"] for e in r.get_json()["events"])
+
+        check("no filter exports both",
+              titles(rooms="9001,9002"), ["In the group", "Not in the group"])
+        check("a group narrows to its rooms", titles(groups="Only9001"),
+              ["In the group"])
+        # Two filters that both hold, the same AND the page applies.
+        check("a room list and a group intersect",
+              titles(groups="Only9001", rooms="9001,9002"), ["In the group"])
+        check("a group that matches no room exports nothing",
+              titles(groups="Nowhere"), [])
+        check("an unknown group name exports nothing",
+              titles(groups="NotAGroup"), [])
+        check("a room list still narrows on its own",
+              titles(rooms="9002"), ["Not in the group"])
+
+        # The file that started this, not just the JSON view of it.
+        r = client.get("/download/ics", query_string={"groups": "Only9001"})
+        ok("the ics is narrowed by the group too", b"In the group" in r.data)
+        ok("...and leaves the other room out",
+           b"Not in the group" not in r.data)
+    finally:
+        store.save_groups(real_groups)
+
+
 def test_ics_uids() -> None:
     """A UID is what a calendar client believes an event *is*.
 
@@ -599,6 +659,7 @@ def main() -> int:
     test_store()
     test_migration()
     test_web()
+    test_download_groups()
     test_cross_site_writes()
     test_ics_uids()
     test_login_detection()

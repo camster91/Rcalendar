@@ -783,6 +783,42 @@ def test_list_badge_reads_the_session(browser, base: str) -> None:
         dead.close()
 
 
+def test_list_group_filter_reaches_the_download(browser, base: str) -> None:
+    """The one filter on the list page the download could not see.
+
+    The list page keeps rooms and groups as two separate filters — one
+    mechanism each, which is what stopped them ANDing to nothing — so unlike
+    the calendar it carries the group *name* in its links instead of expanding
+    it into rooms. Nothing turned a name into rooms, so a .ics taken while
+    filtered to a group held every booking in the database. The link and what
+    it returns are asserted together, because from the page those two look
+    identical when the parameter is right and the server ignores it.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        page.evaluate("() => toggleGroup('North')")
+        check("list: the export link names the group",
+              exports(page).get("/download/ics"), "/download/ics?groups=North")
+
+        # The set the page is showing, against the set the link returns. Counts
+        # rather than a room list, because "the download holds what is on
+        # screen" is the property, not "the download holds room 142".
+        shown = events_shown(page)
+        got = page.evaluate(
+            """async () => {
+                 const a = document.querySelector('[data-export="/download/json"]');
+                 const d = await (await fetch(a.getAttribute('href'))).json();
+                 return d.events.length;
+               }"""
+        )
+        check("list: the download holds the bookings the page is showing",
+              got, shown)
+        ok("list: ...which is the group's rooms, not every booking",
+           shown < 8)
+    finally:
+        page.close()
+
+
 def test_sign_out_is_offered_only_with_a_session(browser, base: str) -> None:
     """POST /api/logout existed, and nothing called it — no page, no tray item.
 
@@ -1325,6 +1361,7 @@ TESTS = [
     test_free_at_clears_the_rooms_booked_that_day,
     test_free_at_note_describes_the_span,
     test_list_has_a_url_and_the_links_carry_it,
+    test_list_group_filter_reaches_the_download,
     test_list_badge_reads_the_session,
     test_sign_out_is_offered_only_with_a_session,
     test_list_select_and_tags_are_one_filter,
