@@ -1,5 +1,6 @@
 """
-End-to-end smoke test: storage round-trip plus every web endpoint.
+End-to-end smoke test: storage round-trip and its migrations, the
+cross-site refusal, and every web endpoint.
 
 Uses Flask's test client and a stub orchestrator, so no browser or LSM
 session is involved. Run directly:
@@ -10,6 +11,7 @@ session is involved. Run directly:
 from __future__ import annotations
 
 import sys
+import sqlite3
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -26,7 +28,7 @@ _tmp = tempfile.mkdtemp(prefix="lsm-test-")
 os.environ["LSM_DATA_DIR"] = _tmp
 
 from app import store  # noqa: E402
-from app.config import DATA_DIR  # noqa: E402
+from app.config import DATA_DIR, DB_PATH  # noqa: E402
 from app.server import create_app  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -146,6 +148,145 @@ def test_store() -> None:
     last = store.last_run()
     check("last run recorded", last["status"], "ok")
     check("last run count", last["events_count"], 7)
+
+
+# The database the rest of the suite uses, so a test that has to build its own
+# can put this back afterwards.
+SHARED_DB = str(DB_PATH)
+
+# The two tables as they looked before all_day existed. Written by hand rather
+# than by importing a retired version of SCHEMA, because the point is a shape
+# this code no longer produces.
+OLD_EVENTS = """
+CREATE TABLE events (
+    uid TEXT PRIMARY KEY, title TEXT NOT NULL, room TEXT NOT NULL,
+    start_iso TEXT, end_iso TEXT, date TEXT, description TEXT,
+    class_code TEXT, cancelled INTEGER NOT NULL DEFAULT 0, scraped_at TEXT NOT NULL
+);
+"""
+OLD_CHANGES = """
+CREATE TABLE changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER, trigger TEXT NOT NULL,
+    kind TEXT NOT NULL, uid TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+    room TEXT NOT NULL DEFAULT '', start_iso TEXT, end_iso TEXT, date TEXT,
+    description TEXT NOT NULL DEFAULT '', class_code TEXT NOT NULL DEFAULT '',
+    detected_at TEXT NOT NULL
+);
+"""
+
+
+def use_db(path) -> None:
+    """Point store at a different database file, dropping the cached connection."""
+    store._local.conn = None
+    store.DB_PATH = str(path)
+
+
+def use_shared_db() -> None:
+    use_db(SHARED_DB)
+
+
+def columns(table: str) -> set:
+    return {row["name"]
+            for row in store._conn().execute(f"PRAGMA table_info({table})")}
+
+
+def test_migration() -> None:
+    """A database from before all_day existed has to come back usable.
+
+    CREATE TABLE IF NOT EXISTS does nothing when the table is already there, so
+    a new column is only ever added by the explicit retrofit in _migrate. Miss
+    it and an older database keeps its old shape, and every INSERT that names
+    the column fails — which is every scrape, not only the ones that found a
+    change, so the app looks broken rather than merely incomplete.
+
+    This runs against its own database files, because the rest of the suite is
+    using the shared one.
+    """
+    print("\nmigration")
+
+    def fresh(name: str) -> Path:
+        d = Path(tempfile.mkdtemp(prefix=f"lsm-mig-{name}-"))
+        return d / "calendar.db"
+
+    # A brand-new database. This also pins the order inside init_db: _migrate
+    # reads PRAGMA table_info, which returns nothing for a table that does not
+    # exist, so running it before executescript would try to ALTER a missing
+    # table and fail the whole of init_db.
+    use_db(fresh("new"))
+    store.init_db()
+    check("a new database has events.all_day", "all_day" in columns("events"), True)
+    check("a new database has changes.all_day",
+          "all_day" in columns("changes"), True)
+
+    # Running it again must be a no-op rather than an error: every launch calls
+    # init_db, and "duplicate column name" would break the second one.
+    try:
+        store.init_db()
+        check("a second init_db is a no-op", True, True)
+    except Exception as exc:
+        check("a second init_db is a no-op", f"{type(exc).__name__}: {exc}", True)
+
+    # The old shape, with a row in each table so the retrofit is shown to keep
+    # the data rather than merely to add a column.
+    db = fresh("old")
+    conn = sqlite3.connect(db)
+    conn.executescript(OLD_EVENTS)
+    conn.executescript(OLD_CHANGES)
+    conn.execute(
+        "INSERT INTO events (uid,title,room,start_iso,end_iso,date,description,"
+        "class_code,cancelled,scraped_at) VALUES "
+        "('u1','Old Booking','142','2026-03-10T09:00:00','2026-03-10T12:00:00',"
+        "'2026-03-10','','',0,'2026-03-01T06:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO changes (trigger,kind,uid,title,room,start_iso,end_iso,date,"
+        "detected_at) VALUES "
+        "('manual','added','u1','Old Booking','142','2026-03-10T09:00:00',"
+        "'2026-03-10T12:00:00','2026-03-10','2026-03-01T06:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    use_db(db)
+    store.init_db()
+    check("an old database gains events.all_day",
+          "all_day" in columns("events"), True)
+    check("an old database gains changes.all_day",
+          "all_day" in columns("changes"), True)
+
+    # The rows are still there, and the new column has its default rather than
+    # NULL — a NULL would read as "not all day" only by luck.
+    kept = store.get_events(include_cancelled=True)
+    check("the retrofit keeps the rows", len(kept), 1)
+    check("...and the new column defaults to 0", kept[0]["all_day"], 0)
+    check("...and the feed's rows survive too", len(store.get_changes()), 1)
+
+    # A row written after the retrofit must round-trip the new column, which is
+    # the thing the retrofit exists to make possible.
+    store.replace_events(
+        [dict(sample_events()[0], all_day=True)], "01/03/2026", "31/03/2026"
+    )
+    re_read = {e["title"]: e for e in store.get_events(include_cancelled=True)}
+    check("an all-day row round-trips after the retrofit",
+          re_read["RSM6307 Marketing"]["all_day"], 1)
+
+    # The two retrofits are independent checks, so a database that has one
+    # column and not the other — which a partly-migrated install would — has to
+    # get only what it is missing.
+    db = fresh("half")
+    conn = sqlite3.connect(db)
+    conn.executescript(OLD_EVENTS)
+    conn.executescript(OLD_CHANGES)
+    conn.execute("ALTER TABLE events ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+    conn.close()
+
+    use_db(db)
+    store.init_db()
+    check("a half-migrated database still gains changes.all_day",
+          "all_day" in columns("changes"), True)
+
+    use_shared_db()
 
 
 def test_web() -> None:
@@ -311,6 +452,7 @@ def main() -> int:
     print("=" * 60)
 
     test_store()
+    test_migration()
     test_web()
     test_cross_site_writes()
     test_login_detection()
