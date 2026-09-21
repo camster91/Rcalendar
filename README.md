@@ -83,10 +83,14 @@ Produces a **folder**, `dist\RotmanLSMCalendar\` — not a single file:
 
 | | |
 |---|---|
-| files | 915 |
+| files | 916 |
 | total | ~145 MB |
 | `RotmanLSMCalendar.exe` | 7.6 MB |
 | `_internal\` | everything else |
+
+The file count is a measurement, not an invariant — it is read off the build
+and drifts by a file or two when a dependency changes. What matters is that
+`_internal\` travels with the exe.
 
 **Ship the folder: `_internal\` has to travel with the exe.** It holds the
 Python runtime, the .NET assemblies the window needs, `web\` and the Playwright
@@ -122,7 +126,7 @@ which is worse than a clean kill and invisible to an existence check.
 ### On this machine
 
 The folder build **runs here**. That is measured, not assumed:
-`verify-build.ps1` passes end to end — every check green, 915 files present and
+`verify-build.ps1` passes end to end — every check green, 916 files present and
 unchanged after the dwell — and the app launches with its window, its web UI and
 Chromium all working. (The tray starts too: it logs a line if it fails, and no
 such line appears.)
@@ -135,6 +139,17 @@ single-file build unpacks itself into `%TEMP%` and executes from there, and that
 self-extracting shape is what reads as hostile. That attribution was never
 proven, and nothing here depends on it — the folder build is simply measured to
 work.
+
+**Flagged is not the same as removed, and the folder build is flagged.** Rebuilt
+and verified on 2026-09-21, `build.ps1` produced two SentinelOne detections —
+`RotmanLSMCalendar.exe` under `build\` and again under `dist\`, both one second
+apart as PyInstaller wrote then collected it, both "Suspicious Activity ·
+Detected suspicious file". The console showed **0 quarantined files**, the exe
+was still on disk afterwards at its full size, and `verify-build.ps1` then
+passed end to end. So on this machine the folder build is reported and left
+alone, where the single-file build was reported and taken. Anyone rebuilding
+should expect the console to show a detection and should read the quarantine
+count, not the threat history, before concluding anything broke.
 
 A 90-second dwell is evidence, not a guarantee. If a build ever stops working
 here, `verify-build.ps1` is the thing to run, and its output names the stage
