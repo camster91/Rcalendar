@@ -181,9 +181,94 @@ class Tray:
 
 def _serve(orch: Orchestrator) -> None:
     app = create_app(orch)
-    # threaded=True so a slow scrape never blocks the UI's status polling.
-    app.run(host=WEB_HOST, port=WEB_PORT, threaded=True,
-            use_reloader=False, debug=False)
+    try:
+        # threaded=True so a slow scrape never blocks the UI's status polling.
+        app.run(host=WEB_HOST, port=WEB_PORT, threaded=True,
+                use_reloader=False, debug=False)
+    except OSError:
+        # This thread is a daemon with nobody joining it, so an unhandled
+        # exception here was invisible: the thread died, and _wait_for_server
+        # then *succeeded* by connecting to whatever already held the port.
+        # A windowed build has no stdout either, so the traceback went nowhere.
+        log.exception("web UI could not bind %s — another process holds the "
+                      "port, or it is in TIME_WAIT", BASE_URL)
+
+
+# ── Single instance ──────────────────────────────────────────────────────
+
+# Held open for the life of the process: the lock is released by the OS when
+# the process ends, however it ends. A module global because letting it be
+# garbage-collected would drop the lock the moment this function returned.
+_instance_lock_fd: int | None = None
+
+
+def _claim_instance(path: Path) -> int | None:
+    """Take an exclusive lock on this data directory.
+
+    Returns the held descriptor, or None when another instance already has it.
+
+    The lock is on the *data directory*, not on the web port, because the data
+    directory is the thing two instances must not share: one SQLite file and one
+    Chromium profile holding a live LSM session. Probing the port would answer a
+    different question — it would call a TIME_WAIT socket "already running", and
+    it would not notice an instance whose server had died but whose worker was
+    still scraping. A reader who wants a second copy side by side sets
+    LSM_DATA_DIR, which gives it a different directory and so a different lock.
+
+    msvcrt.locking is an OS-level region lock: the kernel drops it when the
+    process dies, so a killed or crashed instance cannot leave a stale lock
+    behind and wedge every later launch.
+
+    -1 means this platform has no file locking and the guard was skipped.
+    """
+    global _instance_lock_fd
+
+    try:
+        import msvcrt
+    except ImportError:  # not Windows; the app is Windows-only, but do not wedge
+        log.warning("no file locking on this platform — single-instance guard skipped")
+        return -1
+
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    try:
+        # A byte must exist for the range to be meaningfully locked, and the
+        # pid makes the file useful to a human looking at a stuck lock.
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        os.close(fd)
+        return None
+
+    _instance_lock_fd = fd
+    return fd
+
+
+def _already_running_notice(gui: bool = False) -> None:
+    """Say so where the reader will actually see it.
+
+    A windowed build has no console, so print() and the log both go somewhere
+    nobody is looking; gui=True adds the one surface still left. The CLI modes
+    have a console, so they pass gui=False and just print.
+    """
+    message = (
+        f"{APP_NAME} is already running.\n\n"
+        f"Look for its icon in the notification area (it may be under the "
+        f"hidden-icons arrow).\n\n"
+        f"Its data is at:\n{DATA_DIR}\n\n"
+        f"To run a second, separate copy, set LSM_DATA_DIR and LSM_PORT to "
+        f"different values first."
+    )
+    log.error("another instance already owns %s — not starting", DATA_DIR)
+    print(message)
+    if not gui:
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, 0x40)
+    except Exception:
+        log.exception("could not show the already-running notice")
 
 
 def _wait_for_server(timeout: float = 20.0) -> bool:
@@ -202,6 +287,13 @@ def _wait_for_server(timeout: float = 20.0) -> bool:
 # ── Modes ────────────────────────────────────────────────────────────────
 
 def run_scrape_once() -> int:
+    # These modes drive the same Chromium profile the app uses, so they must not
+    # run beside it either — two Playwright browsers on one profile is how a
+    # live session gets clobbered. The running app scrapes on its own schedule
+    # anyway, which is what a scheduled task firing under it would have wanted.
+    if _claim_instance(DATA_DIR / "app.lock") is None:
+        _already_running_notice()
+        return 1
     store.init_db()
     orch = Orchestrator()
     orch._do_scrape(trigger="manual")
@@ -217,6 +309,9 @@ def run_backfill(months: int | None = None) -> int:
     only for redoing a fill that failed or was cut short. Safe to repeat — a
     month already fetched reconciles to zero changes and stores nothing.
     """
+    if _claim_instance(DATA_DIR / "app.lock") is None:
+        _already_running_notice()
+        return 1
     store.init_db()
     orch = Orchestrator()
     orch._do_backfill(months=months)
@@ -229,6 +324,9 @@ def run_backfill(months: int | None = None) -> int:
 
 
 def run_probe() -> int:
+    if _claim_instance(DATA_DIR / "app.lock") is None:
+        _already_running_notice()
+        return 1
     store.init_db()
     state = session.probe(headless=True)
     print(f"session: {state.state}  {state.message}")
@@ -360,6 +458,13 @@ def run_selftest() -> int:
 
 
 def run_app(show_window: bool = True) -> int:
+    # Before touching the database or starting a worker: a second instance would
+    # otherwise open the same SQLite file, run its own scrape and heartbeat
+    # against LSM, and share one Chromium profile with the first.
+    if _claim_instance(DATA_DIR / "app.lock") is None:
+        _already_running_notice(gui=show_window)
+        return 1
+
     store.init_db()
 
     orch = Orchestrator()
