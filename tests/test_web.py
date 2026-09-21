@@ -27,6 +27,7 @@ import os
 import sys
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -94,20 +95,30 @@ def ok(label: str, cond: bool) -> None:
 
 
 class StubOrch:
-    """Stands in for the Playwright worker, so no session is ever probed."""
+    """Stands in for the Playwright worker, so no session is ever probed.
+
+    `backfill` is settable because the history-fill toast fires on the edge of
+    that field, and an edge needs two different answers to exist at all.
+    """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.backfill: dict | None = None
 
     def status(self) -> dict:
         return {
             "session": "ok", "session_message": "", "busy": False,
             "busy_action": "", "progress": "", "last_scrape": None,
-            "last_scrape_message": "", "backfill": None,
+            "last_scrape_message": "", "backfill": self.backfill,
         }
 
     def is_busy(self) -> bool:
         return False
+
+
+# The single orchestrator the server is built with, kept so a test can change
+# what /api/status reports between two polls.
+ORCH = StubOrch()
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
@@ -935,6 +946,192 @@ def test_list_reads_the_calendars_link(browser, base: str) -> None:
 # Listed rather than called one by one so the run can report a crash as a
 # failure. A test that throws would otherwise end the run, skip every test
 # after it and print no summary -- a suite that looks truncated, not failed.
+# ── The chips, the group names, and the history-fill toast ───────────────
+
+def group_names(page) -> str:
+    """The working copy's group names, as one comparable string."""
+    return page.evaluate("() => Object.keys(GEDIT).sort().join('|')")
+
+
+def rename_group(page, old: str, new: str):
+    """Type a name into a group's field the way a person does.
+
+    An `input` per change and a `blur` at the end, because that is the event
+    sequence the field really sees. A test that only blurred would pass against
+    the live-commit version too, by never firing the handler that did the
+    damage.
+    """
+    return page.evaluate(
+        """([old, newName]) => {
+             const inp = [...document.querySelectorAll('.fgrp-hd input')]
+               .find(i => i.value === old);
+             if (!inp) return null;
+             inp.value = newName;
+             inp.dispatchEvent(new Event('input', {bubbles: true}));
+             inp.dispatchEvent(new Event('blur', {bubbles: true}));
+             return document.getElementById('toast').textContent;
+           }""",
+        [old, new],
+    )
+
+
+def test_chips_do_not_outlive_the_filters_they_name(browser, base: str) -> None:
+    """A chip undoes its own filter by type, and only while it is current.
+
+    removeTag acts on the live state rather than on the chip: a room chip
+    resets the rooms to all of them, a group chip toggles that group. readURL
+    and applyPreset replace the whole filter without going through addTag, so
+    the row they leave behind names the filter that was just replaced — and
+    removing one then acts on the new one. A room chip left over from before
+    widens a two-room preset to every room in the building, which reads as the
+    preset not working rather than as a stale chip.
+    """
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    try:
+        page.evaluate("() => addTag('room', '142')")
+        check("chips: adding a room shows one chip",
+              page.eval_on_selector_all("#tags .tag", "els => els.length"), 1)
+        check("chips: ...and the filter followed it", events_shown(page), 2)
+
+        open_presets(page)
+        apply_preset(page, "Two rooms")
+
+        check("chips: the preset's rooms are the filter",
+              page.evaluate("() => [...activeRooms].sort().join(',')"),
+              "142,147")
+        check("chips: ...and its bookings are shown", events_shown(page), 4)
+        # There is nothing left for the old chip to undo, so leaving it up is
+        # an offer to undo something that is no longer there.
+        check("chips: the chip for the replaced filter is gone",
+              page.eval_on_selector_all("#tags .tag", "els => els.length"), 0)
+    finally:
+        page.close()
+
+
+def test_a_renamed_group_does_not_eat_its_neighbour(browser, base: str) -> None:
+    """Group names are the working copy's keys, so a rename is an assignment.
+
+    Typing a name that already exists does not create a second group — it
+    assigns the renamed group's rooms over the existing one and deletes the old
+    key, throwing the other group's rooms away with nothing said. The live
+    commit is what made it reachable: the write happened as soon as the field
+    read a name that existed, so renaming a group to "Dean's Suite" destroyed
+    Dean's Suite the moment the field spelled it out. Refusing the collision
+    instead does not work either, because the name is committed before it is
+    finished and the field can then never be typed past "Dean".
+
+    Committing on blur is what makes a finished name distinguishable from a
+    half-typed one, which is what lets the collision be named and the field put
+    back. The last case is the control: a guard that refused every rename would
+    pass everything above.
+    """
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    try:
+        open_presets(page)
+        check("rename: both seeded groups are in the editor",
+              group_names(page), "Dean's Suite|North")
+
+        text = rename_group(page, "North", "Dean's Suite")
+        ok("rename: the collision is named, not silent",
+           "already exists" in (text or ""))
+        check("rename: nothing was merged or lost",
+              group_names(page), "Dean's Suite|North")
+        check("rename: North keeps its own rooms",
+              page.evaluate("() => (GEDIT['North'] || []).join(',')"), "142")
+        check("rename: Dean's Suite keeps its own",
+              page.evaluate("""() => (GEDIT["Dean's Suite"] || []).join(',')"""),
+              "157")
+        check("rename: the field shows the name the group still has",
+              page.evaluate(
+                  "() => [...document.querySelectorAll('.fgrp-hd input')]"
+                  ".map(i => i.value).sort().join('|')"),
+              "Dean's Suite|North")
+
+        # The other way the working copy could stop being a set of names.
+        text = rename_group(page, "North", "   ")
+        ok("rename: a blank name is refused", "needs a name" in (text or ""))
+        check("rename: ...and nothing is renamed to nothing",
+              group_names(page), "Dean's Suite|North")
+
+        # The control: a guard that refused every rename would pass all of the
+        # above and break the feature.
+        rename_group(page, "North", "North Wing")
+        check("rename: a free name is taken",
+              group_names(page), "Dean's Suite|North Wing")
+        check("rename: ...and the rooms move with it",
+              page.evaluate("() => (GEDIT['North Wing'] || []).join(',')"),
+              "142")
+    finally:
+        page.close()
+
+
+def test_history_fill_toast_reports_the_fill_not_the_edge(browser, base: str) -> None:
+    """The toast fired on the falling edge of `running`, which is not success.
+
+    A backfill stops running when it errors, and when its reach was too short
+    to settle the fill. Announcing "History filled" there is a claim the reader
+    cannot check: the months that were never fetched look like quiet months, so
+    the lie is invisible in the calendar the toast is about. The claim now comes
+    from backfill_done — the same fact the sidebar below reports from.
+
+    Both directions are asserted, because a toast that always said "failed"
+    would be as wrong as one that always said "filled".
+    """
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    try:
+        check("history: no backfill has landed yet",
+              store.backfill_done(), False)
+
+        def poll(running: bool) -> str:
+            """Set what the worker reports, poll, and read the toast.
+
+            The toast's text is read rather than its visibility: the status
+            poll also runs on a 60s interval, and a toast either of them
+            raised carries the same message, so reading the text rather than
+            counting firings keeps the assertion about what was said.
+            """
+            ORCH.backfill = {"running": running}
+            return page.evaluate(
+                """async () => { await loadStatus();
+                     return document.getElementById('toast').textContent; }"""
+            )
+
+        # A run starts, then stops with nothing to show for it.
+        poll(True)
+        text = poll(False)
+        ok("history: the stop is reported, not celebrated",
+           (text or "").startswith("⚠️ History fill"))
+        ok("history: ...and it does not claim the history is filled",
+           "✅" not in (text or ""))
+
+        # The control: once the fill really has landed, that same edge is a
+        # success. backfill_done reads the run rows, so one is written here —
+        # and removed again rather than left behind for the tests after this.
+        floor = store._first_of_month_months_ago(
+            store.BACKFILL_MONTHS, datetime.now().isoformat()
+        )
+        run_id = store.start_run("backfill")
+        store.finish_run(run_id, "ok", events_count=5,
+                         date_from=floor.strftime("%d/%m/%Y"),
+                         date_to=datetime.now().strftime("%d/%m/%Y"))
+        try:
+            check("history: a completed fill is recorded",
+                  store.backfill_done(), True)
+            poll(True)
+            text = poll(False)
+            ok("history: a finished fill is announced",
+               "✅ History filled" in (text or ""))
+        finally:
+            store._conn().execute("DELETE FROM scrape_runs WHERE id = ?",
+                                  (run_id,))
+            store._conn().commit()
+            check("history: the run row is cleaned up",
+                  store.backfill_done(), False)
+    finally:
+        ORCH.backfill = None
+        page.close()
+
+
 TESTS = [
     test_shared_helpers_are_served,
     test_today_nav_keeps_url_and_exports_current,
@@ -960,6 +1157,9 @@ TESTS = [
     test_week_view_owns_all_seven_of_its_days,
     test_nav_steps_the_view_you_are_looking_at,
     test_list_reads_the_calendars_link,
+    test_chips_do_not_outlive_the_filters_they_name,
+    test_a_renamed_group_does_not_eat_its_neighbour,
+    test_history_fill_toast_reports_the_fill_not_the_edge,
 ]
 
 
@@ -995,7 +1195,7 @@ def main() -> int:
     # threaded=True is required, not tidiness: the page fires bootstrap,
     # status, today and free concurrently, and a single-threaded server with
     # a browser attached deadlocks.
-    srv = make_server("127.0.0.1", 0, create_app(StubOrch()), threaded=True)
+    srv = make_server("127.0.0.1", 0, create_app(ORCH), threaded=True)
     port = srv.server_port
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{port}"

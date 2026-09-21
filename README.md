@@ -391,7 +391,12 @@ it.
 - Room exclusions (bookable study rooms like the 134-series) are in
   `app/config.py`. They are filtered out of the calendar **and never
   written to the database** — the filter runs before storage, so an
-  excluded room is not retrievable even through the JSON export.
+  excluded room is not retrievable even through the JSON export. The
+  patterns match the room whichever way it is written: the report's own
+  names and the normalised form the events carry are different strings
+  (`RT 134A` against `134A`), and the exclusion holds for both. It used to
+  match only the report's spelling, so the exclusion worked or not
+  depending on which one the shuttle happened to send.
 - The web UI binds to `127.0.0.1` only and has no authentication, because
   it has no network surface. Do not change the host to `0.0.0.0` — the
   process holds a live LSM session.

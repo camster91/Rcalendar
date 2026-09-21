@@ -490,6 +490,16 @@ function showDrop(d){
 }
 function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
 const tags=[];
+// The chips are addTag's own record of what the user added, and removeTag
+// undoes each one *by type*: a room chip resets the rooms to all of them, a
+// group chip toggles that group. That only holds while addTag is the only
+// thing changing the filters, so anything that replaces the filters wholesale
+// has to clear them — readURL and applyPreset did not, and left the previous
+// filter's chips on screen over the new filter. Removing one then acted on the
+// filter that had replaced it: a stale room chip widened a two-room preset to
+// every room in the building, and a stale group chip toggled a group the
+// preset had deliberately set.
+function clearTags(){tags.length=0;renderTags();}
 function addTag(type,value){if(tags.some(t=>t.type===type&&t.value===value))return;tags.push({type,value});if(type==='group')toggleGroup(value);else if(type==='room'){activeRooms.clear();activeRooms.add(value);syncChips();}else{searchQ=value.toLowerCase();document.getElementById('q').value='';}closeDrop();renderTags();applyFilters();}
 function removeTag(idx){const t=tags.splice(idx,1)[0];if(t.type==='group'){toggleGroup(t.value);}else if(t.type==='room'){activeRooms=new Set(ROOMS);syncChips();}else{searchQ='';document.getElementById('q').value='';}renderTags();applyFilters();}
 // textContent again: t.value is the raw search text or a group name, and the
@@ -1098,9 +1108,26 @@ function groupEditorRow(name){
   const hd=el('div','fgrp-hd');
   const inp=el('input');inp.type='text';inp.value=name;
   inp.setAttribute('aria-label','Group name');
-  // Written straight into the working copy, with no re-render: rebuilding here
-  // would take focus out of the field on every keystroke.
-  inp.oninput=()=>{const v=inp.value;if(v===name)return;GEDIT[v]=GEDIT[name];delete GEDIT[name];name=v;};
+  // Committed on blur, not on every keystroke. The live version wrote straight
+  // into the working copy on each input, and it could not tell a finished name
+  // from a half-typed one. Names are the object's keys, so renaming onto a name
+  // that already exists does not create a duplicate — it assigns over the other
+  // group and destroys its rooms, silently, which is what typing "Study Rooms"
+  // did whenever a group called "Study" was already there: the write happened
+  // the moment the field read "Study". Refusing the collision instead does not
+  // work either, because the field then can never be typed past "Stud" — the
+  // name is committed before it is finished either way. On blur it is finished,
+  // so a collision can be named and the box put back to the name the group
+  // actually has.
+  const commit=()=>{
+    const v=inp.value.trim();
+    if(v===name)return;
+    if(!v){toast('⚠️ A group needs a name');inp.value=name;return;}
+    if(GEDIT[v]){toast('⚠️ A group called “'+v+'” already exists');inp.value=name;return;}
+    GEDIT[v]=GEDIT[name];delete GEDIT[name];name=v;
+  };
+  inp.onblur=commit;
+  inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();inp.blur();}};
   hd.appendChild(inp);
   const del=el('button','fdel','Delete');
   del.onclick=()=>{delete GEDIT[name];buildFilterBody();};
@@ -1307,6 +1334,7 @@ function applyPreset(p){
   // Clearing the key alone would leave the previous set in place and apply it
   // to the new filters for as long as the refetch took.
   FREE_KEY='';FREE_DAYS=null;
+  clearTags();
   syncGroupBtns();syncChips();renderTags();buildFilterBody();applyFilters();
   toast('Applied “'+((p&&p.name)||'filter')+'”',true);
 }
@@ -1335,7 +1363,7 @@ function clearAllFilters(){
   activeRooms=new Set(ROOMS);
   activeGroups.clear();
   searchQ='';document.getElementById('q').value='';
-  tags.length=0;renderTags();
+  clearTags();
   advFloors.clear();advSeats=0;advPanopto=false;advFreeAt='';advFreeMins=60;
   FREE_DAYS=null;FREE_KEY='';
   syncGroupBtns();syncChips();buildFilterBody();
@@ -1397,6 +1425,7 @@ function readURL(){
   document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
   const tab=document.getElementById('v-'+viewMode);
   if(tab)tab.classList.add('on');
+  clearTags();
   syncGroupBtns();syncChips();renderTags();
   return p.toString().length>0;
 }
@@ -1519,9 +1548,21 @@ async function loadStatus(){
       +(tail?'<br>'+tail:'');
 
     // bf.running is set and cleared explicitly by the worker, so unlike the
-    // racy top-level `busy` it is safe to treat as a real edge.
-    if(BF_WAS_RUNNING&&!bf.running){toast('✅ History filled',true);setTimeout(()=>location.reload(),900);return;}
+    // racy top-level `busy` it is safe to treat as a real edge. What the edge
+    // means is only that the run stopped, which is not the same as the history
+    // being filled: a run also stops when a month errored, and when its reach
+    // was too short to settle the fill. Claiming success there is a lie the
+    // user cannot check — the months that were never fetched read as quiet
+    // ones — so the claim comes from backfill_done, the same fact the sidebar
+    // reports from, and anything else says what the run actually left behind.
+    const wasRunning=BF_WAS_RUNNING;
     BF_WAS_RUNNING=!!bf.running;
+    if(wasRunning&&!bf.running){
+      if(d.backfill_done){toast('✅ History filled',true);setTimeout(()=>location.reload(),900);return;}
+      const lb=d.last_backfill||{};
+      toast((lb.status==='error'?'⚠️ History fill failed':'⚠️ History fill incomplete')
+            +(lb.message?' — '+lb.message:''),true);
+    }
   }catch(e){}
 }
 

@@ -578,16 +578,40 @@ def _excluded_rooms(seen: Iterable[str] = ()) -> set[str]:
     to read the persisted rooms table instead, which is filled with every
     room the report shuttle offers — including the excluded ones — so the
     exclusion set was self-referential and nothing was ever excluded.
+
+    Both spellings of a room go into the set, because the two things it gets
+    compared against are spelled differently: the patterns are matched against
+    the shuttle's own names, and the events carry what parse.normalise_room
+    made of them ('RT 134A' → '134A'). Matching only the raw spelling made the
+    exclusion depend on how the shuttle happened to write the room — '134A'
+    was dropped and 'RT 134A' was stored — which for the 134-series, the one
+    room the exclusion exists for, is the whole of it silently not happening.
     """
     import re
 
     from app.config import EXCLUDED_PATTERNS, EXCLUDED_ROOMS
+    from app.parse import normalise_room
 
-    excluded = set(EXCLUDED_ROOMS)
-    patterns = [re.compile(p) for p in EXCLUDED_PATTERNS]
+    # Case-insensitive: a room's letter is a letter and its case means nothing
+    # to the room, so '134a' from the shuttle is the same room the pattern was
+    # written to catch. Spelling, prefix and case are all dimensions this code
+    # does not control, and the set is built to hold whichever it is handed.
+    patterns = [re.compile(p, re.IGNORECASE) for p in EXCLUDED_PATTERNS]
+
+    def matches(room: str) -> bool:
+        return any(p.match(room) for p in patterns)
+
+    excluded: set[str] = set()
+    # A literal entry in EXCLUDED_ROOMS is a room someone named by hand, and
+    # they may well have written it the way the report does.
+    for room in EXCLUDED_ROOMS:
+        excluded.add(room)
+        excluded.add(normalise_room(room))
     for room in seen:
-        if any(p.match(room) for p in patterns):
+        normalised = normalise_room(room)
+        if matches(room) or matches(normalised):
             excluded.add(room)
+            excluded.add(normalised)
     return excluded
 
 
