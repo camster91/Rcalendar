@@ -227,8 +227,26 @@ def _is_slot_index(raw: str) -> bool:
         return False
 
 
+# A meridiem, in the spellings a 12-hour clock string arrives in: "2:00 PM",
+# "2:00PM", "2:00 p.m.". Deliberately not \b-anchored — \b wants a non-word
+# character before the "P", and "2:00PM" has a digit there.
+_AMPM_RE = re.compile(r"(?<![a-z])([ap])\.?\s*m\.?(?![a-z])", re.IGNORECASE)
+
+
 def _hhmm(raw: str, ref: datetime) -> datetime | None:
-    """'645' → 06:45, '1800' → 18:00."""
+    """'645' → 06:45, '1800' → 18:00, '2:00 PM' → 14:00.
+
+    The report's own times are HHMM. This is also pointed at the free text of
+    the Comment field, and a 12-hour clock string is *read* here rather than
+    assumed away — it used to be assumed away, and that was the bug: stripping
+    the non-digits threw the meridiem out along with the punctuation, so
+    '2:00 PM' became '200' and 02:00, twelve hours early, with nothing to show
+    it had happened. '12:30 AM' became 12:30 rather than 00:30 the same way.
+
+    This is the failure this module already refuses for slot indices: read the
+    time or drop it, but never invent one — and a plausible wrong one is the
+    worst of the three, because the booking still looks like a booking.
+    """
     if not raw:
         return None
     digits = re.sub(r"\D", "", raw)
@@ -241,6 +259,19 @@ def _hhmm(raw: str, ref: datetime) -> datetime | None:
     hours, minutes = divmod(val, 100)
     if hours > 23 or minutes > 59:
         return None
+
+    m = _AMPM_RE.search(raw)
+    if m:
+        # A meridiem only means anything on a 1–12 hour, so "13:00 PM" is a
+        # contradiction — reading it as either half is the guess this function
+        # exists not to make.
+        if hours > 12:
+            return None
+        if m.group(1).lower() == "p":
+            hours = hours + 12 if hours < 12 else 12
+        else:
+            hours = 0 if hours == 12 else hours
+
     return datetime(ref.year, ref.month, ref.day, hours, minutes)
 
 
