@@ -77,7 +77,7 @@ function Find-Interpreter {
 }
 
 Write-Host ""
-Write-Host "  Rotman LSM Calendar — setup" -ForegroundColor Cyan
+Write-Host "  Rotman LSM Calendar - setup" -ForegroundColor Cyan
 Write-Host "  ===========================" -ForegroundColor Cyan
 Write-Host ""
 
