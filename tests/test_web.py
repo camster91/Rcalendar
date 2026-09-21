@@ -52,6 +52,23 @@ D2 = "2026-04-20"
 
 PAGE_TIMEOUT_MS = 20000
 
+# A booking title that is trying to be code. Booking titles are free text —
+# anyone who books a Rotman room sets one, and this app renders them into every
+# view — so this is the string a hostile, or merely careless, booking puts in
+# front of every user of the calendar.
+#
+# Written as those literal characters rather than as the quote they spell,
+# because that is the whole attack. The copy button used to interpolate
+# JSON.stringify(ev) into an onclick attribute with only the double quote
+# escaped, and the HTML tokenizer decodes character references inside an
+# attribute *before* the result is compiled as script. So `&quot;` arrives in
+# the handler as a real quote and closes the JSON string; what follows closes
+# the object and the copyCard call, runs, and then comments out the remainder
+# of the original expression so the handler still parses. `esc()` and
+# JSON.stringify are both no help against it, which is why the payload does not
+# travel in markup at all any more.
+HOSTILE = "&quot;}),window.__pwned=1//"
+
 
 def check(label: str, got, want) -> None:
     global PASS, FAIL
@@ -107,11 +124,15 @@ def seeded() -> None:
     that tells a per-day answer apart from a one-day answer applied to every
     day.
 
-    The Auditorium is the other shape the corpus needs. Its name matches none
-    of app.rooms.floor_for's patterns and it is not in ROOM_INFO, so it comes
-    back with no floor at all -- the only way to reach the branch where the
-    floor filter has nothing to place a room on. It sits outside March's grid
-    on purpose, so it cannot enter a free-at answer and move those counts.
+    The Auditorium is the other shape the corpus needs, and it carries two of
+    them. Its name matches none of app.rooms.floor_for's patterns and it is
+    not in ROOM_INFO, so it comes back with no floor at all -- the only way to
+    reach the branch where the floor filter has nothing to place a room on. Its
+    title is HOSTILE, because a booking title is free text that anyone who
+    books a Rotman room can set, and the copy button used to compile it as
+    script. Both need a booking that no count assertion depends on, which is
+    why they share one: it sits outside March's grid on purpose, so it cannot
+    enter a free-at answer and move those counts.
     """
     store.replace_events(
         [
@@ -122,7 +143,7 @@ def seeded() -> None:
             # An all-day service block, which must render as "All day" rather
             # than as a 23-hour booking.
             booking("147", D1, "00:00", "23:00", "RENOVATIONS", all_day=True),
-            booking("Auditorium", D2, "09:00", "12:00", "Convocation setup"),
+            booking("Auditorium", D2, "09:00", "12:00", HOSTILE),
         ],
         D, D2,
     )
@@ -712,6 +733,52 @@ def test_list_copies_a_real_date(browser, base: str) -> None:
         page.close()
 
 
+def test_a_hostile_title_is_not_code(browser, base: str) -> None:
+    """A booking title is data, and it has to stay data on the copy button.
+
+    The button carried its payload as JSON.stringify(ev) inside an onclick
+    attribute, with only the double quote escaped. HOSTILE documents why that
+    is not enough: the markup decoder turns `&quot;` back into a quote before
+    the handler is compiled, so the title closes the JSON string and the rest
+    of it runs — in this page's origin, which on a loopback app with no
+    authentication is the entire control plane.
+
+    The assertion is on the effect rather than on the markup, and it is a real
+    click on a real rendered card, because that is the only version of this
+    that proves the payload could not run: a test that read the attribute back
+    would pass against the broken code too.
+    """
+    # Both pages, because both built the same attribute. On the calendar the
+    # card is reached by navigating to the day it is booked on, so this
+    # exercises the whole render path; on /list every booking is in range.
+    for path in (f"/?view=today&date={D2}", "/list"):
+        page = open_page(browser, base, path)
+        try:
+            card = page.evaluate(
+                f"""() => {{
+                     const c = [...document.querySelectorAll('.evcard')]
+                       .find(el => el.textContent.includes('__pwned'));
+                     return c ? true : false;
+                   }}"""
+            )
+            ok(f"hostile: the card renders on {path}", card)
+
+            page.evaluate(
+                """() => {
+                     const c = [...document.querySelectorAll('.evcard')]
+                       .find(el => el.textContent.includes('__pwned'));
+                     c.querySelector('.ecopy').click();
+                   }"""
+            )
+            check(f"hostile: the title never ran on {path}",
+                  page.evaluate("() => window.__pwned"), None)
+            copied = page.evaluate("() => window.__copied") or ""
+            ok(f"hostile: and the title reaches the clipboard verbatim ({path})",
+               HOSTILE in copied)
+        finally:
+            page.close()
+
+
 def test_list_reads_the_calendars_link(browser, base: str) -> None:
     """A link from the calendar lands on the same bookings, and on the same count.
 
@@ -776,6 +843,7 @@ TESTS = [
     test_list_groups_come_from_the_config,
     test_list_renders_an_all_day_block_as_all_day,
     test_list_copies_a_real_date,
+    test_a_hostile_title_is_not_code,
     test_list_reads_the_calendars_link,
 ]
 

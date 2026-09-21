@@ -569,7 +569,20 @@ function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc
   // An all-day block has no meaningful clock time — its start is just midnight.
   // Printing "12:00 a.m. → 11:00 p.m. (23h)" reads as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+
+// The copy button's payload is data, so it is read back as data: see evAttr
+// in /filters.js for what the old inline handler let through. One delegate
+// covers every card in every view, since the cards are rebuilt by innerHTML
+// and would otherwise each need a listener reattached per render. The old
+// handler's stopPropagation is gone because nothing listens for a click on
+// .evcard — it was guarding a handler that does not exist.
+document.addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('.ecopy');
+  if(!b)return;
+  const ev=evFromAttr(b.dataset.ev);
+  if(ev)copyCard(ev);
+});
 
 // ── RENDER ──
 // The export links depend on the view and the date being shown, both of which

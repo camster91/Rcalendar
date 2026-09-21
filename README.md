@@ -186,7 +186,8 @@ tests/           parser + end-to-end tests
 ```
 
 `web/filters.js` holds the helpers both pages need — time and date formatting,
-escaping, the event merge, and the URL coercion rules. It is a plain classic
+escaping, the event merge, the encoding a booking travels through markup in,
+and the URL coercion rules. It is a plain classic
 script with **no module wrapper**, so its top-level `const`s share one global
 scope with each page's inline script: a name declared in both is a parse-time
 `Identifier … has already been declared`, which kills the page blank rather than

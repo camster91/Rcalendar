@@ -47,6 +47,25 @@ function fmtDur(s,e){if(!s||!e)return'';const ms=new Date(e)-new Date(s);const h
 function fmtDay(iso){if(!iso)return'';const d=new Date(iso.length>10?iso:iso+'T12:00:00');return d.toLocaleDateString('en-CA',{weekday:'short',month:'short',day:'numeric'});}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
+// A booking that travels through markup as a data attribute. Both pages hang
+// their copy button off one, and the pair exists so the encoding and its
+// decoding cannot drift.
+//
+// The copy button used to be an onclick attribute holding JSON.stringify(ev)
+// with only the double quote escaped. That is not enough: the HTML tokenizer
+// decodes character references inside an attribute *before* the result is
+// compiled as script, so a title containing the five characters &quot; became a
+// real quote, broke out of the JSON string, and ran as code. A title is free
+// text that anyone who books a Rotman room can set, and the code would run in
+// this app's origin — which on a loopback app with no authentication is the
+// whole control plane.
+//
+// encodeURIComponent escapes everything but the unreserved set, so the value
+// cannot carry a quote, an angle bracket or an ampersand into the attribute;
+// esc() then escapes what markup sees. Nothing but data crosses the boundary.
+function evAttr(ev){return esc(encodeURIComponent(JSON.stringify(ev)));}
+function evFromAttr(raw){try{return JSON.parse(decodeURIComponent(raw||''));}catch(_){return null;}}
+
 // One row per booking, with `rooms` listing every room it occupies. Bookings
 // that share a time, a title and a description are the same class in several
 // rooms, and the pages show them as one card.
