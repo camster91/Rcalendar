@@ -636,11 +636,24 @@ function renderMonth(){
 }
 
 function renderWeek(){
-  const now=new Date(),sow=new Date(curDate);sow.setDate(curDate.getDate()-curDate.getDay());const eow=new Date(sow);eow.setDate(sow.getDate()+6);
+  const now=new Date();
+  // Local midnight, not a copy of curDate with the date rolled back. The
+  // window was `new Date(curDate)` — which keeps curDate's *time of day*, and
+  // readURL sets curDate to noon so the URL is unambiguous — so the week began
+  // at Sunday 12:00 while inWeek compares instants. Every booking on the
+  // Sunday before noon fell outside its own week, and an all-day row starts at
+  // midnight, so the whole Sunday of the all-day strip disappeared. The bound
+  // had the mirror fault: it ran to the next Sunday at 12:00, so that Sunday's
+  // morning belonged to the week before it. Both bounds are local midnights
+  // now, half-open at the end — the same rule avail.py uses, since the two are
+  // answering about the same days.
+  const sow=new Date(curDate.getFullYear(),curDate.getMonth(),
+                     curDate.getDate()-curDate.getDay());
+  const eow=new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+6);
   // The grid used to be hard-coded to 07:00-22:00, which silently dropped
   // 6.8% of bookings (early-morning and late-evening ones) while the badge
   // above counted them. Widen the range to whatever the week actually holds.
-  const wkEnd=new Date(eow);wkEnd.setDate(eow.getDate()+1);
+  const wkEnd=new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+7);
   const inWeek=ev=>{if(!ev.start)return false;const d=new Date(ev.start);return d>=sow&&d<wkEnd;};
   const allDayWeek=mergeEvts(filtered.filter(ev=>ev.all_day&&inWeek(ev)));
   const weekEvts=filtered.filter(ev=>!ev.all_day&&ev.end&&inWeek(ev));
@@ -784,10 +797,30 @@ function nav(dir){
   // would change nothing on screen while quietly moving the month underneath.
   if(viewMode==='changes')return;
   // One press moves one unit of the view you are looking at: a month in Month,
-  // a day in Today. Today used to step a week here while its own arrow buttons
-  // stepped a day, so ArrowRight and ▶ disagreed about how far a press went.
-  if(viewMode==='today')curDate.setDate(curDate.getDate()+dir);else curDate.setMonth(curDate.getMonth()+dir);
+  // a week in Week, a day in Today. Today used to step a week here while its
+  // own arrow buttons stepped a day, so ArrowRight and ▶ disagreed about how
+  // far a press went; Week was left out of the rule altogether and stepped a
+  // month, so its arrows skipped three weeks of bookings at a time.
+  if(viewMode==='today')curDate.setDate(curDate.getDate()+dir);
+  else if(viewMode==='week')curDate.setDate(curDate.getDate()+dir*7);
+  else stepMonth(dir);
   render();
+}
+// Step whole months without falling off the end of a short one. setMonth alone
+// overflows — 31 January plus one month is 31 February, which rolls forward to
+// 3 March — so stepping forward from the 31st skipped February on screen and
+// the header read March. Going to the 1st first removes the overflow, and the
+// day is then clamped to the target month's length. It is not remembered: step
+// from the 31st to February and you are on the 28th, and stepping back lands on
+// the 28th of January rather than the 31st. Carrying an anchor day would need a
+// fourth piece of state, reset by every URL load and every Today press, to buy
+// back a day-of-month that nothing on this page is anchored to.
+function stepMonth(dir){
+  const day=curDate.getDate();
+  curDate.setDate(1);
+  curDate.setMonth(curDate.getMonth()+dir);
+  const last=new Date(curDate.getFullYear(),curDate.getMonth()+1,0).getDate();
+  curDate.setDate(Math.min(day,last));
 }
 function goToday(){curDate=new Date();render();}
 

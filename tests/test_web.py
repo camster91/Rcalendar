@@ -49,6 +49,11 @@ D = "2026-03-10"
 D1 = "2026-03-11"
 # Outside March's grid entirely, so it never enters a free-at answer.
 D2 = "2026-04-20"
+# The Sunday of D's week, and the Sunday after it. Both ends of one week, which
+# is where the week view's window is decided, and the day the window used to
+# get wrong in both directions.
+SOW = "2026-03-08"
+NEXT_SOW = "2026-03-15"
 
 PAGE_TIMEOUT_MS = 20000
 
@@ -133,6 +138,14 @@ def seeded() -> None:
     script. Both need a booking that no count assertion depends on, which is
     why they share one: it sits outside March's grid on purpose, so it cannot
     enter a free-at answer and move those counts.
+
+    Room 127's two bookings are the ends of D's week -- the Sunday morning and
+    the Sunday after, as an all-day block. Both are needed, because the week
+    view's window was wrong at both edges for the same reason, and a fix to one
+    edge would leave the other broken. They are in 127 rather than a room the
+    other assertions already count heavily, and they are timed so that 127 is
+    *not* free at the free-at tests' 10:30 -- a room that reads as free there
+    would change those counts for a booking that has nothing to do with them.
     """
     store.replace_events(
         [
@@ -143,9 +156,16 @@ def seeded() -> None:
             # An all-day service block, which must render as "All day" rather
             # than as a 23-hour booking.
             booking("147", D1, "00:00", "23:00", "RENOVATIONS", all_day=True),
+            # The first day of D's week, in the morning.
+            booking("127", SOW, "09:00", "12:00", "Sunday morning session"),
+            # The first day of the *next* week, all day, so it reaches the
+            # week's all-day strip -- which is where a booking from the wrong
+            # week is visible.
+            booking("127", NEXT_SOW, "00:00", "23:00", "Sunday service block",
+                    all_day=True),
             booking("Auditorium", D2, "09:00", "12:00", HOSTILE),
         ],
-        D, D2,
+        SOW, D2,
     )
 
 
@@ -403,19 +423,20 @@ def test_scalar_floors_does_not_blank_the_calendar(browser, base: str) -> None:
     new Set("Ground Floor") is {'G','r','o','u','n','d',' ','F','l',...}, which
     matches no room's floor, so the calendar emptied with nothing to explain it.
 
-    Read correctly it selects the five bookings in Ground Floor rooms -- 142 has
-    two, 147 has two, 157 has one -- and leaves out the Auditorium, which has no
-    recorded floor. That exclusion is the intended strict reading, not a
-    regression: see test_no_floor_is_selectable for the other half of it.
+    Read correctly it selects the bookings in Ground Floor rooms -- 142 has
+    two, 147 has two, 157 has one, 127 has two -- and leaves out the
+    Auditorium, which has no recorded floor. That exclusion is the intended
+    strict reading, not a regression: see test_no_floor_is_selectable for the
+    other half of it.
     """
     page = open_page(browser, base, "/?view=month&date=2026-03-10")
     try:
-        check("preset: the corpus is the six seeded bookings",
-              events_shown(page), 6)
+        check("preset: the corpus is the eight seeded bookings",
+              events_shown(page), 8)
         open_presets(page)
         apply_preset(page, "Ground Floor")
         check("preset: scalar floors keeps exactly the rooms that match",
-              events_shown(page), 5)
+              events_shown(page), 7)
     finally:
         page.close()
 
@@ -652,8 +673,8 @@ def test_list_select_and_tags_are_one_filter(browser, base: str) -> None:
     """
     page = open_page(browser, base, "/list")
     try:
-        check("list: the corpus is the six seeded bookings",
-              events_shown(page), 6)
+        check("list: the corpus is the eight seeded bookings",
+              events_shown(page), 8)
         page.select_option("#roomFilter", "142")
         check("list: the dropdown narrows to that room", events_shown(page), 2)
 
@@ -779,6 +800,98 @@ def test_a_hostile_title_is_not_code(browser, base: str) -> None:
             page.close()
 
 
+def test_week_view_owns_all_seven_of_its_days(browser, base: str) -> None:
+    """The week ran from Sunday noon to the next Sunday noon.
+
+    The window was `new Date(curDate)` with the date rolled back to Sunday, and
+    that keeps curDate's *time of day* — which the URL sets to noon, so the URL's
+    date is unambiguous. But inWeek compares instants, so the week did not
+    contain its own Sunday morning: a Sunday booking before noon fell outside
+    its own week. An all-day row starts at midnight, so a Sunday service block
+    left the all-day strip entirely, and the strip is where a booking from the
+    wrong week is visible.
+
+    The far bound had the mirror fault — it ran to the next Sunday at noon, so
+    that Sunday's morning was attributed to the week before it. Both edges are
+    asserted, because a fix to one leaves the other wrong.
+    """
+    # D1 is a Wednesday, whose week begins on SOW. 09:00 is inside the grid's
+    # 07:00-22:00 span, so a booking that is in the week renders a bar.
+    page = open_page(browser, base, f"/?view=week&date={D1}")
+    try:
+        bars = page.evaluate(
+            f"""(d) => document.querySelectorAll(
+                     '.wkc[data-date="' + d + '"] .wkev').length""", SOW
+        )
+        check("week: the Sunday of the week carries its morning booking",
+              bars, 1)
+
+        strip = page.evaluate(
+            "() => {const r=document.querySelector('.wkadrow');"
+            "return r ? r.textContent : '';}"
+        )
+        ok("week: the week's own all-day block is in the strip",
+           "RENOVATIONS" in strip)
+        ok("week: and the next week's is not",
+           "Sunday service block" not in strip)
+    finally:
+        page.close()
+
+    # Navigating onto the next Sunday must then show that block, or the
+    # assertion above is satisfied by dropping the booking everywhere.
+    page = open_page(browser, base, f"/?view=week&date={NEXT_SOW}")
+    try:
+        strip = page.evaluate(
+            "() => {const r=document.querySelector('.wkadrow');"
+            "return r ? r.textContent : '';}"
+        )
+        ok("week: the next Sunday's block is in its own week",
+           "Sunday service block" in strip)
+    finally:
+        page.close()
+
+
+def test_nav_steps_the_view_you_are_looking_at(browser, base: str) -> None:
+    """One press moves one unit of the current view, and lands on a real month.
+
+    Two faults in one line. setMonth alone overflows: 31 January plus one month
+    is 31 February, which JS rolls forward to 3 March, so stepping forward from
+    the 31st skipped February on screen. And the rule named only Month and
+    Today, so Week fell to the else branch and its arrows stepped a whole month
+    — three weeks of bookings skipped per press.
+    """
+    def heading() -> str:
+        return page.evaluate(
+            "() => document.querySelector('#mainArea .chead h2').textContent"
+        )
+
+    # Month view from the 31st: the step must be February, not March.
+    page = open_page(browser, base, "/?view=month&date=2026-01-31")
+    try:
+        check("nav: the month view starts in January", heading(), "January 2026")
+        page.keyboard.press("ArrowRight")
+        check("nav: one month forward from the 31st is February",
+              heading(), "February 2026")
+        page.keyboard.press("ArrowLeft")
+        check("nav: and back again is January", heading(), "January 2026")
+    finally:
+        page.close()
+
+    # Week view: one press is one week, and it lands on the next Sunday.
+    page = open_page(browser, base, f"/?view=week&date={D1}")
+    try:
+        ok("nav: the week view starts on the week's Sunday",
+           "March 8" in heading())
+        page.keyboard.press("ArrowRight")
+        ok("nav: one press forward is one week", "March 15" in heading())
+        ok("nav: ...and ends the following Saturday", "March 21" in heading())
+        page.keyboard.press("ArrowLeft")
+        ok("nav: and back again is the week before",
+           "March 8" in heading() and "March 14" in heading())
+    finally:
+        page.close()
+
+
 def test_list_reads_the_calendars_link(browser, base: str) -> None:
     """A link from the calendar lands on the same bookings, and on the same count.
 
@@ -844,6 +957,8 @@ TESTS = [
     test_list_renders_an_all_day_block_as_all_day,
     test_list_copies_a_real_date,
     test_a_hostile_title_is_not_code,
+    test_week_view_owns_all_seven_of_its_days,
+    test_nav_steps_the_view_you_are_looking_at,
     test_list_reads_the_calendars_link,
 ]
 
