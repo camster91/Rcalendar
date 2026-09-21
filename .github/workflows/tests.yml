@@ -21,7 +21,7 @@
 #
 # Until that is done this is a configuration, not a check. Do not read a green
 # tick here as evidence the suites pass anywhere: they have been run on one
-# machine, by hand, 544 assertions and no failures.
+# machine, by hand, 559 assertions and no failures.
 #
 # Every suite ends in `return 1 if FAIL else 0` and sys.exit(main()), so a
 # failure fails the step. That is the whole basis for trusting this: a suite

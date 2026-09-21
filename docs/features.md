@@ -100,7 +100,9 @@ for.
 | Thing | Where |
 |---|---|
 | The supported path: `.venv\Scripts\python.exe -m app.main` | README → *Running it* |
+| Fetching Chromium on a fresh machine: `--install-browser` | `app/main.py` |
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
+| The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 544 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 559 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | The same seven suites in CI | `.github/workflows/tests.yml` |

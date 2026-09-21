@@ -18,6 +18,7 @@ Usage:
     python -m app.main --probe         # report session state and exit
     python -m app.main --no-window     # run headless, web UI only
     python -m app.main --selftest      # check a packaged build is intact, exit
+    python -m app.main --install-browser   # fetch Chromium, then exit
 
 The history fill is not something you ask for: the app gives it to itself
 once, on the first launch that has a live session, and never offers it again
@@ -38,9 +39,10 @@ from typing import Any
 
 from app import session, store
 from app.config import (
-    APP_NAME, BACKFILL_MONTHS, BUNDLE_DIR, DATA_DIR, DB_PATH, WEB_DIR, WEB_HOST,
-    WEB_PORT, WINDOW_TITLE, log,
+    APP_NAME, APP_VERSION, BACKFILL_MONTHS, BUNDLE_DIR, DATA_DIR, DB_PATH,
+    WEB_DIR, WEB_HOST, WEB_PORT, WINDOW_TITLE, log,
 )
+from app.icon import paint as paint_icon
 from app.scheduler import Orchestrator
 from app.server import create_app
 
@@ -49,27 +51,11 @@ BASE_URL = f"http://{WEB_HOST}:{WEB_PORT}"
 
 # ── Tray icon ────────────────────────────────────────────────────────────
 
-def _make_icon_image() -> Any:
-    """Draw the tray icon at runtime so there is no binary asset to ship."""
-    from PIL import Image, ImageDraw
-
-    size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    navy = (0, 53, 95, 255)
-    d.rounded_rectangle([4, 10, 60, 58], radius=8, fill=navy)
-
-    white = (255, 255, 255, 255)
-    d.rectangle([4, 10, 60, 22], fill=white)
-    d.rectangle([14, 4, 20, 16], fill=white)
-    d.rectangle([44, 4, 50, 16], fill=white)
-
-    # A few "bookings" on the grid.
-    d.rectangle([12, 30, 26, 36], fill=(59, 130, 246, 255))
-    d.rectangle([32, 30, 52, 36], fill=(16, 185, 129, 255))
-    d.rectangle([12, 42, 40, 48], fill=(245, 158, 11, 255))
-    return img
+# The mark itself lives in app/icon.py, because packaging/make-icon.py renders
+# the same function to the .ico the exe and the Start-menu shortcut use. Drawn
+# here rather than loaded from a file so the tray cannot be the one surface
+# that goes blank when an asset is missing.
+TRAY_ICON_SIZE = 64
 
 
 class Tray:
@@ -102,7 +88,7 @@ class Tray:
         )
 
         self._icon = pystray.Icon(
-            "rotman-lsm", _make_icon_image(), APP_NAME, menu
+            "rotman-lsm", paint_icon(TRAY_ICON_SIZE), APP_NAME, menu
         )
         self._icon.run()
 
@@ -464,12 +450,87 @@ def run_selftest() -> int:
     return 0 if not failures else 1
 
 
+def run_install_browser() -> int:
+    """Put Chromium in the per-user cache, then exit.
+
+    The one thing an installed copy cannot do for itself on a machine that has
+    never run this app. Everything else it needs is inside its own folder; the
+    browser is deliberately not (see the spec: bundling it would add ~150 MB to
+    every copy), so a fresh machine has an empty %LOCALAPPDATA%\\ms-playwright
+    and the app starts, serves the UI, and fails every scrape -- which the UI
+    does not mention until someone tries to sign in.
+
+    The installer runs this, so the failure mode it exists to prevent is "the
+    app is installed and cannot work". Nothing is sent to LSM: this downloads a
+    browser from Playwright's CDN and stops.
+
+    Prints the driver's own output, so a network failure or a proxy that blocks
+    the download says so in the installer's log rather than exiting 1 in
+    silence.
+    """
+    import subprocess
+
+    browsers = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if not browsers:
+        # Set at import time by app/config.py when frozen. Unfrozen it is
+        # unset, and Playwright then installs to its own default, which is the
+        # same directory -- so this is a note, not a failure.
+        log.info("PLAYWRIGHT_BROWSERS_PATH is unset; Playwright will use its "
+                 "own default directory")
+
+    try:
+        from playwright._impl._driver import compute_driver_executable
+    except Exception as exc:
+        log.exception("could not locate the Playwright driver")
+        print(f"could not locate the Playwright driver: {exc}")
+        return 1
+
+    driver = compute_driver_executable()
+    # A newer Playwright returns (node, cli.js); older ones returned just node
+    # and expected `-m playwright`. Both are handled because the installed
+    # version is whatever the bundle was built with, not what this file was
+    # written against.
+    argv = [str(p) for p in (driver if isinstance(driver, tuple) else (driver,))]
+    if len(argv) > 1:
+        argv = [*argv, "install", "chromium"]
+    else:
+        argv = [*argv, "-m", "playwright", "install", "chromium"]
+
+    print(f"installing Chromium: {' '.join(argv)}")
+    log.info("installing Chromium via %s", " ".join(argv))
+    env = dict(os.environ)
+    if browsers:
+        env["PLAYWRIGHT_BROWSERS_PATH"] = browsers
+    try:
+        completed = subprocess.run(argv, env=env, check=False)
+    except OSError as exc:
+        log.exception("could not run the Playwright driver")
+        print(f"could not run the Playwright driver: {exc}")
+        return 1
+    if completed.returncode != 0:
+        # A windowed build has no console, so the installer would otherwise
+        # have a silent failure to report; the log is where this survives.
+        log.error("Playwright exited %s installing Chromium", completed.returncode)
+        print(f"Playwright exited {completed.returncode}")
+        return 1
+
+    where = browsers or "(Playwright's default browser directory)"
+    log.info("Chromium is installed in %s", where)
+    print(f"Chromium is installed in {where}")
+    return 0
+
+
 def run_app(show_window: bool = True) -> int:
     # Before touching the database or starting a worker: a second instance would
     # otherwise open the same SQLite file, run its own scrape and heartbeat
     # against LSM, and share one Chromium profile with the first.
     if _another_instance_is_running(gui=show_window):
         return 1
+
+    # The version, in the log, at the top of a run. The point of it is the
+    # machine nobody can look at: a log from someone else's computer should say
+    # which build produced it without being asked.
+    log.info("%s %s starting (data: %s)", APP_NAME, APP_VERSION, DATA_DIR)
 
     store.init_db()
 
@@ -546,10 +607,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--selftest", action="store_true",
                         help="check that the bundle is intact, write "
                              "selftest.json, and exit (for build verification)")
+    parser.add_argument("--install-browser", action="store_true",
+                        help="download Chromium into the per-user cache and "
+                             "exit (run once after installing on a new "
+                             "machine; the installer does it for you)")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return run_selftest()
+    if args.install_browser:
+        return run_install_browser()
     if args.probe:
         return run_probe()
     if args.scrape_once:

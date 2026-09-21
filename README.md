@@ -74,7 +74,16 @@ python -m app.main --backfill       # redo the one-time history fill and exit
 python -m app.main --backfill --months 6   # ...or a shorter reach
 python -m app.main --probe          # report session state and exit
 python -m app.main --selftest       # health-check this install end to end, and exit
+python -m app.main --install-browser   # fetch Chromium into the per-user cache, and exit
 ```
+
+`--install-browser` is the one you want on a machine that has never run the app.
+Everything else it needs is in its own folder; the browser deliberately is not
+(see [Not the supported path](#not-the-supported-path-building-an-exe)), so a
+fresh machine has an empty `%LOCALAPPDATA%\ms-playwright`, and the app would
+start, serve the calendar, and fail every scrape. The installer runs this for
+you; this is how you run it by hand, and how you retry it if that download
+failed at install time.
 
 ## Starting automatically at login
 
@@ -477,6 +486,73 @@ disturb a running instance.
 The dwell and the inventory are the point. A build does not have to be *deleted*
 to be broken: losing one `.pyd` leaves something that starts and misbehaves,
 which is worse than a clean kill and invisible to an existence check.
+
+### The installer
+
+`build.ps1` compiles one, if Inno Setup 6 is present:
+
+```
+dist\RotmanLSMCalendar-Setup-<version>.exe
+```
+
+It packages the folder build above, so it cannot ship a stale `dist\` — the
+ordering is the guarantee. If Inno Setup is *not* installed, the script says so,
+prints the fix, and leaves the folder build, which is complete and usable on its
+own, in place.
+
+**Per-user, on purpose.** `PrivilegesRequired=lowest`, so it installs to
+`%LOCALAPPDATA%\Programs\Rotman LSM Calendar` and never raises a UAC prompt — a
+standard account can run it, which matters on a machine where an unsigned exe
+asking for admin is exactly the pattern that gets reported. Measured
+2026-09-21: silent install, 10.2 s, exit 0, 918 files / 149.7 MB (the folder
+build's 916 plus `unins000.exe` and `unins000.dat`). The Setup.exe itself is
+42.3 MB, which is small next to what it carries because the folder build
+compresses well — nothing was trimmed to get there.
+
+The version is read out of `APP_VERSION` in `app/config.py` and passed to the
+compiler, so Add/Remove Programs, the wizard and the app's own startup log
+cannot claim different versions. `installer.iss` derives the four-part
+`FileVersion` resource from it rather than keeping a second copy.
+
+Three tasks, and the middle one is why this is not just a file copy:
+
+| task | default | what it does |
+|---|---|---|
+| desktop shortcut | off | `{autodesktop}` |
+| start at sign-in | off | a `{userstartup}` shortcut |
+| download Chromium | on | runs the app's own `--install-browser` |
+
+That last one closes the gap a fresh machine would otherwise fall into. The
+browser is deliberately not in the build, so without it the app would install,
+start, serve the calendar, and fail every scrape — and say nothing until someone
+tried to sign in. Measured: the installed app's log gained exactly two lines,
+both about the browser, and the fetch was a no-op because
+`%LOCALAPPDATA%\ms-playwright` already held the revision the bundled Playwright
+expects. Nothing was sent to LSM — the install path touches no session, no
+database, and no port.
+
+**Uninstalling** removes the folder, both shortcuts and the registry entry, and
+**keeps your data**. The data directory is asked about separately, defaulting to
+*keep*: it holds your sign-in and eleven months of history, and deleting it is
+not something to do to somebody silently. Measured on a silent uninstall, where
+no prompt can be answered — the data directory survived, which is the behaviour
+the default button is there to give.
+
+**It survived execution here, which the single-file build did not.** The three
+Setup exes were still on disk at their full size after one of them had run. That
+is a measurement of file survival, not a clean bill of health: the detection
+console was not read, and `build.ps1`'s warning about the detections a build
+produces still applies — the compiler writes an unsigned binary, and that is
+what gets scored. Note that an installer is a self-extracting shape by nature,
+which is the shape that was removed when it was a PyInstaller one-file build.
+It was not removed here. Whether that holds on another machine is the same open
+question as for the folder build, with the same three answers under
+[On this machine](#on-this-machine).
+
+Inno Setup itself is a per-user install with no admin required — 6.7.3 here, at
+`%LOCALAPPDATA%\Programs\Inno Setup 6`. Its compiler banner reads
+"Non-commercial use only"; that is the licence it was downloaded under, and it
+is worth knowing before this installer is put in front of anyone else.
 
 ### On this machine
 

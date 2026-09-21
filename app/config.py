@@ -19,6 +19,12 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Rotman LSM Calendar"
+
+# The one place a version is written down. It appears in the log at startup and
+# in the selftest report, and packaging\build.ps1 reads it out of this file and
+# hands it to the installer, so Add/Remove Programs and the app cannot end up
+# claiming different versions. Bump it when you ship a build.
+APP_VERSION = "1.0.0"
 APP_SLUG = "RotmanLSMCalendar"
 
 # ── Paths ────────────────────────────────────────────────────────────────

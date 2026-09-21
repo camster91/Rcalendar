@@ -115,6 +115,54 @@ if (Test-Path $StaleOnefile) {
     throw "dist\RotmanLSMCalendar.exe reappeared during the build"
 }
 
+# ── The installer ────────────────────────────────────────────────────────
+#
+# Compiling the installer is part of building, not a separate errand: the .iss
+# packages the folder built above, and an installer made from a stale dist\ is
+# the one failure this ordering rules out. If Inno Setup is absent the folder
+# build is still complete and is still usable on its own, so this is a warning
+# with the fix in it rather than a failure.
+$Iscc = @(
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if (-not $Iscc) {
+    Write-Host ""
+    Write-Host "  Inno Setup 6 was not found, so no installer was built." -ForegroundColor Yellow
+    Write-Host "  The folder build above is complete and usable as it stands."
+    Write-Host "  For the installer, install Inno Setup 6 from jrsoftware.org, then:"
+    Write-Host "    .\packaging\build.ps1" -ForegroundColor Yellow
+    Write-Host ""
+    exit 0
+}
+
+# The app's own version, so Add/Remove Programs cannot claim something the app
+# does not. Read out of config.py rather than kept as a second copy here.
+$AppVersion = (& $VenvPy -c "import app.config as c; print(c.APP_VERSION)").Trim()
+if (-not $AppVersion) { throw "could not read APP_VERSION from app\config.py" }
+
+Write-Host "  Compiling the installer (version $AppVersion)..."
+
+# Regenerate the icon first: it is a committed build output, so it is only as
+# current as the last time this ran, and the exe and the shortcuts both get
+# whatever is on disk. Cheap, and it makes a stale icon impossible.
+& $VenvPy (Join-Path $PSScriptRoot "make-icon.py")
+if ($LASTEXITCODE -ne 0) { throw "make-icon.py failed" }
+
+& $Iscc "/DAppVersion=$AppVersion" (Join-Path $PSScriptRoot "installer.iss")
+if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+$Setup = Get-ChildItem (Join-Path $Root "dist\RotmanLSMCalendar-Setup-*.exe") |
+    Sort-Object LastWriteTime | Select-Object -Last 1
+if (-not $Setup) { throw "ISCC exited 0 but produced no setup exe in dist\" }
+
+Write-Host ""
+Write-Host "  Installer: $($Setup.FullName)" -ForegroundColor Green
+Write-Host "    $([math]::Round($Setup.Length / 1MB, 1)) MB"
+Write-Host ""
+
 # Report which endpoint agents are present. This is context, not a verdict:
 # whether this build survives them is what verify-build.ps1 measures. Do not
 # claim survival here until that has actually passed.
