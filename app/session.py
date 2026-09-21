@@ -243,10 +243,43 @@ def snapshot_age_hours() -> float | None:
 
 
 def clear() -> None:
-    """Forget the session entirely — used by 'Log out / reset session'."""
+    """Forget the saved cookie snapshot.
+
+    This is not a sign-out on its own, and must not be wired to one: the live
+    session is in the Chromium profile, not in this file. See logout().
+    """
     with _lock:
         SESSION_FILE.unlink(missing_ok=True)
         log.info("session snapshot cleared")
+
+
+def logout() -> SessionState:
+    """Sign out for real, then say what is actually left.
+
+    clear() on its own does not sign anyone out. It deletes session.bin, which
+    is the DPAPI cookie *snapshot* — a copy kept only to re-inject the session
+    after a hard shutdown. The live session is in the Chromium profile's own
+    cookie store, because that is where the login put it. So an endpoint that
+    called clear() and reported "Session cleared" would have left the user
+    signed in, and the next probe would have agreed with the cookie rather
+    than with the message. That is the defect this function exists to avoid.
+
+    The cookies are cleared through Chromium instead of by deleting the profile
+    directory: Chromium keeps its own store consistent, and a partly deleted
+    profile is worse than an intact one. restore=False because this is the one
+    caller that must not put the snapshot back.
+
+    The return value is a fresh probe, not an assumption. If the cookies
+    survive the clear, this reports the session as still live: a sign-out that
+    failed honestly is worth more than one that claims success.
+    """
+    clear()
+    try:
+        with browser(headless=True, restore=False) as ctx:
+            ctx.clear_cookies()
+    except Exception:
+        log.exception("could not clear the profile's cookies")
+    return probe()
 
 
 # ── Probing ──────────────────────────────────────────────────────────────

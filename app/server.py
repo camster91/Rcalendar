@@ -10,11 +10,18 @@ are not the same thing. A page the user happens to have open elsewhere can
 POST a form to this port, and a form POST is not subject to a CORS
 preflight, so nothing in the browser stops it. That does not reach the LSM
 session (which lives in the Chromium profile, not in this process), but it
-does reach the control plane: it could clear the session snapshot, start a
-scrape, or pop a real login window at the university.
+does reach the control plane.
 
 So one check is enforced, on state-changing methods only: a request that
 announces a foreign origin is refused. See _refuse_cross_site_writes.
+
+What that guards is worth naming, because the endpoints are not all the same
+size. A cross-site POST could start a scrape, or pop a real login window at
+the university. It could also log the user out — and now that /api/logout
+clears the profile's cookies rather than only the snapshot, that ends a
+working session and costs a UTORid login and a Duo approval to restore. None
+of them reaches the LSM *data* (this app is read-only), and the refusal is
+what keeps all of them out of reach of a page the user merely has open.
 """
 
 from __future__ import annotations
@@ -365,11 +372,19 @@ def create_app(orchestrator: Any) -> Flask:
 
     @app.post("/api/logout")
     def logout() -> Any:
-        from app import session
+        """Sign out of LSM, for real, and report what the probe found after.
+
+        Queued like /api/login, and for the same reason: it drives the Chromium
+        profile the worker owns, so it must not open a second browser on it from
+        a request thread. The "started" reply means the request was accepted,
+        not that the session is gone — the sidebar re-reads /api/status for
+        that, which is what makes the outcome the measured one.
+        """
         if orchestrator.is_busy():
-            return jsonify({"status": "busy"}), 409
-        session.clear()
-        return jsonify({"status": "ok", "message": "Session cleared"})
+            return jsonify({"status": "busy",
+                            "message": "Something else is running"}), 409
+        orchestrator.request_logout()
+        return jsonify({"status": "started", "message": "Signing out of LSM"})
 
     # ── Downloads ────────────────────────────────────────────────────────
 

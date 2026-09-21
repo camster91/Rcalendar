@@ -27,6 +27,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -120,6 +121,14 @@ class StubOrch:
 
     def is_busy(self) -> bool:
         return False
+
+    def request_logout(self) -> None:
+        """The endpoint queues the work; the worker owns the browser profile.
+
+        Recorded rather than performed: a real logout drives Chromium against
+        LSM, which no test here may do.
+        """
+        self.calls.append("logout")
 
 
 # The single orchestrator the server is built with, kept so a test can change
@@ -774,6 +783,73 @@ def test_list_badge_reads_the_session(browser, base: str) -> None:
         dead.close()
 
 
+def test_sign_out_is_offered_only_with_a_session(browser, base: str) -> None:
+    """POST /api/logout existed, and nothing called it — no page, no tray item.
+
+    So the app held a live UofT session with no way for the user to drop it.
+    Wiring it up means answering two questions the UI has to get right: it is
+    offered only while there is a session to end, and it asks before ending one,
+    because the session is the thing the whole app runs on and getting it back
+    costs a UTORid login and a Duo approval.
+    """
+    page = open_page(browser, base, "/")
+    dialogs: list[str] = []
+
+    def dismiss(dialog) -> None:
+        dialogs.append(dialog.message)
+        dialog.dismiss()
+
+    def accept(dialog) -> None:
+        dialogs.append(dialog.message)
+        dialog.accept()
+
+    try:
+        page.on("dialog", dismiss)
+
+        # The inline style, not the computed one: it is the property loadStatus
+        # writes, so this reads the code's own decision rather than whatever the
+        # renderer made of it.
+        def shown(sel: str) -> str:
+            return page.eval_on_selector(sel, "el => el.style.display")
+
+        check("sign-out is offered while the session is live",
+              shown("#logoutLink"), "block")
+        check("...and sign-in is not, since there is nothing to sign in to",
+              shown("#loginBtn"), "none")
+
+        # Dismissing the confirm must not touch the endpoint. This is the safety
+        # property: a stray click must not be able to end the app's session.
+        ORCH.calls.clear()
+        page.click("#logoutLink")
+        check("dismissing the confirm asks nothing of the app", ORCH.calls, [])
+        ok("...and the question says what signing out would cost",
+           bool(dialogs) and "Duo" in dialogs[-1] and "UTORid" in dialogs[-1])
+
+        # Accepting it does, and the request lands. Playwright calls every
+        # registered dialog listener, so the dismissing one is removed first or
+        # it would close the second dialog before the accepting one saw it.
+        page.remove_listener("dialog", dismiss)
+        page.on("dialog", accept)
+        ORCH.calls.clear()
+        page.click("#logoutLink")
+        deadline = time.time() + 5
+        while time.time() < deadline and not ORCH.calls:
+            time.sleep(0.1)
+        check("accepting it reaches the endpoint", ORCH.calls, ["logout"])
+
+        # With the session gone there is nothing to sign out of, so the two
+        # controls swap: one is always the action that can actually be taken.
+        ORCH.session = "expired"
+        page.evaluate("async () => { await loadStatus(); }")
+        check("sign-out is withdrawn once the session is gone",
+              shown("#logoutLink"), "none")
+        check("...and sign-in takes its place", shown("#loginBtn"), "block")
+    finally:
+        ORCH.session = "ok"
+        ORCH.calls.clear()
+        page.close()
+
+
 def test_list_select_and_tags_are_one_filter(browser, base: str) -> None:
     """They were two filters that ANDed, so combining them selected nothing.
 
@@ -1250,6 +1326,7 @@ TESTS = [
     test_free_at_note_describes_the_span,
     test_list_has_a_url_and_the_links_carry_it,
     test_list_badge_reads_the_session,
+    test_sign_out_is_offered_only_with_a_session,
     test_list_select_and_tags_are_one_filter,
     test_list_groups_come_from_the_config,
     test_list_renders_an_all_day_block_as_all_day,

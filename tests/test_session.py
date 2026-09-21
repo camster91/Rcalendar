@@ -141,6 +141,76 @@ def test_snapshot_guard() -> None:
             session.SESSION_FILE = real
 
 
+def test_logout_clears_and_reports() -> None:
+    """Signing out has to clear the live session, and admit it when it cannot.
+
+    clear() deletes session.bin, which is only the DPAPI cookie *snapshot* — a
+    copy kept to re-inject the session after a hard shutdown. The live session
+    is in the Chromium profile's cookie store, because that is where the login
+    put it. So an endpoint that called clear() and answered "Session cleared"
+    would report a sign-out that never happened, and the next probe would have
+    agreed with the cookie rather than with the message. That is what this
+    covers: the order (snapshot, then cookies, then a real probe), that the
+    context is opened without re-injecting the snapshot, and that a probe which
+    still finds a session is reported as one.
+
+    No browser and no network: browser() and probe() are replaced.
+    """
+    print("\nlogging out")
+
+    from contextlib import contextmanager
+
+    from app import session
+
+    class FakeCtx:
+        def __init__(self) -> None:
+            self.cleared = 0
+
+        def clear_cookies(self) -> None:
+            self.cleared += 1
+
+    real_file = session.SESSION_FILE
+    real_browser = session.browser
+    real_probe = session.probe
+    opened: list[dict] = []
+    ctx = FakeCtx()
+
+    @contextmanager
+    def fake_browser(**kwargs):
+        opened.append(kwargs)
+        yield ctx
+
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot = Path(tmp) / "session.bin"
+        snapshot.write_bytes(b"a DPAPI blob")
+        session.SESSION_FILE = snapshot
+        session.browser = fake_browser
+        try:
+            expired = session.SessionState("expired", message="wants a login")
+            session.probe = lambda headless=True: expired
+
+            got = session.logout()
+
+            check("logout clears the saved snapshot", snapshot.exists(), False)
+            check("logout clears the profile's cookies", ctx.cleared, 1)
+            check("...in a context that does not restore them again",
+                  bool(opened) and opened[0].get("restore"), False)
+            check("logout reports what the probe measured, not what it hoped",
+                  got, expired)
+
+            # The honest failure, and the reason the probe is in here at all:
+            # the cookies survived, so the session is still live. Returning
+            # anything but that state would be the original defect.
+            alive = session.SessionState("ok", message="")
+            session.probe = lambda headless=True: alive
+            check("a session the probe still finds is reported as live",
+                  session.logout().state, "ok")
+        finally:
+            session.SESSION_FILE = real_file
+            session.browser = real_browser
+            session.probe = real_probe
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — sign-in window tests")
@@ -151,6 +221,7 @@ def main() -> int:
     test_arrival()
     test_junk()
     test_snapshot_guard()
+    test_logout_clears_and_reports()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

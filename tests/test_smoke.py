@@ -71,6 +71,9 @@ class StubOrch:
     def request_login(self) -> None:
         self.calls.append("login")
 
+    def request_logout(self) -> None:
+        self.calls.append("logout")
+
     def request_probe(self) -> None:
         self.calls.append("probe")
 
@@ -352,6 +355,16 @@ def test_web() -> None:
 
     r = client.post("/api/login")
     check("login enqueued", orch.calls, ["scrape", "login"])
+
+    # Logout is queued like login, because it drives the same Chromium profile
+    # the worker owns. The reply says the request was accepted — not that the
+    # session is gone, which only the probe the worker runs can say.
+    r = client.post("/api/logout")
+    check("logout accepted", r.status_code, 200)
+    check("...and enqueued for the worker, not done in this thread",
+          orch.calls, ["scrape", "login", "logout"])
+    check("...and it does not claim the session is already cleared",
+          r.get_json().get("status"), "started")
 
     r = client.get("/api/nope")
     check("unknown route 404", r.status_code, 404)
