@@ -8,7 +8,10 @@ the way it does:
 1. `P51_FR_DATE` / `P51_TO_DATE` are APEX date items. Setting the DOM
    value of the underlying input does not update APEX's model, so the
    report runs with whatever it had before. The only reliable way in is
-   the client-side API: `apex.item('P51_FR_DATE').setValue(...)`.
+   the client-side API: `apex.item('P51_FR_DATE').setValue(...)` — and
+   the value is read back afterwards, because setValue does not promise
+   the item *kept* what it was given. See `_set_dates` for why a window
+   that quietly differs is worth refusing the run over.
 
 2. `P51_ROOM` is an APEX *shuttle* widget — two <select>s and a
    "Move All" button — not a dropdown. We move everything across rather
@@ -24,7 +27,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from app import session
@@ -180,7 +183,13 @@ def scrape(
                 )
 
             # ── Dates ──
-            _set_dates(page, date_from, date_to)
+            # The window is checked before anything else runs, because a
+            # report that rendered some *other* window would have its bounds
+            # delete real bookings on reconcile. See _set_dates.
+            mismatch = _set_dates(page, date_from, date_to)
+            if mismatch:
+                return ScrapeResult("error", message=mismatch,
+                                    date_from=date_from, date_to=date_to)
             say(f"Dates set: {date_from} → {date_to}")
 
             # ── Rooms ──
@@ -239,7 +248,33 @@ def _wait_for_item(page: Any, item: str, timeout: int = 20_000) -> bool:
         return False
 
 
-def _set_dates(page: Any, date_from: str, date_to: str) -> None:
+def _set_dates(page: Any, date_from: str, date_to: str) -> str | None:
+    """
+    Set the report window, then check it is the window we asked for.
+
+    Returns an error message if the report's own dates are confidently not the
+    ones requested, and None otherwise.
+
+    The check is not decoration, because the window's bounds are also the
+    bounds of the reconcile delete: store.replace_events removes every stored
+    booking inside [date_from, date_to] that the scrape did not report. So a
+    report that quietly ran a *narrower* window than we asked for does not
+    merely return less — it deletes real bookings off the calendar, and the
+    scrape still reports success. Refusing is the only safe answer.
+
+    setValue is documented above as the only reliable way into APEX's model,
+    and it is; but "the model took it" and "the model kept it" are different
+    claims. An item with a format mask or a min/max will reformat or clamp a
+    value it does not like rather than raise, so the readback is the only
+    evidence of what the report will actually run.
+
+    A date that will not parse abstains rather than failing. The readback is
+    the item's display string, and this code cannot know what mask the report
+    uses — guessing wrong would turn every scrape into an error, which is a
+    worse outcome than the mismatch it is trying to catch. So only a parsed
+    disagreement is fatal, and an unparsed one is logged loudly and allowed
+    through.
+    """
     page.evaluate(
         """([f, t]) => {
             apex.item('P51_FR_DATE').setValue(f);
@@ -254,6 +289,61 @@ def _set_dates(page: Any, date_from: str, date_to: str) -> None:
                   apex.item('P51_TO_DATE').getValue()]"""
     )
     log.info("date items now %s → %s", actual[0], actual[1])
+
+    for label, want_raw, got_raw in (("from", date_from, actual[0]),
+                                     ("to", date_to, actual[1])):
+        want, got = _item_date(want_raw), _item_date(got_raw)
+        if want is None or got is None:
+            log.warning("could not read back the %s date (%r → %r); "
+                        "running the report unverified", label, want_raw, got_raw)
+            continue
+        if want != got:
+            return (f"Report window mismatch: asked for {label} "
+                    f"{want.isoformat()}, the page holds {got.isoformat()} "
+                    f"({got_raw!r}). Refusing to run, because the window's "
+                    f"bounds are the bounds of the reconcile delete.")
+    return None
+
+
+# The display formats a date item's readback might use. APEX hands back the
+# item's own display string, so this is whatever mask the report was built
+# with rather than anything chosen here — hence a list, and hence abstaining
+# rather than failing when none of them match.
+_READBACK_FORMATS = (
+    "%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y", "%d-%m-%y",
+    "%d %b %Y", "%d-%b-%Y", "%d %b %y", "%d-%b-%y",
+    "%Y-%m-%d", "%d.%m.%Y",
+)
+
+
+def _item_date(raw: Any) -> date | None:
+    """
+    Read a date back out of an APEX item, or None if it cannot be read.
+
+    None means "no opinion", which callers must not treat as "wrong": the
+    cost of the two mistakes is not symmetric. Saying nothing loses a check;
+    saying "mismatch" when the truth is merely an unfamiliar format stops
+    every scrape.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return None
+    # A datetime string carries the date in its first ten characters or its
+    # first token; either way the formats below do not match it, so try the
+    # leading date before giving up.
+    for candidate in (text, text.split("T")[0].split(" ")[0]):
+        for fmt in _READBACK_FORMATS:
+            try:
+                return datetime.strptime(candidate, fmt).date()
+            except ValueError:
+                continue
+    return None
 
 
 def _select_all_rooms(page: Any) -> list[str]:

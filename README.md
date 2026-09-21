@@ -204,6 +204,7 @@ its static surface stays exactly as wide as it needs to be.
 .\.venv\Scripts\python.exe tests\test_changes.py
 .\.venv\Scripts\python.exe tests\test_filters.py
 .\.venv\Scripts\python.exe tests\test_session.py
+.\.venv\Scripts\python.exe tests\test_worker.py
 .\.venv\Scripts\python.exe tests\test_web.py
 ```
 
@@ -211,6 +212,12 @@ The parser tests cover the cases that actually broke against the live
 report — the `15-April    -26` date shape, HHMM times, and the
 slot-index trap where a start time under 600 is a timetable period, not
 an hour.
+
+`test_worker.py` covers the two background-worker guards whose failure is
+silent: the report window is read back and checked, and the daily scrape is
+marked attempted *before* it runs. Neither opens a browser — the page is
+faked and the scrape is stubbed — and both are written so the test fails if
+the guard is removed rather than merely passing.
 
 `test_web.py` is the only suite that drives a **real browser** against a real
 server, because the defects it exists for lived in the pages and nothing else
@@ -351,6 +358,16 @@ it.
   `app/config.py` (`SCRAPE_MONTHS_BACK` / `SCRAPE_MONTHS_AHEAD`). This is
   separate from retention: the daily scrape only refreshes four months, and
   the rest of the year is kept from earlier runs.
+- **The window the report actually ran is checked before anything is read
+  from it.** The window's bounds are also the bounds of the reconcile delete —
+  a stored booking inside the window that the scrape did not report is
+  removed, which is how cancellations disappear — so a report that quietly
+  ran a narrower window would erase real bookings and still look like a
+  success. APEX reformats or clamps a date it does not like rather than
+  raising, so the item is read back and a confident disagreement fails the
+  run. A readback this code cannot parse *abstains* instead: an unfamiliar
+  date format is not evidence of a wrong window, and treating it as one would
+  stop every scrape.
 - Some bookings carry a slot index with no recoverable real time; those
   show as all-day rather than a wrong hour. Guessing would be worse.
 - **Free Right Now treats an all-day row as occupying its whole date.** It did
