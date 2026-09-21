@@ -10,11 +10,18 @@ are not the same thing. A page the user happens to have open elsewhere can
 POST a form to this port, and a form POST is not subject to a CORS
 preflight, so nothing in the browser stops it. That does not reach the LSM
 session (which lives in the Chromium profile, not in this process), but it
-does reach the control plane: it could clear the session snapshot, start a
-scrape, or pop a real login window at the university.
+does reach the control plane.
 
 So one check is enforced, on state-changing methods only: a request that
 announces a foreign origin is refused. See _refuse_cross_site_writes.
+
+What that guards is worth naming, because the endpoints are not all the same
+size. A cross-site POST could start a scrape, or pop a real login window at
+the university. It could also log the user out — and now that /api/logout
+clears the profile's cookies rather than only the snapshot, that ends a
+working session and costs a UTORid login and a Duo approval to restore. None
+of them reaches the LSM *data* (this app is read-only), and the refusal is
+what keeps all of them out of reach of a page the user merely has open.
 """
 
 from __future__ import annotations
@@ -365,11 +372,19 @@ def create_app(orchestrator: Any) -> Flask:
 
     @app.post("/api/logout")
     def logout() -> Any:
-        from app import session
+        """Sign out of LSM, for real, and report what the probe found after.
+
+        Queued like /api/login, and for the same reason: it drives the Chromium
+        profile the worker owns, so it must not open a second browser on it from
+        a request thread. The "started" reply means the request was accepted,
+        not that the session is gone — the sidebar re-reads /api/status for
+        that, which is what makes the outcome the measured one.
+        """
         if orchestrator.is_busy():
-            return jsonify({"status": "busy"}), 409
-        session.clear()
-        return jsonify({"status": "ok", "message": "Session cleared"})
+            return jsonify({"status": "busy",
+                            "message": "Something else is running"}), 409
+        orchestrator.request_logout()
+        return jsonify({"status": "started", "message": "Signing out of LSM"})
 
     # ── Downloads ────────────────────────────────────────────────────────
 
@@ -420,8 +435,33 @@ def _download_events() -> list[dict[str, Any]]:
     "download .ics" always exported the whole four-month database no matter
     what was on screen. They now accept the same room, text and date
     narrowing the calendar applies, and no parameters still means everything.
+
+    Groups are resolved here rather than by the page. The calendar expands a
+    group into its rooms when you pick it, so its own export links carry rooms
+    and were already right. The list page keeps rooms and groups as separate
+    filters that AND — one mechanism each, which is what stopped the two
+    disagreeing — so its links carry the group *name*, and this endpoint is the
+    only thing that turns a name into rooms. Without that, "download .ics"
+    while looking at the North group returned the entire database: the one
+    filter on the page the download could not see.
     """
     rooms = [r for r in (request.args.get("rooms") or "").split(",") if r]
+    groups = [g for g in (request.args.get("groups") or "").split(",") if g]
+
+    if groups:
+        named = store.load_groups()
+        members = {r for g in groups for r in (named.get(g) or [])}
+        # The intersection, because naming both means both must hold — the same
+        # AND the page applies. With only a group named, its rooms are the
+        # answer.
+        rooms = [r for r in rooms if r in members] if rooms else sorted(members)
+        if not rooms:
+            # An empty list is not "no filter" to get_events — that is the
+            # convention for "every room is selected", which is why the check
+            # is here and not there. A group name that matches no room would
+            # otherwise export the whole database, which is the bug above.
+            return []
+
     return store.get_events(
         rooms=rooms or None,
         q=request.args.get("q") or None,

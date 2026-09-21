@@ -71,6 +71,9 @@ class StubOrch:
     def request_login(self) -> None:
         self.calls.append("login")
 
+    def request_logout(self) -> None:
+        self.calls.append("logout")
+
     def request_probe(self) -> None:
         self.calls.append("probe")
 
@@ -353,6 +356,16 @@ def test_web() -> None:
     r = client.post("/api/login")
     check("login enqueued", orch.calls, ["scrape", "login"])
 
+    # Logout is queued like login, because it drives the same Chromium profile
+    # the worker owns. The reply says the request was accepted — not that the
+    # session is gone, which only the probe the worker runs can say.
+    r = client.post("/api/logout")
+    check("logout accepted", r.status_code, 200)
+    check("...and enqueued for the worker, not done in this thread",
+          orch.calls, ["scrape", "login", "logout"])
+    check("...and it does not claim the session is already cleared",
+          r.get_json().get("status"), "started")
+
     r = client.get("/api/nope")
     check("unknown route 404", r.status_code, 404)
 
@@ -419,6 +432,66 @@ def test_cross_site_writes() -> None:
     # Reads are untouched: nothing served here is secret, and no GET writes.
     check("a foreign origin may still read",
           client.get("/api/bootstrap", headers=evil).status_code, 200)
+
+
+def test_download_groups() -> None:
+    """A group filter has to reach the download, not stop at the page.
+
+    Rooms, text and dates were already accepted by the downloads; groups were
+    not. The calendar expands a group into its rooms in the URL, so its own
+    links worked — but the list page keeps rooms and groups as two separate
+    filters (which is what stopped them ANDing to nothing), so its links carry
+    the group *name*, and nothing turned a name into rooms. A .ics taken while
+    filtered to a group therefore held every booking in the database, which is
+    worse than an absent filter: the file looked like an answer.
+
+    The dangerous direction is asserted too. store.get_events reads an empty
+    room list as "no restriction" — the UI's convention for "every room is
+    on" — so a group name that matches no room would export everything.
+    """
+    print("\ndownload by group")
+
+    client = create_app(StubOrch()).test_client()
+
+    # A day and two rooms no other test uses, so the corpus the rest of this
+    # file leaves behind cannot move these counts.
+    day = "2027-05-03"
+    real_groups = store.load_groups()
+    store.save_groups({"Only9001": ["9001"], "Nowhere": ["99999"]})
+    try:
+        def ev(room: str, title: str) -> dict:
+            return {"title": title, "room": room, "start": f"{day}T09:00",
+                    "end": f"{day}T10:00", "date": day, "description": "",
+                    "class_code": "", "cancelled": False, "all_day": False}
+
+        store.replace_events([ev("9001", "In the group"),
+                              ev("9002", "Not in the group")], day, day)
+
+        def titles(**params) -> list[str]:
+            r = client.get("/download/json", query_string=params)
+            return sorted(e["title"] for e in r.get_json()["events"])
+
+        check("no filter exports both",
+              titles(rooms="9001,9002"), ["In the group", "Not in the group"])
+        check("a group narrows to its rooms", titles(groups="Only9001"),
+              ["In the group"])
+        # Two filters that both hold, the same AND the page applies.
+        check("a room list and a group intersect",
+              titles(groups="Only9001", rooms="9001,9002"), ["In the group"])
+        check("a group that matches no room exports nothing",
+              titles(groups="Nowhere"), [])
+        check("an unknown group name exports nothing",
+              titles(groups="NotAGroup"), [])
+        check("a room list still narrows on its own",
+              titles(rooms="9002"), ["Not in the group"])
+
+        # The file that started this, not just the JSON view of it.
+        r = client.get("/download/ics", query_string={"groups": "Only9001"})
+        ok("the ics is narrowed by the group too", b"In the group" in r.data)
+        ok("...and leaves the other room out",
+           b"Not in the group" not in r.data)
+    finally:
+        store.save_groups(real_groups)
 
 
 def test_ics_uids() -> None:
@@ -504,6 +577,79 @@ def test_login_detection() -> None:
     check("none is not a login", is_login_url(None), False)
 
 
+def test_single_instance() -> None:
+    """A second instance must not share the data directory.
+
+    Two processes on one data dir means one SQLite file *and* one Chromium
+    profile holding a live LSM session — the second instance scrapes and
+    heartbeats against LSM on its own, over the first one's session. Nothing
+    used to stop that: the port bind failed silently inside a daemon thread
+    while _wait_for_server succeeded by connecting to the *first* instance's
+    server, so the second launch looked healthy.
+
+    The lock is on the data directory rather than the port on purpose: the
+    directory is the shared resource, and a port probe would call a TIME_WAIT
+    socket "already running" and would not catch an instance whose server had
+    died but whose worker was still going.
+    """
+    print("\nsingle instance")
+
+    from app.main import _claim_instance
+
+    # Two fds on one file, as two processes would be. The second must lose.
+    first = _claim_instance(DATA_DIR / "test.lock")
+    ok("the first claim is granted", first is not None and first != -1)
+    second = _claim_instance(DATA_DIR / "test.lock")
+    check("the second claim is refused", second, None)
+
+    # The mechanism is only half of it: the app has to *act* on it, and the
+    # first check in each entry point returns before the database is opened or
+    # a worker is started, so both are safe to call here. run_app is called with
+    # show_window=False so the already-running notice does not put up a modal.
+    import contextlib
+    import io
+
+    from app.main import run_app, run_scrape_once
+
+    held = _claim_instance(DATA_DIR / "app.lock")
+
+    for label, call in (("run_app", lambda: run_app(show_window=False)),
+                        ("run_scrape_once", run_scrape_once)):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = call()
+        check(f"{label} refuses to start while another instance holds the dir",
+              code, 1)
+        ok(f"...and {label} says why", "already running" in buf.getvalue())
+
+    if isinstance(held, int) and held > 0:
+        os.close(held)
+
+    # And with the lock free, the refusal is the guard rather than the call
+    # failing for some unrelated reason. run_scrape_once would reach LSM from
+    # here, so this one is not driven past the gate.
+    check("with the lock free, nothing refuses", _claim_instance(
+        DATA_DIR / "app.lock") is not None, True)
+
+    # A different directory is a different instance, which is how a second copy
+    # is meant to be run — LSM_DATA_DIR is the documented escape hatch.
+    other = Path(_tmp) / "second-instance"
+    other.mkdir(exist_ok=True)
+    third = _claim_instance(other / "test.lock")
+    ok("a different data directory is a different instance",
+       third is not None and third != -1)
+
+    # Dropping the first releases the lock, so a restart after a clean quit is
+    # not permanently blocked. (A crash releases it the same way: the kernel
+    # owns the lock, not the process.)
+    if isinstance(first, int) and first > 0:
+        os.close(first)
+    fourth = _claim_instance(DATA_DIR / "test.lock")
+    ok("closing the holder frees the lock", fourth is not None and fourth != -1)
+    if isinstance(fourth, int) and fourth > 0:
+        os.close(fourth)
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — smoke tests")
@@ -513,9 +659,11 @@ def main() -> int:
     test_store()
     test_migration()
     test_web()
+    test_download_groups()
     test_cross_site_writes()
     test_ics_uids()
     test_login_detection()
+    test_single_instance()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

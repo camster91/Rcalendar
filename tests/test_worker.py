@@ -276,6 +276,50 @@ def test_no_retry_storm() -> None:
               datetime(2026, 9, 21, 6, 0) + timedelta(hours=4)), True)
 
 
+def test_logout_reports_what_the_probe_found() -> None:
+    """The logout command has to reach the session layer, and be reported honestly.
+
+    _do_logout is the only thing that decides between "Signed out" and "Still
+    signed in", and getting it backwards is invisible: the sidebar would read
+    "Session expired" over a session that still works, and the next scrape
+    would run happily while the UI said it could not. So both directions are
+    asserted, against a stubbed session.logout — nothing here opens a browser.
+    """
+    print("\nlogout command")
+
+    real = scheduler.session.logout
+    orch = scheduler.Orchestrator()
+    try:
+        # The request the API makes has to be the command the loop dispatches,
+        # or the route enqueues something nothing answers.
+        orch.request_logout()
+        check("the request carries the command the loop dispatches",
+              orch._q.get_nowait(), (scheduler.CMD_LOGOUT, {}))
+
+        def logout_returning(state: str, message: str = ""):
+            return lambda: scheduler.session.SessionState(state, message=message)
+
+        scheduler.session.logout = logout_returning("expired", "wants a login")
+        orch._do_logout()
+        st = orch.status()
+        check("a cleared session is reported as the probe found it",
+              st["session"], "expired")
+        check("...and the worker is not left busy", st["busy"], False)
+
+        # The direction that matters: the cookies survived, so the session is
+        # still there. Claiming a sign-out here is the defect.
+        scheduler.session.logout = logout_returning("ok")
+        orch._do_logout()
+        st = orch.status()
+        check("a logout that did not take is reported as still live",
+              st["session"], "ok")
+        ok("...and says so, rather than leaving the probe's blank message",
+           "still signed in" in st["session_message"].lower())
+        check("...and the worker is not left busy either", st["busy"], False)
+    finally:
+        scheduler.session.logout = real
+
+
 def test_parse_time() -> None:
     """A SCRAPE_TIME nobody can read must not mean "scrape constantly"."""
     print("\nscrape time")
@@ -353,6 +397,7 @@ def main() -> int:
 
     test_window_guard()
     test_no_retry_storm()
+    test_logout_reports_what_the_probe_found()
     test_exclusions()
     test_parse_time()
 

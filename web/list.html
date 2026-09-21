@@ -17,6 +17,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .tab:hover{color:var(--tx)}.tab.on{background:var(--ac);color:#fff}
 .badge{padding:4px 10px;border-radius:99px;font-size:.8rem;font-weight:600}
 .bg-gn{background:rgba(16,185,129,.1);color:var(--gn2)}.bg-bl{background:var(--acg);color:var(--ac)}.bg-gr{background:var(--sf2);color:var(--tx2)}
+.bg-rd{background:rgba(220,19,19,.09);color:var(--rd)}.bg-og{background:rgba(164,105,7,.1);color:var(--og)}
 .btn{padding:7px 14px;border-radius:var(--rs);font-size:.88rem;font-weight:500;cursor:pointer;border:1px solid var(--bd);background:var(--sf);color:var(--tx2);display:inline-flex;align-items:center;gap:5px;transition:.15s;text-decoration:none}
 .btn:hover{background:var(--sf2);color:var(--tx)}.btn-g{background:var(--gn2);border-color:var(--gn2);color:#fff}
 
@@ -83,7 +84,13 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
 <div class="bar">
   <div class="bar-l">
     <div class="logo">📋 Rotman Room Bookings</div>
-    <span class="badge bg-gn">● Live</span>
+    <!-- Bound to /api/status by loadStatus(). This was the hardcoded string
+         "● Live", so the list asserted a live session for as long as the page
+         was open — including after the session expired and the bookings
+         underneath had stopped updating. The calendar's badge reads the real
+         state; this one now does too, and it opens neutral rather than green so
+         the first frame does not claim anything the page has not checked. -->
+    <span class="badge bg-gr" id="sessBadge" title="Checking…">● Session …</span>
     <span class="badge bg-gr" id="evcnt">— events</span>
   </div>
   <div class="bar-r">
@@ -392,12 +399,48 @@ function writeURL(){
 // No from/to here, unlike the calendar: this page has no date window, it lists
 // every booking that matches, so the export should be that same set rather than
 // one day of it.
+//
+// groups= is in there because the download endpoints resolve a group name into
+// its rooms. Do not drop it as an unused key: this page filters by group name
+// (the calendar expands a group into rooms instead), so groups= is the *only*
+// way the export learns which group you are looking at, and removing it puts
+// the whole database back in the .ics.
 function syncLinks(qs){
   document.querySelectorAll('[data-export]').forEach(a=>{a.href=a.dataset.export+qs;});
   document.getElementById('tab-cal').href='/'+qs;
 }
 
+// Say what the session actually is, rather than what the page would like it to
+// be. This page owns no sign-in button — the calendar does — so when the
+// session is gone it says so and points at the page that can fix it. The words
+// are the calendar's, so the two pages cannot describe one session differently.
+async function loadStatus(){
+  const el=document.getElementById('sessBadge');
+  try{
+    const d=await (await fetch('/api/status')).json();
+    if(d.session==='ok'){
+      el.className='badge bg-gn';el.textContent='● Session active';
+      el.title='LSM session is signed in';
+    }else if(d.session==='expired'){
+      el.className='badge bg-rd';el.textContent='● Session expired';
+      el.title='Sign in from the Calendar page';
+    }else{
+      el.className='badge bg-og';el.textContent='● '+(d.session_message||'Session unknown');
+      el.title='Sign in from the Calendar page';
+    }
+  }catch(e){
+    // Back to unknown rather than leaving the last good reading standing: a
+    // stale "active" is the exact claim this badge used to make unconditionally.
+    el.className='badge bg-gr';el.textContent='● Session unknown';
+    el.title='Could not reach the app';
+  }
+}
+
 (async function boot(){
+  // Not awaited: the bookings are the page, and the badge can arrive after
+  // them. Starting it in parallel is why the list is not held up by a status
+  // call it does not need.
+  loadStatus();
   try{
     const r=await fetch('/api/bootstrap');
     if(!r.ok)throw new Error('HTTP '+r.status);
@@ -419,6 +462,11 @@ function syncLinks(qs){
   }
   render();
 })();
+
+// The session is not a fact that is true once. The calendar re-reads it every
+// minute, and this badge has to move on the same cadence or the two pages
+// disagree about the same session for as long as a minute.
+setInterval(loadStatus,60000);
 </script>
 </body>
 </html>

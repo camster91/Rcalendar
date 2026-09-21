@@ -6,23 +6,22 @@
     Adds a shortcut to the current user's Startup folder - no admin rights
     needed, and trivially reversible.
 
-    Points at the venv by default. The packaged build is a *folder*
-    (dist\RotmanLSMCalendar\), so a shortcut aimed at it has to target the exe
-    inside that folder and start in it -- _internal\ sits beside the exe and is
-    resolved relative to it. The venv stays the default because it is the same
-    app and a signed pythonw.exe is left alone by the endpoint agents. Pass
-    -UseExe to prefer the packaged build.
+    Points at the venv, which is the only supported way to run the app: a
+    signed pythonw.exe running source is left alone by the endpoint agents,
+    and it compiles nothing. There used to be a -UseExe switch that aimed the
+    shortcut at the packaged folder build instead; it is gone, because building
+    that exe writes an unsigned binary the agents report (see the "Not the
+    supported path" section of README.md). Nothing here can point Startup at
+    the exe any more.
 
 .EXAMPLE
     .\packaging\install-autostart.ps1
     .\packaging\install-autostart.ps1 -Remove
-    .\packaging\install-autostart.ps1 -UseExe
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$Remove,
-    [switch]$UseExe
+    [switch]$Remove
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,35 +42,23 @@ if ($Remove) {
     exit 0
 }
 
-$distDir = Join-Path $Root "dist\RotmanLSMCalendar"
-$exe = Join-Path $distDir "RotmanLSMCalendar.exe"
 $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
 $pythonw = Join-Path $Root ".venv\Scripts\pythonw.exe"
 
 $workdir = $Root
 
-if ($UseExe -and (Test-Path $exe)) {
-    $target = $exe
-    $arguments = ""
-    $workdir = $distDir
-    Write-Host "  Using packaged folder build."
-} elseif (Test-Path $venvPy) {
-    if ($UseExe) {
-        Write-Host "  -UseExe given but no build in dist\RotmanLSMCalendar\ - using the venv." -ForegroundColor Yellow
-    }
+if (Test-Path $venvPy) {
     # pythonw runs without a console window - python.exe would flash a
     # black box on every login.
     $target = if (Test-Path $pythonw) { $pythonw } else { $venvPy }
     $arguments = "-m app.main"
-    Write-Host "  Using dev checkout via venv."
-} elseif (Test-Path $exe) {
-    $target = $exe
-    $arguments = ""
-    $workdir = $distDir
-    Write-Host "  No venv found - falling back to the packaged build." -ForegroundColor Yellow
+    Write-Host "  Using the venv."
 } else {
-    Write-Host "  Neither .venv nor dist\RotmanLSMCalendar\RotmanLSMCalendar.exe found." -ForegroundColor Red
+    Write-Host "  No venv found at .venv\Scripts\python.exe." -ForegroundColor Red
     Write-Host "  Run .\packaging\setup.ps1 first."
+    Write-Host ""
+    Write-Host "  (There is no exe fallback. The packaged build is not the" -ForegroundColor DarkGray
+    Write-Host "   supported path - see README.md.)" -ForegroundColor DarkGray
     exit 1
 }
 

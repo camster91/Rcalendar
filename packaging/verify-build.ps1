@@ -3,6 +3,11 @@
     Verify the packaged folder build: does it run, and does it survive?
 
 .DESCRIPTION
+    NOT THE SUPPORTED PATH. There is nothing to verify unless you have just
+    built the exe with build.ps1, which is itself unsupported -- building is
+    what creates the detection, and the venv path writes no binary at all. See
+    the "Not the supported path" section of README.md.
+
     Answers two separate questions, and reports on them separately:
 
       1. Does the bundle work?   Runs the exe with --selftest, which imports

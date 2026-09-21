@@ -3,6 +3,23 @@
     Build the app into dist\RotmanLSMCalendar\ as a folder (PyInstaller onedir).
 
 .DESCRIPTION
+    NOT THE SUPPORTED PATH. The app is run from the venv --
+    .venv\Scripts\python.exe -m app.main, set up by .\packaging\setup.ps1 --
+    and that is what install-autostart.ps1 points at. Nothing in this
+    repository aims at the exe any more.
+
+    You do not need this. Build it only when you need a self-contained folder
+    to hand to someone without a checkout, and read the "Not the supported
+    path" section of README.md first.
+
+    Expect the build to be reported. Compiling an unsigned exe on this machine
+    puts entries in the SentinelOne console -- measured 2026-09-21: the exe is
+    flagged under build\ and again under dist\, both as "Suspicious Activity",
+    one second apart. Nothing is quarantined and the build verifies clean, but
+    that detection lands when the file is *written*, not when it runs, so it
+    appears before verify-build.ps1 has executed anything. Check the quarantine
+    count, not the threat history, before concluding a build broke.
+
     Produces a folder, not a single exe. A one-file build unpacks itself into
     %TEMP% and executes from there; on this machine (SentinelOne + CrowdStrike)
     that freshly-compiled unsigned self-extracting pattern is removed on
@@ -34,15 +51,31 @@ if (-not (Test-Path $VenvPy)) {
     exit 1
 }
 
+# setup.ps1 does not install the packer any more, because building is not the
+# supported path and setup is. Without this check the missing module surfaces as
+# a bare "PyInstaller failed" from the invocation below, which does not say what
+# to do about it.
+& $VenvPy -c "import PyInstaller" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  PyInstaller is not installed in this venv." -ForegroundColor Red
+    Write-Host "  Install it if you mean to build:"
+    Write-Host "    .\.venv\Scripts\python.exe -m pip install pyinstaller" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  (setup.ps1 leaves it out on purpose - see README.md.)" -ForegroundColor DarkGray
+    exit 1
+}
+
 # The frozen app does not embed the browser; it relies on the per-user
 # Playwright cache, so make sure that is populated before shipping.
 Write-Host "  Ensuring Chromium is present..."
 & $VenvPy -m playwright install chromium
 
-# A single-file build from before this change leaves dist\RotmanLSMCalendar.exe
-# behind. Nothing else removes it -- COLLECT only cleans its own folder -- and
-# install-autostart.ps1 checks that exact path, so a leftover would silently
-# keep pointing at the old, unrunnable artefact.
+# A single-file build from before the onedir change leaves
+# dist\RotmanLSMCalendar.exe behind. Nothing else removes it -- COLLECT only
+# cleans its own folder -- and a leftover named like the app is the worst kind
+# of stale: it is the self-extracting shape the agents removed, so it invites
+# exactly the detection this build exists to avoid, and it is what someone
+# would try to run.
 if (Test-Path $StaleOnefile) {
     Write-Host "  Removing stale single-file build from the previous layout..."
     Remove-Item $StaleOnefile -Force
@@ -92,6 +125,12 @@ $av = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduc
 if ($av) {
     Write-Host "  Endpoint agent detected on this machine:" -ForegroundColor Yellow
     foreach ($a in $av) { Write-Host "    - $a" -ForegroundColor Yellow }
+    Write-Host "  A build here IS reported: expect a SentinelOne entry for this exe"
+    Write-Host "  under build\ and under dist\. That is the compiler writing an"
+    Write-Host "  unsigned exe, not a block -- read the quarantine count (it should"
+    Write-Host "  be 0) rather than the threat history, and do not rebuild to try to"
+    Write-Host "  clear it: the next build is flagged too, and repeated detections on"
+    Write-Host "  the same binary are how a console line becomes a ticket."
     Write-Host "  A single-file build was removed on execution here. Whether the"
     Write-Host "  folder build survives is not assumed - measure it:"
     Write-Host "    .\packaging\verify-build.ps1" -ForegroundColor Yellow

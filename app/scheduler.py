@@ -39,6 +39,7 @@ from app.scrape import (
 CMD_SCRAPE = "scrape"
 CMD_BACKFILL = "backfill"
 CMD_LOGIN = "login"
+CMD_LOGOUT = "logout"
 CMD_PROBE = "probe"
 CMD_STOP = "stop"
 
@@ -100,6 +101,9 @@ class Orchestrator:
     def request_login(self) -> None:
         self.submit(CMD_LOGIN)
 
+    def request_logout(self) -> None:
+        self.submit(CMD_LOGOUT)
+
     def request_probe(self) -> None:
         self.submit(CMD_PROBE)
 
@@ -132,6 +136,8 @@ class Orchestrator:
                 self._do_probe()
             elif command == CMD_LOGIN:
                 self._do_login()
+            elif command == CMD_LOGOUT:
+                self._do_logout()
             elif command == CMD_SCRAPE:
                 self._do_scrape(
                     trigger=kwargs.get("trigger", "manual"),
@@ -245,6 +251,28 @@ class Orchestrator:
         self._set(session="ok" if ok else "expired")
         if not ok:
             self._set(session_message="Session expired — sign in when convenient")
+
+    def _do_logout(self) -> None:
+        """Clear the session, then report what the probe found afterwards.
+
+        Queued rather than performed in the request thread so it cannot open a
+        second Chromium on the profile the worker is using. The probe inside
+        session.logout() is the point of the whole thing: the message that
+        reaches the sidebar says what is left, not what was attempted, so a
+        clear that did not take effect reads as "still signed in" rather than
+        as a success nobody can check.
+        """
+        self._set(busy=True, busy_action="Signing out", progress="")
+        try:
+            state = session.logout()
+            self._set_session(state)
+            if state.ok:
+                self._set(session_message="Still signed in — the session "
+                                          "cookies could not be cleared")
+            else:
+                self._set(progress="Signed out")
+        finally:
+            self._set(busy=False, busy_action="", progress="")
 
     def _do_login(self) -> None:
         self._set(busy=True, busy_action="Waiting for sign-in",
