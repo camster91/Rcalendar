@@ -196,16 +196,16 @@ def _serve(orch: Orchestrator) -> None:
 
 # ── Single instance ──────────────────────────────────────────────────────
 
-# Held open for the life of the process: the lock is released by the OS when
-# the process ends, however it ends. A module global because letting it be
-# garbage-collected would drop the lock the moment this function returned.
-_instance_lock_fd: int | None = None
-
-
 def _claim_instance(path: Path) -> int | None:
     """Take an exclusive lock on this data directory.
 
     Returns the held descriptor, or None when another instance already has it.
+    The descriptor *is* the lock: it must stay open for the life of the
+    process, and closing it releases the lock. Nothing has to hold on to it
+    either — an int descriptor has no finalizer, so dropping the value leaks
+    the open file and the lock still stands (measured, because the obvious
+    guess is the opposite). The kernel drops it when the process ends, however
+    it ends, which is what keeps a crash from wedging every later launch.
 
     The lock is on the *data directory*, not on the web port, because the data
     directory is the thing two instances must not share: one SQLite file and one
@@ -215,14 +215,8 @@ def _claim_instance(path: Path) -> int | None:
     still scraping. A reader who wants a second copy side by side sets
     LSM_DATA_DIR, which gives it a different directory and so a different lock.
 
-    msvcrt.locking is an OS-level region lock: the kernel drops it when the
-    process dies, so a killed or crashed instance cannot leave a stale lock
-    behind and wedge every later launch.
-
     -1 means this platform has no file locking and the guard was skipped.
     """
-    global _instance_lock_fd
-
     try:
         import msvcrt
     except ImportError:  # not Windows; the app is Windows-only, but do not wedge
@@ -240,7 +234,6 @@ def _claim_instance(path: Path) -> int | None:
         os.close(fd)
         return None
 
-    _instance_lock_fd = fd
     return fd
 
 
@@ -271,6 +264,23 @@ def _already_running_notice(gui: bool = False) -> None:
         log.exception("could not show the already-running notice")
 
 
+def _another_instance_is_running(gui: bool = False) -> bool:
+    """Claim the data directory, or say who has it.
+
+    False means this process now owns the directory for the rest of its life.
+    True means another instance has it and the reader has already been told
+    why, so the caller only has to return 1 — every entry point opens with
+    this, before the database is touched or a worker is started.
+
+    Asking is claiming, so call it once. A second call in the same process
+    reports the first call's own lock as a second instance.
+    """
+    if _claim_instance(DATA_DIR / "app.lock") is not None:
+        return False
+    _already_running_notice(gui=gui)
+    return True
+
+
 def _wait_for_server(timeout: float = 20.0) -> bool:
     import socket
 
@@ -291,8 +301,7 @@ def run_scrape_once() -> int:
     # run beside it either — two Playwright browsers on one profile is how a
     # live session gets clobbered. The running app scrapes on its own schedule
     # anyway, which is what a scheduled task firing under it would have wanted.
-    if _claim_instance(DATA_DIR / "app.lock") is None:
-        _already_running_notice()
+    if _another_instance_is_running():
         return 1
     store.init_db()
     orch = Orchestrator()
@@ -309,8 +318,7 @@ def run_backfill(months: int | None = None) -> int:
     only for redoing a fill that failed or was cut short. Safe to repeat — a
     month already fetched reconciles to zero changes and stores nothing.
     """
-    if _claim_instance(DATA_DIR / "app.lock") is None:
-        _already_running_notice()
+    if _another_instance_is_running():
         return 1
     store.init_db()
     orch = Orchestrator()
@@ -324,8 +332,7 @@ def run_backfill(months: int | None = None) -> int:
 
 
 def run_probe() -> int:
-    if _claim_instance(DATA_DIR / "app.lock") is None:
-        _already_running_notice()
+    if _another_instance_is_running():
         return 1
     store.init_db()
     state = session.probe(headless=True)
@@ -461,8 +468,7 @@ def run_app(show_window: bool = True) -> int:
     # Before touching the database or starting a worker: a second instance would
     # otherwise open the same SQLite file, run its own scrape and heartbeat
     # against LSM, and share one Chromium profile with the first.
-    if _claim_instance(DATA_DIR / "app.lock") is None:
-        _already_running_notice(gui=show_window)
+    if _another_instance_is_running(gui=show_window):
         return 1
 
     store.init_db()

@@ -449,15 +449,13 @@ def _download_events() -> list[dict[str, Any]]:
     groups = [g for g in (request.args.get("groups") or "").split(",") if g]
 
     if groups:
-        named = store.load_groups()
-        members = {r for g in groups for r in (named.get(g) or [])}
-        # The intersection, because naming both means both must hold — the same
-        # AND the page applies. With only a group named, its rooms are the
-        # answer.
+        # Naming both a room and a group means both must hold — the same AND the
+        # page applies. With only a group named, its rooms are the answer.
+        members = {r for g in groups for r in store.load_groups().get(g, [])}
         rooms = [r for r in rooms if r in members] if rooms else sorted(members)
         if not rooms:
             # An empty list is not "no filter" to get_events — that is the
-            # convention for "every room is selected", which is why the check
+            # convention for "every room is selected", which is why the refusal
             # is here and not there. A group name that matches no room would
             # otherwise export the whole database, which is the bug above.
             return []
