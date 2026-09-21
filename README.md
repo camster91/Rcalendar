@@ -4,9 +4,10 @@ A Windows desktop app that shows what's booked in Rotman rooms, refreshed
 from the LSM portal automatically every morning.
 
 It reads the Rotman Query report (APEX app 143, page 51), stores the
-bookings locally, and renders them in a month / week / day calendar with
-room filtering by floor, group and free-text search. It is **read-only** —
-it never books, changes or cancels anything.
+bookings locally, and renders them as a month grid, a week grid, a single day,
+or a feed of what changed — filtered by room, group, floor, capacity, Panopto
+capture and free-at-a-time. It is **read-only** — it never books, changes or
+cancels anything.
 
 ```
 ┌─ Rotman Room Bookings ───────────────────────────── □ ✕ ┐
@@ -18,7 +19,10 @@ it never books, changes or cancels anything.
 │  │6307 ││     ││Info ││6307 ││     │                     │
 │  └─────┘└─────┘└─────┘└─────┘└─────┘                     │
 └──────────────────────────────────────────────────────────┘
-  tray ▸ Open Calendar · Scrape Now · Sign in to LSM · Quit
+  tray ▸ Open Calendar · List View
+         ● Connected to LSM   (a live label, not a button)
+         Scrape Now · Sign in to LSM · Check Session
+         Open Data Folder · Open in Browser · Quit
 ```
 
 ## How the session works
@@ -250,10 +254,14 @@ calendar: floor, capacity, equipment, and "free at a time".
   such a room is not on the floor you picked — the point of the chip is that the
   strict reading is something you can select rather than a room that silently
   vanishes under every floor chip.
-- **Seats ≥ N** — a room with **no recorded capacity passes**. 49 of the 91
-  rooms have none, and silently hiding half the building from "at least 20" is
-  worse than showing a room that might be too small. The panel says the count,
-  so the leniency is visible rather than a surprise.
+- **Seats ≥ N** — a room with **no recorded capacity passes**. About half the
+  rooms in the report carry no capacity at all, and silently hiding half the
+  building from "at least 20" is worse than showing a room that might be too
+  small. The panel states the exact figure for the rooms on screen, so the
+  leniency is visible rather than a surprise. (Measured 2026-09-21: 53 of the
+  95 rooms the report covered. The figure moves as the report picks up more
+  rooms, which is why the panel computes it live and this line does not assert
+  it.)
 - **Panopto** — the 13 rooms the report flags for capture.
 - **Free at a time** — "free from 14:00 for 60 min", answered **per day**: each
   booking is checked against its own date, so a room booked solid on the 11th is
@@ -291,6 +299,13 @@ because a preset that only makes sense on one day is useless tomorrow. The URL
 is the opposite: it carries the date, because a link should land where it was
 copied.
 
+Saved filters live in the database rather than in browser storage, so they
+follow the app rather than one browser profile. Two limits come with that: at
+most **20** are kept — saving a 21st drops the oldest — and a name must be
+**1–60 characters**, checked on the server as well as in the panel. Saving
+under a name that already exists overwrites that one rather than adding a
+second.
+
 The groups are editable in the panel and saved to `room_groups.json` in one
 atomic write, so an interrupted save cannot leave truncated JSON behind and
 take every group with it. Saving replaces the whole set — the file is the
@@ -303,6 +318,28 @@ of its own — giving it one would mean a second implementation of every filter,
 for the secondary page — but the two pages apply the same three filters the same
 way (ANDed across, OR'd within), so a link means the same thing whichever opens
 it.
+
+## Keyboard
+
+The calendar works without a mouse, and nine keys do something. Two rules
+decide which of them are live, and both exist so a keystroke cannot act on
+something you did not mean:
+
+| Key | Does | Live when |
+|---|---|---|
+| `Esc` | closes the open dialog | always — the only key that is |
+| `/` | focuses the search box | nothing is being typed in |
+| `←` `→` | back / forward by one unit: a day in Today, a week in Week, a month in Month | nothing is being typed in |
+| `T` | jumps the date to today | no button, link or cell has focus |
+| `M` `W` `D` `C` | switches to the Month / Week / Today / Changes view | no button, link or cell has focus |
+| `Enter` `Space` | activates the focused control — a room chip, a group button, a day cell | that control has focus |
+
+`T` and `D` are close enough to be worth telling apart: `T` moves the date to
+today and leaves the view alone, `D` switches to the one-day view. The letters
+are the most restricted of the nine on purpose — with a room chip focused, `D`
+would otherwise switch the view out from under you — and the arrows and `/` are
+unavailable while a text field has focus, because there an arrow key belongs to
+the cursor.
 
 ## Notes and limits
 
@@ -347,9 +384,24 @@ it.
   (`RT 134A` against `134A`), and the exclusion holds for both. It used to
   match only the report's spelling, so the exclusion worked or not
   depending on which one the shuttle happened to send.
-- The web UI binds to `127.0.0.1` only and has no authentication, because
-  it has no network surface. Do not change the host to `0.0.0.0` — the
-  process holds a live LSM session.
+- **Scrape Now never opens a sign-in window.** The tray item and the ⟳ button
+  both start a *non-interactive* scrape: it probes the session first and, with
+  none live, stops and reports `Session expired — sign in required` rather than
+  trying to sign in. Signing in is its own action — **Sign in to LSM** in the
+  tray, or the button in the sidebar — because the SSO handoff and the Duo
+  approval need a real window and a deliberate click, which a scrape running on
+  the worker's thread cannot offer. (`POST /api/scrape` does accept
+  `interactive=1` to ask for that window; nothing in this repository posts it,
+  and the page sends no body at all.)
+- The web UI binds to `127.0.0.1` only and has **no authentication** — loopback
+  *is* the access control. Anything on this machine running as this user can
+  read the calendar and drive the app. The one check there is refuses a
+  state-changing request that announces a foreign origin, which is what stops a
+  page you merely have open from starting a scrape or ending your session; it
+  does not authenticate anyone and does not hide anything. Do not change the
+  host to `0.0.0.0` — the process holds a live LSM session, and
+  reachable-from-the-network would mean an unauthenticated calendar that anyone
+  could read and a scrape anyone could start.
 
 ## Not the supported path: building an .exe
 

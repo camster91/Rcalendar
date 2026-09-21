@@ -553,11 +553,12 @@ function applyFilters(){
     // capacity still passes a minimum. The panel states both, and offers
     // "No floor" so the strict reading is something you can select for.
     if(advFloors.size&&!advFloors.has(floorOf(e.room)))return false;
-    // An unknown capacity PASSES a minimum. 49 of the 91 rooms have no recorded
-    // capacity, and silently hiding half the building from "seats >= 20" is
-    // worse than showing a room that might be too small. It must be Infinity,
-    // not 0 — 0 would hide every one of them. The panel states the count so the
-    // leniency is visible rather than a surprise.
+    // An unknown capacity PASSES a minimum. About half the rooms in the report
+    // have no recorded capacity, and silently hiding half the building from
+    // "seats >= 20" is worse than showing a room that might be too small. It
+    // must be Infinity, not 0 — 0 would hide every one of them. The panel
+    // states the count for the rooms on screen; a figure written here would
+    // only go stale, as the "49 of the 91" this comment used to carry did.
     if(advSeats&&(m.capacity??Infinity)<advSeats)return false;
     if(advPanopto&&!m.panopto)return false;
     // FREE_DAYS === null means the fetch has not landed; showing everything
@@ -1503,8 +1504,9 @@ document.addEventListener('keydown',e=>{
   const typing=a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable);
   // The view-switch letters are suppressed while an interactive element has
   // focus, otherwise tabbing to a room chip and pressing "d" would silently
-  // switch the view out from under the user. Escape, the arrows and "/" are
-  // navigation aids and stay available from anywhere.
+  // switch the view out from under the user. Escape is the only key that works
+  // from everywhere: the arrows and "/" sit below the typing check on purpose,
+  // because an arrow key belongs to the text cursor while you are in a field.
   const onControl=a&&(a.tagName==='BUTTON'||a.tagName==='A'||(a.getAttribute&&a.getAttribute('role')==='button'));
   if(e.key==='Escape'){closeModal();return;}
   if(typing)return;
