@@ -2,8 +2,19 @@
 Local web UI — serves the calendar and a small JSON API on 127.0.0.1.
 
 Bound to loopback only. This process has a live LSM session behind it, so
-it must not be reachable from the network; there is deliberately no
-authentication because there is no remote surface.
+it must not be reachable from the network.
+
+There is no *authentication* here, and that is still the right call — but
+loopback is a reachability boundary, not an authentication one, and the two
+are not the same thing. A page the user happens to have open elsewhere can
+POST a form to this port, and a form POST is not subject to a CORS
+preflight, so nothing in the browser stops it. That does not reach the LSM
+session (which lives in the Chromium profile, not in this process), but it
+does reach the control plane: it could clear the session snapshot, start a
+scrape, or pop a real login window at the university.
+
+So one check is enforced, on state-changing methods only: a request that
+announces a foreign origin is refused. See _refuse_cross_site_writes.
 """
 
 from __future__ import annotations
@@ -11,6 +22,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
@@ -19,10 +31,51 @@ from app.config import APP_NAME, WEB_DIR, log
 from app.ics import build_ics
 from app.rooms import floor_sort_key
 
+# Hosts that mean "this machine". The UI is reachable as 127.0.0.1 and, if a
+# person typed it, as localhost; both are the same app.
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
 
 def create_app(orchestrator: Any) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["JSON_SORT_KEYS"] = False
+
+    @app.before_request
+    def _refuse_cross_site_writes() -> Any:
+        """
+        Refuse a state-changing request that another site's page originated.
+
+        A page open elsewhere can POST a form to this port, and a form POST is
+        not subject to a CORS preflight, so the browser will not stop it. What
+        the browser *does* do is announce the origin: Origin is sent on every
+        non-GET request, this app's own fetches included, so a foreign one is
+        grounds to refuse.
+
+        An ABSENT origin is left alone rather than guessed at. `curl`, the
+        Flask test client and the packaged `--selftest` all send nothing, and
+        treating "unknown" as "hostile" would break every one of them to close
+        a hole they cannot open — a cross-site attacker using a form or a
+        no-cors fetch always arrives carrying one. That is the honest limit of
+        this check and the reason it is a refusal rather than a control: it
+        stops other pages driving this app, and it does not pretend to
+        authenticate anybody.
+
+        Read-only requests are deliberately untouched. There is nothing to
+        protect: nothing here is secret, and no GET changes state.
+        """
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return None
+        origin = request.headers.get("Origin") or request.headers.get("Referer") or ""
+        if not origin:
+            return None
+        # "Origin: null" (a sandboxed frame) splits to no host at all, so it
+        # lands here and is refused, which is what it deserves.
+        if (urlsplit(origin).hostname or "") in _LOOPBACK_HOSTS:
+            return None
+        log.warning("refused %s %s from origin %s",
+                    request.method, request.path, origin[:120])
+        return jsonify({"status": "forbidden",
+                        "message": "Cross-site request refused"}), 403
 
     # ── Assets ───────────────────────────────────────────────────────────
 

@@ -187,7 +187,17 @@ function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc
   // Without this branch it printed "12:00 a.m. → 11:00 p.m. (23h)", which reads
   // as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" onclick="event.stopPropagation();copyCard('+JSON.stringify(ev).replace(/"/g,'&quot;')+')" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+'</div>'+(ev.description?'<div class="edesc">'+esc(ev.description)+'</div>':'')+'</div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+'</div>'+(ev.description?'<div class="edesc">'+esc(ev.description)+'</div>':'')+'</div>';}
+
+// The same delegate as the calendar's, for the same reason: what the copy
+// button carries is data, and an onclick attribute is where data stops being
+// data. See evAttr in /filters.js.
+document.addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('.ecopy');
+  if(!b)return;
+  const ev=evFromAttr(b.dataset.ev);
+  if(ev)copyCard(ev);
+});
 
 // ── SELECTION ──
 // Multi-select groups. A group is its own filter, ANDed with rooms and the

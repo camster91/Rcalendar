@@ -216,6 +216,70 @@ def test_web() -> None:
     check("unknown route 404", r.status_code, 404)
 
 
+def test_cross_site_writes() -> None:
+    """Another site's page must not be able to drive this app's control plane.
+
+    Loopback is a reachability boundary, not an authentication one: a form POST
+    from a page open elsewhere is not subject to a CORS preflight, so the
+    browser will not stop it. What it will do is announce the origin.
+
+    The refusal is asserted *before* the side effect in every case, because a
+    refusal that still enqueued the work would read as green while doing the
+    damage it claims to prevent.
+    """
+    print("\ncross-site writes")
+    orch = StubOrch()
+    client = create_app(orch).test_client()
+
+    evil = {"Origin": "https://evil.example"}
+
+    r = client.post("/api/scrape", headers=evil)
+    check("foreign origin is refused", r.status_code, 403)
+    check("...and nothing was enqueued", orch.calls, [])
+
+    check("foreign origin refused on login",
+          client.post("/api/login", headers=evil).status_code, 403)
+    check("foreign origin refused on logout",
+          client.post("/api/logout", headers=evil).status_code, 403)
+
+    # The destructive-to-config case, checked for its effect and not just its
+    # status: this endpoint replaces the whole group set.
+    before = store.load_groups()
+    r = client.post("/api/room-groups", headers=evil, json={"Owned": ["142"]})
+    check("foreign origin refused on a config write", r.status_code, 403)
+    check("...and the stored groups are untouched", store.load_groups(), before)
+
+    # A sandboxed frame sends the literal "null", which parses to no host.
+    check("opaque origin is refused",
+          client.post("/api/scrape", headers={"Origin": "null"}).status_code, 403)
+
+    # Referer is the fallback when Origin is absent.
+    check("foreign referer is refused",
+          client.post("/api/scrape",
+                      headers={"Referer": "https://evil.example/x"}).status_code,
+          403)
+
+    # The app's own calls keep working, under either spelling of loopback.
+    for origin in ("http://127.0.0.1:8765", "http://localhost:8765"):
+        orch.calls.clear()
+        r = client.post("/api/scrape", headers={"Origin": origin})
+        check(f"loopback origin accepted ({origin})", r.status_code, 200)
+        check(f"...and the call landed ({origin})", orch.calls, ["scrape"])
+
+    # An absent origin is allowed on purpose. curl, the packaged --selftest and
+    # this test client all send none; treating "unknown" as "hostile" would
+    # break all three to close a hole none of them can open, since a real
+    # cross-site form or no-cors fetch always arrives carrying one.
+    orch.calls.clear()
+    check("an absent origin is allowed",
+          client.post("/api/scrape").status_code, 200)
+    check("...and that call landed", orch.calls, ["scrape"])
+
+    # Reads are untouched: nothing served here is secret, and no GET writes.
+    check("a foreign origin may still read",
+          client.get("/api/bootstrap", headers=evil).status_code, 200)
+
+
 def test_login_detection() -> None:
     """
     UofT bounces through several SSO hosts. Matching exact hostnames
@@ -248,6 +312,7 @@ def main() -> int:
 
     test_store()
     test_web()
+    test_cross_site_writes()
     test_login_detection()
 
     print("\n" + "=" * 60)
