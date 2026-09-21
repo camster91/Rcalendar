@@ -1344,6 +1344,256 @@ def test_history_fill_toast_reports_the_fill_not_the_edge(browser, base: str) ->
         page.close()
 
 
+# ── Accessibility ────────────────────────────────────────────────────────
+#
+# Two properties, both false somewhere in this UI when they were first
+# checked, and both readable off the DOM rather than by eye. There is no
+# scanner vendored in for this on purpose: a bundled axe-core would widen the
+# static surface of a process holding a live LSM session, and it would report
+# against generic rule names instead of against what actually broke here.
+
+# The accessible name, as far as this app needs it. An input or a select is
+# named by aria-label, a real <label>, or a title -- deliberately never by its
+# own text, which for a select is just its options, and deliberately never by
+# its placeholder, which is what the unlabelled search box was leaning on and
+# which disappears the moment anything is typed. Everything else is named by
+# its text first, then the same two fallbacks.
+#
+# Text only counts as a name if it contains a letter or a digit. That is the
+# whole point of this check: the defects it was written for are bare glyphs --
+# a triangle, a refresh arrow, a gear -- and a first version that accepted any
+# non-empty text content passed against an unlabelled button, which is a test
+# that cannot fail. "◀" is not a name; "Today" and "⏰ Time" are.
+#
+# Returns the count it examined alongside the ones that have no name, so a
+# caller can tell "every control is named" from "there were no controls".
+NAMELESS_CONTROLS = """
+() => {
+  const has = s => !!(s && s.trim());
+  const hasWord = s => /[\\p{L}\\p{N}]/u.test(s || '');
+  const named = el => {
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+      if (has(el.getAttribute('aria-label'))) return true;
+      if (el.labels && el.labels.length && hasWord(el.labels[0].textContent)) return true;
+      return has(el.getAttribute('title'));
+    }
+    if (hasWord(el.textContent)) return true;
+    if (has(el.getAttribute('aria-label'))) return true;
+    return has(el.getAttribute('title'));
+  };
+  const nameless = [];
+  let examined = 0;
+  for (const el of document.querySelectorAll(
+      'button, a[href], select, input, textarea, [role="button"]')) {
+    // Anything not rendered is skipped, which is what keeps a closed overlay
+    // out of the result rather than reporting its controls as unnamed.
+    if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue;
+    examined++;
+    if (named(el)) continue;
+    nameless.push(el.tagName.toLowerCase()
+      + (el.id ? '#' + el.id : '')
+      + (typeof el.className === 'string' && el.className.trim()
+          ? '.' + el.className.trim().split(/\\s+/)[0] : '')
+      + ' ' + JSON.stringify((el.textContent || '').slice(0, 24)));
+  }
+  return { examined, nameless };
+}
+"""
+
+
+def test_every_control_has_an_accessible_name(browser, base: str) -> None:
+    """Four icon-only controls had no name, and list.html had none anywhere.
+
+    The nav arrows in all three calendar renderers are bare triangles, so
+    nothing announced them and they were indistinguishable from the "Today"
+    button beside them; the scrape button was a glyph named only by a title.
+    On list.html the search box leaned on its placeholder and the room select
+    had nothing at all, while the calendar labels both of its own controls.
+
+    Every view is visited because the arrows are built per renderer -- the
+    defect existed three times and one page load would only have found one.
+    """
+    for where in ("/?view=month", "/?view=week", "/?view=today",
+                  "/?view=changes", "/list"):
+        page = open_page(browser, base, where)
+        try:
+            result = page.evaluate(NAMELESS_CONTROLS)
+        finally:
+            page.close()
+        ok(f"{where}: controls were actually examined",
+           result["examined"] > 0)
+        check(f"{where}: every control has a name",
+              result["nameless"], [])
+
+    # The filter panel is a second page's worth of controls behind one button.
+    page = open_page(browser, base, "/")
+    try:
+        page.evaluate("() => openFilters()")
+        page.wait_for_selector("#filterBody", state="visible")
+        result = page.evaluate(NAMELESS_CONTROLS)
+    finally:
+        page.close()
+    ok("the filter panel: controls were actually examined",
+       result["examined"] > 5)
+    check("the filter panel: every control has a name",
+          result["nameless"], [])
+
+
+def test_toggle_state_is_not_colour_alone(browser, base: str) -> None:
+    """A pressed state kept only in a CSS class says nothing to a screen reader.
+
+    list.html's sort buttons and its generated group buttons both showed the
+    selection with .on and nothing else, so "sorted by room" and "the Classroom
+    group is on" were invisible to anything not looking at the colour. The
+    calendar's chips already carried aria-pressed; these never did.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        check("list: Time reads as pressed on load",
+              page.eval_on_selector("#s-time", "el => el.getAttribute('aria-pressed')"),
+              "true")
+        page.click("#s-room")
+        check("list: Room reads as pressed after being chosen",
+              page.eval_on_selector("#s-room", "el => el.getAttribute('aria-pressed')"),
+              "true")
+        check("list: and Time reads as released",
+              page.eval_on_selector("#s-time", "el => el.getAttribute('aria-pressed')"),
+              "false")
+        check("list: exactly one sort is pressed",
+              page.evaluate(
+                  "() => [...document.querySelectorAll('.sort-btn')]"
+                  ".filter(b => b.getAttribute('aria-pressed') === 'true').length"),
+              1)
+
+        group = page.evaluate(
+            "() => [...document.querySelectorAll('#gbar .gb')]"
+            ".find(b => b.dataset.g).dataset.g")
+        page.click(f'#gbar .gb[data-g="{group}"]')
+        check(f"list: the {group} group button reads as pressed",
+              page.eval_on_selector(f'#gbar .gb[data-g="{group}"]',
+                                    "el => el.getAttribute('aria-pressed')"),
+              "true")
+
+        # Removing a filter was a span with a click handler: the tag could be
+        # added from the keyboard and only removed with a mouse.
+        page.select_option("#roomFilter", "142")
+        page.wait_for_selector("#tags .tag-x", state="visible")
+        check("list: remove-filter is a real button, so Tab reaches it",
+              page.eval_on_selector("#tags .tag-x", "el => el.tagName"),
+              "BUTTON")
+        check("list: and it says what it will remove",
+              page.eval_on_selector("#tags .tag-x",
+                                    "el => el.getAttribute('aria-label')"),
+              "Remove filter: Room 142")
+    finally:
+        page.close()
+
+
+def test_the_focus_ring_is_not_removed_without_replacement(browser, base: str) -> None:
+    """outline:none is only safe with something visible in its place.
+
+    Both pages remove the outline from their search box and replace it with a
+    border and a glow. list.html removed it from the room select too and put
+    nothing back, so the one control there you reach with Tab and then change
+    with the arrow keys was the one that never showed where the focus was.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        page.focus("#roomFilter")
+        ring = page.eval_on_selector(
+            "#roomFilter",
+            "el => { const s = getComputedStyle(el);"
+            " return { outline: s.outlineStyle, shadow: s.boxShadow,"
+            " border: s.borderColor }; }")
+        ok("list: the room select shows focus some way other than an outline",
+           ring["shadow"] != "none" or ring["outline"] != "none")
+
+        # And the ring rule itself is present on both pages, so tabbing looks
+        # the same in both rather than the browser's default in one.
+        for where in ("/", "/list"):
+            p = open_page(browser, base, where)
+            try:
+                style = p.evaluate(
+                    # Only same-origin sheets are readable: reading cssRules
+                    # off the Google Fonts <link> throws a SecurityError, and
+                    # that sheet is aborted by the route guard anyway. The rule
+                    # being looked for is in the page's own inline <style>,
+                    # whose href is null.
+                    "() => { for (const sheet of document.styleSheets) {"
+                    "  if (sheet.href) continue;"
+                    "  let rules; try { rules = sheet.cssRules; } catch (e) { continue; }"
+                    "  for (const rule of rules) {"
+                    "    if (rule.selectorText === ':focus-visible') return true;"
+                    "  } } return false; }")
+            finally:
+                p.close()
+            ok(f"{where}: has a :focus-visible rule", style)
+    finally:
+        page.close()
+
+
+def test_search_suggestions_are_reachable_by_keyboard(browser, base: str) -> None:
+    """The list a keyboard user is left holding after they type.
+
+    Typing in the search box is what opens this dropdown, and every suggestion
+    in it was a div carrying an onmousedown -- so the box invited a keyboard in
+    and then offered it nothing it could act on. Nothing in the name check above
+    would have caught that: a div is not a control, so it was never examined.
+
+    Asserted by doing it rather than by reading the markup, which is the only
+    version that proves reachability: Tab out of the box, check where the focus
+    landed, press Enter, check the tag that appears.
+
+    The chip it leaves behind is the same defect one step later, and it stayed
+    hidden for the same reason -- the calendar removed a tag with a span
+    carrying an onclick, and no assertion had ever put a tag on screen first, so
+    it was never looked at. Having added one, this checks it can be taken off
+    again by something that is not a mouse.
+    """
+    for path, box in (("/", "#q"), ("/list", "#search")):
+        page = open_page(browser, base, path)
+        try:
+            page.click(box)
+            page.fill(box, "14")
+            page.wait_for_selector("#sdrop.show .sdrop-item")
+
+            n = page.eval_on_selector_all(
+                "#sdrop .sdrop-item",
+                "els => els.filter(e => e.offsetParent !== null).length")
+            ok(f"{path}: the dropdown has suggestions to reach", n > 0)
+
+            page.keyboard.press("Tab")
+            landed = page.evaluate(
+                "() => { const a = document.activeElement;"
+                " return a ? (a.className || '') : ''; }")
+            ok(f"{path}: Tab from the search box lands on a suggestion",
+               landed.startswith("sdrop-item"))
+
+            page.keyboard.press("Enter")
+            page.wait_for_selector("#tags .tag")
+            tag = page.inner_text("#tags .tag")
+            ok(f"{path}: Enter adds the suggestion the focus was on",
+               "14" in tag)
+
+            # Reachability, not styling: a button is in the tab order and is
+            # announced, whatever it looks like. Then the wiring, so this
+            # cannot pass on a control that is focusable and does nothing.
+            x = page.eval_on_selector(
+                "#tags .tag .tag-x",
+                "el => ({ tag: el.tagName, label: el.getAttribute('aria-label')"
+                " || '', tabbable: el.tabIndex >= 0 })")
+            ok(f"{path}: the remove control is a real button", x["tag"] == "BUTTON")
+            ok(f"{path}: ...that a keyboard can land on", x["tabbable"])
+            ok(f"{path}: ...and it says what it will remove", bool(x["label"]))
+
+            page.click("#tags .tag .tag-x")
+            page.wait_for_function(
+                "() => document.querySelectorAll('#tags .tag').length === 0")
+        finally:
+            page.close()
+
+
 TESTS = [
     test_shared_helpers_are_served,
     test_today_nav_keeps_url_and_exports_current,
@@ -1375,6 +1625,10 @@ TESTS = [
     test_chips_do_not_outlive_the_filters_they_name,
     test_a_renamed_group_does_not_eat_its_neighbour,
     test_history_fill_toast_reports_the_fill_not_the_edge,
+    test_every_control_has_an_accessible_name,
+    test_toggle_state_is_not_colour_alone,
+    test_the_focus_ring_is_not_removed_without_replacement,
+    test_search_suggestions_are_reachable_by_keyboard,
 ]
 
 

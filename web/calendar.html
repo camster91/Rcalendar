@@ -70,7 +70,10 @@ a.vtab{display:inline-flex;align-items:center}
 .sdrop{position:absolute;top:100%;left:0;right:0;background:var(--sf);border:1px solid var(--bd2);border-radius:var(--rs);box-shadow:var(--sh2);z-index:50;max-height:280px;overflow-y:auto;display:none;margin-top:2px}
 .sdrop.show{display:block}
 .sdrop-section{padding:6px 10px 3px;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3)}
-.sdrop-item{padding:7px 10px;font-size:.88rem;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--tx2)}
+/* width/background/border/font/text-align are for the button element these
+   are built as: without them the browser's own button chrome shows through, and
+   the row would not span the dropdown the way it did as a div. */
+.sdrop-item{padding:7px 10px;font-size:.88rem;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--tx2);width:100%;background:none;border:none;font-family:inherit;text-align:left}
 .sdrop-item:hover{background:var(--sf2);color:var(--tx)}
 .sdrop-item .rm{font-family:'JetBrains Mono',monospace;font-size:.85rem;font-weight:500}
 .rm-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
@@ -81,7 +84,7 @@ a.vtab{display:inline-flex;align-items:center}
 .tag-rm{background:var(--acg);color:var(--ac);border:1px solid rgba(59,130,246,.2)}
 .tag-grp{background:rgba(245,158,11,.08);color:var(--og);border:1px solid rgba(245,158,11,.2)}
 .tag-q{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd)}
-.tag-x{cursor:pointer;opacity:.6;font-size:.78rem;margin-left:2px}.tag-x:hover{opacity:1}
+.tag-x{cursor:pointer;opacity:.6;font-size:.78rem;margin-left:2px;background:none;border:none;padding:0;color:inherit;font-family:inherit;line-height:1}.tag-x:hover{opacity:1}
 
 /* Room chips */
 .rchips{display:flex;flex-direction:column;gap:1px;flex:1;min-height:0;overflow-y:auto}
@@ -259,7 +262,7 @@ a.vtab{display:inline-flex;align-items:center}
       <button class="vtab" id="v-changes" onclick="setView('changes')">🔀 Changes</button>
       <a class="vtab" id="tab-list" href="/list">☰ List</a>
     </div>
-    <button class="btn btn-a" id="scrapeBtn" onclick="triggerScrape()" title="Scrape LSM now">⟳</button>
+    <button class="btn btn-a" id="scrapeBtn" onclick="triggerScrape()" title="Scrape LSM now" aria-label="Scrape LSM now">⟳</button>
     <a class="btn btn-g" data-export="/download/ics" href="/download/ics" title="Export the current view">⬇ .ics</a>
     <a class="btn" data-export="/download/json" href="/download/json" title="Export the current view">⬇ JSON</a>
   </div>
@@ -484,12 +487,25 @@ function showDrop(d){
   box.innerHTML='';
   const section=t=>{const h=document.createElement('div');h.className='sdrop-section';h.textContent=t;box.appendChild(h);};
   const item=(type,value,dot,label)=>{
-    const el=document.createElement('div');
+    // A button, not a div carrying an onmousedown. Typing in the search box is
+    // what opens this list, so the box invited a keyboard in and then handed it
+    // nothing it could act on: the only way to pick a suggestion was to click
+    // one. As buttons they sit in the tab order, where the list already appears
+    // directly after the box that opened it.
+    const el=document.createElement('button');
+    el.type='button';
     el.className='sdrop-item';
     if(dot){const s=document.createElement('span');s.className='rm-dot';s.style.background=rcol(value, ROOMS);el.appendChild(s);}
     const s=document.createElement('span');s.className='rm';s.textContent=label===undefined?value:label;
     el.appendChild(s);
+    // mousedown for the mouse, because the box closes itself 200ms after the
+    // input blurs and a click would arrive after that; click for the keyboard,
+    // which is what Enter and Space fire. detail is 0 only for an activation
+    // that came from the keyboard, so a mouse press cannot add the tag twice --
+    // and in practice it never gets the chance, because addTag rebuilds the
+    // list and detaches this button before the click would land.
     el.onmousedown=()=>addTag(type,value);
+    el.onclick=e=>{if(e.detail===0)addTag(type,value);};
     box.appendChild(el);
   };
   if(d.groups.length){section('Groups');d.groups.forEach(g=>item('group',g));}
@@ -521,8 +537,15 @@ function renderTags(){
     const lbl=t.type==='room'?'Room '+t.value:t.type==='group'?'📁 '+t.value:t.value;
     const el=document.createElement('span');
     el.className='tag '+cls;el.textContent=lbl;
-    const x=document.createElement('span');
-    x.className='tag-x';x.textContent='✕';
+    // A button, not a span with a handler -- the same fix list.html carries.
+    // As a span this was the one thing in the filter chips a keyboard could not
+    // reach: the tag could be added from the search box and only removed with a
+    // mouse. The class keeps the styling; the button's own chrome is reset on
+    // the rule below.
+    const x=document.createElement('button');
+    x.className='tag-x';x.type='button';
+    x.textContent='✕';
+    x.setAttribute('aria-label','Remove filter: '+lbl);
     x.onclick=()=>removeTag(i);
     el.appendChild(x);
     box.appendChild(el);
@@ -619,7 +642,7 @@ function render(){syncExportLinks();writeURL();maybeRefreshFree();if(viewMode===
 
 function renderMonth(){
   const y=curDate.getFullYear(),m=curDate.getMonth(),first=new Date(y,m,1),last=new Date(y,m+1,0),so=first.getDay(),td=last.getDate(),now=new Date();
-  let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><h2>'+MONTHS[m]+' '+y+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>';
+  let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)" aria-label="Previous month">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)" aria-label="Next month">▶</button></div><h2>'+MONTHS[m]+' '+y+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>';
   h+='<div class="cgrid">';DAYS.forEach(d=>{h+='<div class="cdhead">'+d+'</div>';});
   const total=Math.ceil((so+td)/7)*7;
   for(let i=0;i<total;i++){
@@ -684,7 +707,7 @@ function renderWeek(){
   // dropped: they have no hour to land on, and silently omitting them made the
   // week view disagree with the month view about the same week.
   const adStrip=allDayWeek.length?'<div class="wkadrow">'+allDayWeek.map(ev=>'<div class="wkad" style="border-left-color:'+rcol(ev.room, ROOMS)+'" '+tipAttrs(ev)+'>'+esc(fmtDay(ev.start).slice(0,3)+' · '+ev.title)+'</div>').join('')+'</div>':'';
-  let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><h2>'+MONTHS[sow.getMonth()]+' '+sow.getDate()+' – '+MONTHS[eow.getMonth()]+' '+eow.getDate()+', '+eow.getFullYear()+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>'+adStrip+'<div class="wkgrid"><div class="cdhead" style="border-left:none"></div>';
+  let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)" aria-label="Previous week">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)" aria-label="Next week">▶</button></div><h2>'+MONTHS[sow.getMonth()]+' '+sow.getDate()+' – '+MONTHS[eow.getMonth()]+' '+eow.getDate()+', '+eow.getFullYear()+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>'+adStrip+'<div class="wkgrid"><div class="cdhead" style="border-left:none"></div>';
   for(let d=0;d<7;d++){const day=new Date(sow);day.setDate(sow.getDate()+d);h+='<div class="wkdh'+(day.toDateString()===now.toDateString()?' tdy':'')+'">'+DAYS[d]+'<br><span class="wn">'+day.getDate()+'</span></div>';}
   const hours=[];for(let hr=H0;hr<=H1;hr++)hours.push(hr);
   hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+fmtISO(new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d))+'" data-hour="'+hr+'"></div>';}});
@@ -696,7 +719,7 @@ function renderToday(){
   const now=new Date(curDate),ds=fmtISO(now);
   const dayEvts=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)).sort((a,b)=>(a.start||'').localeCompare(b.start||'')));
   const dStr=now.toLocaleDateString('en-CA',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
-  let h='<div class="today-hd"><h2>'+dStr+'</h2><div class="td-nav"><button onclick="nav(-1)">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)">▶</button></div><span class="badge bg-bl">'+dayEvts.length+' bookings</span></div>';
+  let h='<div class="today-hd"><h2>'+dStr+'</h2><div class="td-nav"><button onclick="nav(-1)" aria-label="Previous day">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)" aria-label="Next day">▶</button></div><span class="badge bg-bl">'+dayEvts.length+' bookings</span></div>';
   if(!dayEvts.length){h+='<div style="text-align:center;padding:60px;color:var(--tx3);font-size:1.1rem">No bookings on this day</div>';document.getElementById('mainArea').innerHTML=h;return;}
   const allDay=dayEvts.filter(e=>e.all_day);
   const byHour={};dayEvts.filter(e=>!e.all_day).forEach(ev=>{const hr=ev.start?new Date(ev.start).getHours():0;byHour[hr]=byHour[hr]||[];byHour[hr].push(ev);});
@@ -1012,8 +1035,14 @@ function buildFilterBody(){
   // ── Capacity ──
   const cs=sec('Capacity');
   const crow=el('div','frow');
-  crow.appendChild(el('label',null,'Seats ≥'));
-  const sel=el('select');
+  // htmlFor, not a bare <label> beside the control: a label only names a
+  // control it is *for* or that is inside it, and these are siblings in a flex
+  // row, so as written it named nothing and the select announced itself as just
+  // "combo box". The visible text is the name, which is also what a voice
+  // control says when you read it aloud.
+  const seatLbl=el('label',null,'Seats ≥');seatLbl.htmlFor='seatSel';
+  crow.appendChild(seatLbl);
+  const sel=el('select');sel.id='seatSel';
   SEAT_STEPS.forEach(n=>{
     const o=el('option',null,n?'at least '+n:'any size');
     o.value=String(n);o.selected=(n===advSeats);sel.appendChild(o);
@@ -1043,12 +1072,17 @@ function buildFilterBody(){
   // ── Free at a time ──
   const tms=sec('Free at a time');
   const trow=el('div','frow');
-  trow.appendChild(el('label',null,'Free from'));
-  const time=el('input');time.type='time';time.value=advFreeAt;
+  const fromLbl=el('label',null,'Free from');fromLbl.htmlFor='freeFrom';
+  trow.appendChild(fromLbl);
+  const time=el('input');time.type='time';time.value=advFreeAt;time.id='freeFrom';
   time.onchange=()=>{advFreeAt=time.value;FREE_KEY='';buildFilterBody();writeURL();loadFreeRooms();};
   trow.appendChild(time);
+  // "for" is the connective in "free from 14:00 for 60 min", not a label for
+  // this control, so it stays decorative and the select is named for what it
+  // chooses instead.
   trow.appendChild(el('label',null,'for'));
   const mins=el('select');
+  mins.setAttribute('aria-label','For how long');
   MINUTE_STEPS.forEach(n=>{const o=el('option',null,n+' min');o.value=String(n);o.selected=(n===advFreeMins);mins.appendChild(o);});
   mins.onchange=()=>{advFreeMins=+mins.value;FREE_KEY='';buildFilterBody();writeURL();loadFreeRooms();};
   trow.appendChild(mins);
@@ -1091,6 +1125,9 @@ function buildFilterBody(){
   ps.appendChild(ptags);
   const prow=el('div','frow');
   const pname=el('input');pname.type='text';pname.placeholder='Name this filter…';pname.id='presetName';
+  // The placeholder is not a name: it is gone the moment anything is typed,
+  // and it was the only thing this box had. Named for what it does instead.
+  pname.setAttribute('aria-label','Name this filter');
   prow.appendChild(pname);
   const psave=el('button',null,'Save');psave.className='btn';
   psave.onclick=()=>savePreset(pname.value);

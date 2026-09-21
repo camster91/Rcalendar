@@ -197,6 +197,35 @@ live `session.bin`. It also **fails loudly if Chromium is missing** rather than
 skipping, because a suite that quietly does nothing is worse than one that is
 absent.
 
+Four of its tests are about accessibility, and they were written against
+defects found by reading the pages rather than by running a checker. The month,
+week and day arrows were bare `◀` and `▶` buttons with no name at all; the
+scrape button was a `⟳`; the filter panel's seat, duration, "free from" and
+preset-name controls were `<label>`s that sat *next to* their inputs instead of
+labelling them, so the label was decoration and the control was unnamed. Two
+stylesheets dropped the focus ring (`outline:none` with nothing in its place),
+and `list.html` had no `:focus-visible` rule at all.
+
+The name check is the one worth describing, because its **first version could
+not fail**. It accepted any non-empty `textContent` as a name — and `◀` is text.
+Removing an `aria-label` from the page left the suite green, which is how the
+hole was found: a test that passes against the defect it was written for is
+worse than no test, because it certifies the page. It now requires a letter or
+a digit, so a triangle is not a name and `Today` still is. Verified in both
+directions — the suite fails on the stripped label and passes on the fix.
+
+The other three pin the things a name check cannot see. That a toggle says
+whether it is on through something other than colour — `aria-pressed`, read back
+after clicking, which also covers the group buttons, where colour was the only
+signal. That every rule removing an outline has a `:focus-visible` replacement,
+on both pages. And that the search dropdown and the filter chips can be worked
+from the keyboard, which is the one the name check is *blind* to: the suggestions
+were `<div>`s and the calendar's chip ✕ was a `<span>`, both carrying handlers,
+and a non-control is not a control, so nothing looked at them. They had to be
+found by reading. The test settles it the only way that proves reachability —
+type, Tab, Enter, then remove the tag it made without a mouse — and it fails on
+a `div` at the Tab, which is how that was checked.
+
 ## History and changes
 
 The app keeps a **rolling year** of bookings, not just the four months it

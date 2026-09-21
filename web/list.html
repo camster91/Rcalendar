@@ -8,6 +8,13 @@
 <style>
 :root{--bg:#f4f6f9;--sf:#fff;--sf2:#f0f3f8;--sf3:#e4e9f0;--bd:#dce2ea;--bd2:#bfc8d4;--tx:#1a2133;--tx2:#4a5568;--tx3:#617082;--ac:#0d64f4;--ac2:#1e6ef5;--acg:#eff6ff;--gn:#0b7e58;--gn2:#04865e;--rd:#dc1313;--og:#a46907;--r:12px;--rs:8px;--sh:0 1px 3px rgba(0,0,0,.06);--sh2:0 8px 24px rgba(0,0,0,.08)}
 *{margin:0;padding:0;box-sizing:border-box}
+/* The calendar's rule, which this page did not have. It matters for the same
+   reason it matters there: this page has had a span carrying an onclick, and
+   anything that is not a real button gets no focus ring from the browser at
+   all. Every interactive element here is a button, link, input or select now,
+   so this is the app's ring rather than the browser's default -- which is the
+   point, so the two pages look the same when you tab through them. */
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px;border-radius:4px}
 body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:16px}
 .bar{background:var(--sf);border-bottom:1px solid var(--bd);padding:0 20px;height:54px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:var(--sh)}
 .bar-l{display:flex;align-items:center;gap:12px}
@@ -33,11 +40,18 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .sbox{position:relative;width:280px;flex-shrink:0}
 .sbox input{width:100%;padding:9px 14px 9px 36px;border-radius:var(--r);background:var(--sf);border:1px solid var(--bd);color:var(--tx);font-size:.92rem;outline:none;box-shadow:var(--sh)}
 .sbox input:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(59,130,246,.1)}
+/* outline:none above and on .fsel is only safe with a replacement ring. The
+   input had one; the room select did not, so the one control on this page you
+   reach with Tab and change with the arrow keys was the one with no visible
+   focus. Same ring, so the two read as the same kind of control. */
+select.fsel:focus{border-color:var(--ac);box-shadow:0 0 0 3px rgba(59,130,246,.1)}
 .sbox .si{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--tx3);font-size:.92rem}
 .sdrop{position:absolute;top:100%;left:0;right:0;background:var(--sf);border:1px solid var(--bd2);border-radius:var(--rs);box-shadow:var(--sh2);z-index:50;max-height:280px;overflow-y:auto;display:none;margin-top:2px}
 .sdrop.show{display:block}
 .sdrop-section{padding:6px 10px 3px;font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3)}
-.sdrop-item{padding:7px 10px;font-size:.88rem;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--tx2)}
+/* width/background/border/font/text-align are for the button element these are
+   built as -- see calendar.html. */
+.sdrop-item{padding:7px 10px;font-size:.88rem;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--tx2);width:100%;background:none;border:none;font-family:inherit;text-align:left}
 .sdrop-item:hover{background:var(--sf2);color:var(--tx)}
 .rm-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
@@ -45,7 +59,7 @@ body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t
 .tag-rm{background:var(--acg);color:var(--ac);border:1px solid rgba(59,130,246,.2)}
 .tag-grp{background:rgba(245,158,11,.08);color:var(--og);border:1px solid rgba(245,158,11,.2)}
 .tag-q{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd)}
-.tag-x{cursor:pointer;opacity:.6;font-size:.78rem;margin-left:2px}.tag-x:hover{opacity:1}
+.tag-x{cursor:pointer;opacity:.6;font-size:.78rem;margin-left:2px;background:none;border:none;padding:0;color:inherit;font-family:inherit;line-height:1}.tag-x:hover{opacity:1}
 
 .gbar{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
 .gb{padding:5px 12px;border-radius:5px;font-size:.82rem;font-weight:500;cursor:pointer;border:1px solid var(--bd);background:var(--sf);color:var(--tx2);transition:.12s;user-select:none}
@@ -106,7 +120,7 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
   <div class="ctrls">
     <div class="sbox">
       <span class="si">🔍</span>
-      <input type="text" id="search" placeholder="Search rooms, events..." autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="setTimeout(()=>closeDrop(),200)">
+      <input type="text" id="search" placeholder="Search rooms, events..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="setTimeout(()=>closeDrop(),200)">
       <div class="sdrop" id="sdrop"></div>
       <div class="tags" id="tags"></div>
     </div>
@@ -116,10 +130,10 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
        set of groups from the calendar. -->
   <div class="gbar" id="gbar"></div>
   <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
-    <button class="sort-btn on" onclick="setSort('time')" id="s-time">⏰ Time</button>
-    <button class="sort-btn" onclick="setSort('room')" id="s-room">🏠 Room</button>
-    <button class="sort-btn" onclick="setSort('title')" id="s-title">📝 Title</button>
-    <select class="fsel" id="roomFilter" onchange="onRoomSelect(this.value)"><option value="all">All Rooms</option></select>
+    <button class="sort-btn on" onclick="setSort('time')" id="s-time" aria-pressed="true">⏰ Time</button>
+    <button class="sort-btn" onclick="setSort('room')" id="s-room" aria-pressed="false">🏠 Room</button>
+    <button class="sort-btn" onclick="setSort('title')" id="s-title" aria-pressed="false">📝 Title</button>
+    <select class="fsel" id="roomFilter" aria-label="Filter by room" onchange="onRoomSelect(this.value)"><option value="all">All Rooms</option></select>
   </div>
   <div id="list"></div>
   <div class="pgn" id="pgn"></div>
@@ -218,7 +232,12 @@ function toggleGroup(g){
 function syncGroupBtns(){
   document.querySelectorAll('#gbar .gb').forEach(b=>{
     const g=b.dataset.g;
-    b.classList.toggle('on',!g?activeGroups.size===0:activeGroups.has(g));
+    const on=!g?activeGroups.size===0:activeGroups.has(g);
+    b.classList.toggle('on',on);
+    // The calendar's chips carry this; without it the selected group is
+    // signalled by colour alone, which is the one thing .on cannot say to
+    // anything that is not looking at the colour.
+    b.setAttribute('aria-pressed',on?'true':'false');
   });
 }
 
@@ -253,12 +272,17 @@ function showDrop(d){
   box.innerHTML='';
   const section=t=>{const h=document.createElement('div');h.className='sdrop-section';h.textContent=t;box.appendChild(h);};
   const item=(type,value,dot)=>{
-    const el=document.createElement('div');
+    // A button, not a div carrying an onmousedown -- see the same fix and the
+    // same reasoning in calendar.html. Typing opens this list, so a keyboard
+    // user reaches it and must be able to act on what it shows.
+    const el=document.createElement('button');
+    el.type='button';
     el.className='sdrop-item';
     if(dot){const s=document.createElement('span');s.className='rm-dot';s.style.background=rcol(value, ROOMS);el.appendChild(s);}
     const s=document.createElement('span');s.textContent=value;
     el.appendChild(s);
     el.onmousedown=()=>addTag(type,value);
+    el.onclick=e=>{if(e.detail===0)addTag(type,value);};
     box.appendChild(el);
   };
   if(d.groups.length){section('Groups');d.groups.forEach(g=>item('group',g));}
@@ -296,8 +320,15 @@ function renderTags(){
     const t=document.createElement('span');
     t.className='tag '+cls;
     t.appendChild(document.createTextNode(label));
-    const x=document.createElement('span');
-    x.className='tag-x';x.textContent='✕';x.title='Remove';
+    const x=document.createElement('button');
+    // A button, not a span with a click handler. As a span this was the one
+    // control on the page that a keyboard could not reach and a screen reader
+    // was not told about -- the tag could be added without a mouse and only
+    // removed with one. The class carries the styling; the button element's own
+    // chrome is reset next to it.
+    x.className='tag-x';x.type='button';
+    x.textContent='✕';
+    x.setAttribute('aria-label','Remove filter: '+label);
     x.onclick=onX;
     t.appendChild(x);
     box.appendChild(t);
@@ -308,7 +339,7 @@ function renderTags(){
   if(searchQ)add('tag-q',searchQ,()=>removeTag('query',searchQ));
 }
 
-function setSort(k){sortKey=k;page=0;document.querySelectorAll('.sort-btn').forEach(b=>b.classList.remove('on'));document.getElementById('s-'+k).classList.add('on');render();}
+function setSort(k){sortKey=k;page=0;document.querySelectorAll('.sort-btn').forEach(b=>{b.classList.remove('on');b.setAttribute('aria-pressed','false')});const on=document.getElementById('s-'+k);on.classList.add('on');on.setAttribute('aria-pressed','true');render();}
 
 function render(){
   // The URL and the links out hang off render() for the same reason they do on
@@ -358,7 +389,7 @@ function render(){
     merged.forEach(ev=>{html+=cardHTML(ev);});
   }
   listEl.innerHTML=html;
-  if(tp>1){let pg='<button class="pb" onclick="page--;render()"'+(page===0?' disabled':'')+'>◀</button>';const ms=5;let ps=Math.max(0,page-2),pe2=Math.min(tp,ps+ms);if(pe2-ps<ms)ps=Math.max(0,pe2-ms);for(let i=ps;i<pe2;i++)pg+='<button class="pb'+(i===page?' on':'')+'" onclick="page='+i+';render()">'+(i+1)+'</button>';pg+='<button class="pb" onclick="page++;render()"'+(page>=tp-1?' disabled':'')+'>▶</button>';pg+='<span style="font-size:.78rem;color:var(--tx3);margin-left:8px">'+evts.length+' events</span>';document.getElementById('pgn').innerHTML=pg;}else{document.getElementById('pgn').innerHTML='';}
+  if(tp>1){let pg='<button class="pb" onclick="page--;render()" aria-label="Previous page"'+(page===0?' disabled':'')+'>◀</button>';const ms=5;let ps=Math.max(0,page-2),pe2=Math.min(tp,ps+ms);if(pe2-ps<ms)ps=Math.max(0,pe2-ms);for(let i=ps;i<pe2;i++)pg+='<button class="pb'+(i===page?' on':'')+'" onclick="page='+i+';render()"'+(i===page?' aria-current="page"':'')+'>'+(i+1)+'</button>';pg+='<button class="pb" onclick="page++;render()" aria-label="Next page"'+(page>=tp-1?' disabled':'')+'>▶</button>';pg+='<span style="font-size:.78rem;color:var(--tx3);margin-left:8px">'+evts.length+' events</span>';document.getElementById('pgn').innerHTML=pg;}else{document.getElementById('pgn').innerHTML='';}
 }
 
 document.addEventListener('keydown',e=>{if(document.activeElement.tagName==='INPUT'||document.activeElement.tagName==='SELECT')return;if(e.key==='/'){e.preventDefault();document.getElementById('search').focus();}});
