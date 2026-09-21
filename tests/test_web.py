@@ -99,17 +99,23 @@ class StubOrch:
 
     `backfill` is settable because the history-fill toast fires on the edge of
     that field, and an edge needs two different answers to exist at all.
+    `session` is settable for the same reason: the list page's badge is bound
+    to it, and a badge that is bound to a fact has to be shown moving when the
+    fact moves.
     """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.backfill: dict | None = None
+        self.session = "ok"
+        self.session_message = ""
 
     def status(self) -> dict:
         return {
-            "session": "ok", "session_message": "", "busy": False,
-            "busy_action": "", "progress": "", "last_scrape": None,
-            "last_scrape_message": "", "backfill": self.backfill,
+            "session": self.session, "session_message": self.session_message,
+            "busy": False, "busy_action": "", "progress": "",
+            "last_scrape": None, "last_scrape_message": "",
+            "backfill": self.backfill,
         }
 
     def is_busy(self) -> bool:
@@ -674,6 +680,100 @@ def test_list_has_a_url_and_the_links_carry_it(browser, base: str) -> None:
         page.close()
 
 
+def test_list_badge_reads_the_session(browser, base: str) -> None:
+    """list.html asserted "● Live" as a string literal, for as long as it was open.
+
+    The file never called /api/status at all — a grep for it returned only that
+    one badge line. So the secondary page claimed a live session while the
+    calendar's badge, looking at the same session, correctly read "Session
+    expired" — and the bookings underneath it had stopped updating. That is the
+    same class as the three fixes in 5070386: a screen describing a state that
+    is no longer there, on the one page with no test covering its header.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        def badge() -> str:
+            return page.inner_text("#sessBadge")
+
+        def colour() -> str:
+            return page.eval_on_selector("#sessBadge", "el => el.className")
+
+        def poll() -> None:
+            """Drive the poll rather than waiting out its 60s interval.
+
+            The interval is the calendar's cadence, and a test that slept for
+            it would assert nothing the interval itself needed.
+            """
+            page.evaluate("async () => { await loadStatus(); }")
+
+        # The stub worker is signed in, so the page must say so — in the
+        # calendar's words, or the two pages describe one session differently.
+        poll()
+        check("list: a live session is reported, in the calendar's words",
+              badge(), "● Session active")
+        ok("list: ...in the live colour", "bg-gn" in colour())
+
+        ORCH.session = "expired"
+        poll()
+        check("list: an expired session stops claiming live",
+              badge(), "● Session expired")
+        ok("list: ...and turns red rather than staying green", "bg-rd" in colour())
+
+        ORCH.session = "unknown"
+        ORCH.session_message = "No browser profile"
+        poll()
+        check("list: an unknown session says what it does know",
+              badge(), "● No browser profile")
+        ok("list: ...in the warning colour", "bg-og" in colour())
+
+        # The markup itself, which no assertion above can pin: the behaviour
+        # tests all pass if the page simply never writes a wrong thing, and a
+        # literal "Live" badge is a claim the page makes by not speaking. So
+        # read what the server actually sends — parsed, and read off the badge
+        # element, because a search for the string through the raw file would
+        # find the comment that explains this very change.
+        served = page.evaluate(
+            """async () => {
+                 const html = await (await fetch('/list')).text();
+                 const doc = new DOMParser().parseFromString(html, 'text/html');
+                 const el = doc.getElementById('sessBadge');
+                 return el === null ? null : el.textContent;
+               }"""
+        )
+        check("list: the served badge exists to be written through",
+              served is not None, True)
+        ok("list: the served page no longer hardcodes a live badge",
+           "Live" not in (served or ""))
+    finally:
+        ORCH.session = "ok"
+        ORCH.session_message = ""
+        page.close()
+
+    # A status call that fails must not leave the last good reading standing.
+    # A badge that said "active" once and then went quiet is the original
+    # defect in slower motion, so the failure has to be visible as failure.
+    # Both routes are registered here rather than through open_page because the
+    # abort has to be in place before the first poll; Playwright matches the
+    # most recently added route first, so the specific one wins over the guard.
+    dead = browser.new_page()
+    dead.set_default_timeout(PAGE_TIMEOUT_MS)
+    dead.route("**/*", _guard)
+    dead.route("**/api/status", lambda route: route.abort())
+    try:
+        dead.goto(base + "/list", wait_until="load")
+        dead.wait_for_selector("#sessBadge")
+        # Which of the two neutral states is showing depends on whether the
+        # rejected fetch has settled yet, so this asserts the property that
+        # holds either way: the page does not claim a session it could not read.
+        text = dead.inner_text("#sessBadge")
+        cls = dead.eval_on_selector("#sessBadge", "el => el.className")
+        ok("list: a failed status call does not claim a live session",
+           "active" not in text)
+        ok("list: ...and does not show the live colour", "bg-gn" not in cls)
+    finally:
+        dead.close()
+
+
 def test_list_select_and_tags_are_one_filter(browser, base: str) -> None:
     """They were two filters that ANDed, so combining them selected nothing.
 
@@ -1149,6 +1249,7 @@ TESTS = [
     test_free_at_clears_the_rooms_booked_that_day,
     test_free_at_note_describes_the_span,
     test_list_has_a_url_and_the_links_carry_it,
+    test_list_badge_reads_the_session,
     test_list_select_and_tags_are_one_filter,
     test_list_groups_come_from_the_config,
     test_list_renders_an_all_day_block_as_all_day,
