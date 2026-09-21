@@ -211,7 +211,9 @@ its static surface stays exactly as wide as it needs to be.
 The parser tests cover the cases that actually broke against the live
 report — the `15-April    -26` date shape, HHMM times, and the
 slot-index trap where a start time under 600 is a timetable period, not
-an hour.
+an hour. They also pin the 12-hour clock, which the reader accepts and
+therefore has to read correctly: `2:00 PM` is 14:00, and `12:30 AM` is
+00:30 rather than 12:30.
 
 `test_worker.py` covers the two background-worker guards whose failure is
 silent: the report window is read back and checked, and the daily scrape is
@@ -369,7 +371,17 @@ it.
   date format is not evidence of a wrong window, and treating it as one would
   stop every scrape.
 - Some bookings carry a slot index with no recoverable real time; those
-  show as all-day rather than a wrong hour. Guessing would be worse.
+  show as all-day rather than a wrong hour. Guessing would be worse. The
+  same rule covers a 12-hour time: `2:00 PM` is read as 14:00 rather than
+  as the `2` the digits spell, and a contradictory `13:00 PM` is dropped
+  rather than resolved one way or the other.
+- **An exported .ics gives every stored booking its own UID**, derived from
+  the store's own event identity (title, room, start *and* end). A calendar
+  client matches on UID, so two events sharing one are one event as far as
+  the import is concerned — it keeps the first and discards the second
+  without saying so. Changing the UID scheme means an export re-imported
+  into a client that already holds the old file arrives as new events
+  rather than as updates to the existing ones.
 - **Free Right Now treats an all-day row as occupying its whole date.** It did
   not always. A `003/RENOVATIONS` block rendered 00:00–23:00 and read as booked
   all day, but a booking whose time could not be recovered — the same all-day
@@ -379,7 +391,12 @@ it.
 - Room exclusions (bookable study rooms like the 134-series) are in
   `app/config.py`. They are filtered out of the calendar **and never
   written to the database** — the filter runs before storage, so an
-  excluded room is not retrievable even through the JSON export.
+  excluded room is not retrievable even through the JSON export. The
+  patterns match the room whichever way it is written: the report's own
+  names and the normalised form the events carry are different strings
+  (`RT 134A` against `134A`), and the exclusion holds for both. It used to
+  match only the report's spelling, so the exclusion worked or not
+  depending on which one the shuttle happened to send.
 - The web UI binds to `127.0.0.1` only and has no authentication, because
   it has no network surface. Do not change the host to `0.0.0.0` — the
   process holds a live LSM session.

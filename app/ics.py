@@ -7,6 +7,7 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from app.config import CALENDAR_NAME, CALENDAR_TZ, DEFAULT_DURATION_MINUTES, ICS_PATH, log
+from app.store import event_uid
 
 TZ = ZoneInfo(CALENDAR_TZ)
 
@@ -68,10 +69,24 @@ def build_ics(events: Iterable[dict[str, Any]]) -> str:
 
 
 def _uid(ev: dict[str, Any]) -> str:
-    from hashlib import sha1
+    """One stored booking, one calendar UID.
 
-    key = f"{ev.get('title')}|{ev.get('room')}|{ev.get('start')}"
-    return sha1(key.encode("utf-8")).hexdigest()[:20] + "@rotman-lsm-calendar"
+    This used to hash title|room|start — the store's identity with `end`
+    dropped, which made it a *second* function answering the question the
+    store already answers. Two bookings the database holds as two rows (an
+    all-day block and a timed one, or any pair differing only in when they
+    finish) then came out under one UID, and a .ics with two VEVENTs sharing
+    a UID is two events only until something reads it: by RFC 5545 the UID
+    *is* the identity, so an importer keeps one and discards the other with
+    no error. A booking vanishing from Outlook is not a thing the user can
+    see happening.
+
+    store.event_uid is what "which booking is this?" means everywhere else,
+    and it hashes title|room|start|end as its own docstring says. Deriving
+    from it makes one row → one UID true by construction rather than by this
+    key happening to agree.
+    """
+    return f"{event_uid(ev)}@rotman-lsm-calendar"
 
 
 def write_ics(events: Iterable[dict[str, Any]]) -> None:

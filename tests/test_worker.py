@@ -297,6 +297,54 @@ def test_parse_time() -> None:
     check("so does a missing value", scheduler._parse_time(None), dtime(6, 0))
 
 
+def test_exclusions() -> None:
+    """An excluded room has to be excluded whatever the shuttle calls it.
+
+    The set is compared against two differently-spelled things — the shuttle's
+    own room names, which the patterns are matched against, and the events'
+    `room`, which the parser has already normalised. Matching only the raw
+    spelling made the answer depend on how the report happened to write the
+    room, so '134A' was dropped and 'RT 134A' was stored.
+
+    Which spelling the live shuttle uses is not knowable from here, and that
+    is the point: the code does not get to choose, so both have to work.
+    """
+    print("\nroom exclusions")
+
+    from app.parse import normalise_room
+    from app.scheduler import _excluded_rooms
+
+    # The same room, written every way the report might write it.
+    for raw in ("134A", "RT 134A", "RT-134A", "ROTMAN 134A", "rotman-134a"):
+        ex = _excluded_rooms([raw])
+        ok(f"{raw!r} is excluded", raw in ex)
+        check(f"...so the event's room {normalise_room(raw)!r} is too",
+              normalise_room(raw) in ex, True)
+
+    # And nothing else is swept up with it: the pattern is one room series,
+    # not "starts with 134" and not "four characters".
+    for raw in ("135A", "142", "134", "134AB", "1340", "Event North", ""):
+        ex = _excluded_rooms([raw])
+        check(f"{raw!r} is left alone", normalise_room(raw) in ex, False)
+
+    # A room not mentioned in this report is not invented into the set — the
+    # set is built from what was seen, which is why `seen` is an argument.
+    check("no seen rooms, nothing patterned",
+          _excluded_rooms([]), set())
+
+    # A hand-written literal is honoured in either spelling, since whoever
+    # wrote it may have copied the name out of the report.
+    import app.config as config
+    was = config.EXCLUDED_ROOMS
+    try:
+        config.EXCLUDED_ROOMS = {"RT 900"}
+        ex = _excluded_rooms([])
+        ok("a literal entry is excluded as written", "RT 900" in ex)
+        ok("...and as the events spell it", "900" in ex)
+    finally:
+        config.EXCLUDED_ROOMS = was
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — worker tests")
@@ -305,6 +353,7 @@ def main() -> int:
 
     test_window_guard()
     test_no_retry_storm()
+    test_exclusions()
     test_parse_time()
 
     print("\n" + "=" * 60)

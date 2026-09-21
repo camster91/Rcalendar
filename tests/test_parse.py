@@ -87,6 +87,50 @@ def test_times() -> None:
     check("invalid hour rejected", parse_rotman_time("2599", "", ref)[0], None)
 
 
+def test_twelve_hour_clock() -> None:
+    """A 12-hour string carries half its meaning in letters.
+
+    Stripping the non-digits took the meridiem with it, and "2:00 PM" read as
+    02:00 — twelve hours early, on a booking that still looked like a booking.
+    Both halves of the clock are pinned here, along with the hour that only
+    the meridiem can resolve (12 is 12:00 or 00:00, never both).
+    """
+    print("\ntwelve-hour clock")
+    ref = datetime(2026, 4, 15)
+
+    for raw, want in (("2:00 PM", (14, 0)), ("2:00 AM", (2, 0)),
+                      ("11:30 pm", (23, 30)), ("9:00AM", (9, 0)),
+                      ("4:15 p.m.", (16, 15)), ("4:15 a.m.", (4, 15))):
+        check(f"{raw!r} is {want[0]:02d}:{want[1]:02d}",
+              parse_rotman_time(raw, "", ref)[0],
+              datetime(2026, 4, 15, want[0], want[1]))
+
+    # The two hours a meridiem is the only thing that can place.
+    check("12:30 PM is noon-thirty, not midnight-thirty",
+          parse_rotman_time("12:30 PM", "", ref)[0],
+          datetime(2026, 4, 15, 12, 30))
+    check("12:30 AM is midnight-thirty",
+          parse_rotman_time("12:30 AM", "", ref)[0],
+          datetime(2026, 4, 15, 0, 30))
+
+    # A meridiem on a 13–23 hour contradicts it, and either reading is a
+    # guess — so the time is dropped, the same answer a slot index with no
+    # comment gets, rather than a number picked out of the air.
+    check("13:00 PM is refused, not guessed",
+          parse_rotman_time("13:00 PM", "", ref)[0], None)
+    check("18:00 PM is refused too",
+          parse_rotman_time("18:00 PM", "", ref)[0], None)
+
+    # And nothing that was reading correctly before reads differently now.
+    check("bare HHMM is untouched", parse_rotman_time("1800", "", ref)[0],
+          datetime(2026, 4, 15, 18, 0))
+    check("a colon is still just punctuation",
+          parse_rotman_time("6:45", "", ref)[0], datetime(2026, 4, 15, 6, 45))
+    check("the comment recovery still recovers",
+          parse_rotman_time("500", "501", ref, comment="0900-1200 setup")[0],
+          datetime(2026, 4, 15, 9, 0))
+
+
 def test_rooms() -> None:
     print("\nnormalise_room")
     check("RT prefix", normalise_room("RT 142"), "142")
@@ -196,6 +240,7 @@ def main() -> int:
 
     test_dates()
     test_times()
+    test_twelve_hour_clock()
     test_rooms()
     test_cleanup()
     test_csv()

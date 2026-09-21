@@ -1,6 +1,6 @@
 """
 End-to-end smoke test: storage round-trip and its migrations, the
-cross-site refusal, and every web endpoint.
+cross-site refusal, the export's event identity, and every web endpoint.
 
 Uses Flask's test client and a stub orchestrator, so no browser or LSM
 session is involved. Run directly:
@@ -421,6 +421,65 @@ def test_cross_site_writes() -> None:
           client.get("/api/bootstrap", headers=evil).status_code, 200)
 
 
+def test_ics_uids() -> None:
+    """A UID is what a calendar client believes an event *is*.
+
+    Re-importing the export is the normal way this file gets used, and the
+    client matches on UID. Two VEVENTs under one UID are therefore not two
+    events for long: RFC 5545 makes the UID the identity, so the importer
+    keeps one and drops the other with nothing on screen to say a booking
+    went missing.
+
+    The pair below is what the old key could not tell apart — the old UID
+    hashed title|room|start, so it agreed with itself across two bookings
+    that `end` distinguishes. That `end` is in play here and not some other
+    field is the point: it is exactly the component the old key dropped.
+    """
+    print("\nics identity")
+
+    from app import ics
+
+    a = {"title": "Sunday service block", "room": "127",
+         "start": "2026-03-15T00:00:00", "end": "2026-03-16T00:00:00",
+         "all_day": True, "location": "RT 127"}
+    b = {"title": "Sunday service block", "room": "127",
+         "start": "2026-03-15T00:00:00", "end": "2026-03-15T02:00:00",
+         "all_day": False, "location": "RT 127"}
+
+    # The store holds these as two bookings; the export has to agree.
+    ok("the store calls these two bookings",
+       store.event_uid(a) != store.event_uid(b))
+    ok("so the .ics UID differs too", ics._uid(a) != ics._uid(b))
+
+    import re
+
+    body = ics.build_ics([a, b])
+    uids = [m.strip() for m in re.findall(r"^UID:(.+)$", body, re.M)]
+    check("both bookings are written", body.count("BEGIN:VEVENT"), 2)
+    check("...and they carry two UIDs", len(set(uids)), 2)
+
+    # The UID still has to be globally unique, which is what the domain suffix
+    # is for — a bare hash is not a UID an importer can trust.
+    ok("the UID keeps its domain suffix",
+       all(u.endswith("@rotman-lsm-calendar") for u in uids))
+
+    # Re-exporting the same booking must produce the same UID, or every
+    # refresh would land in the client as a new event beside the old one.
+    check("the same booking exports to the same UID",
+          ics._uid(a), ics._uid(dict(a)))
+
+    # A whole corpus rather than just the pair, including a cancelled booking
+    # and one with no end time — the two shapes the exporter skips or fills in.
+    # Every booking that reaches a VEVENT has to have a UID of its own.
+    corpus = sample_events() + [a, b]
+    every = ics.build_ics(corpus)
+    written = [r for r in corpus if r.get("start") and not r.get("cancelled")]
+    all_uids = [m.strip() for m in re.findall(r"^UID:(.+)$", every, re.M)]
+    check("every exported booking is written",
+          len(all_uids), len(written))
+    check("...and has a UID apiece", len(set(all_uids)), len(written))
+
+
 def test_login_detection() -> None:
     """
     UofT bounces through several SSO hosts. Matching exact hostnames
@@ -455,6 +514,7 @@ def main() -> int:
     test_migration()
     test_web()
     test_cross_site_writes()
+    test_ics_uids()
     test_login_detection()
 
     print("\n" + "=" * 60)
