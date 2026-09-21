@@ -3,6 +3,19 @@
     Build the app into dist\RotmanLSMCalendar\ as a folder (PyInstaller onedir).
 
 .DESCRIPTION
+    You do not need this to run the app. .\packaging\setup.ps1 plus the venv
+    (.venv\Scripts\python.exe -m app.main) is the supported path, and it is what
+    install-autostart.ps1 points at by default. Build this only when you need a
+    self-contained folder to hand to someone without a checkout.
+
+    Expect the build to be reported. Compiling an unsigned exe on this machine
+    puts entries in the SentinelOne console -- measured 2026-09-21: the exe is
+    flagged under build\ and again under dist\, both as "Suspicious Activity",
+    one second apart. Nothing is quarantined and the build verifies clean, but
+    that detection lands when the file is *written*, not when it runs, so it
+    appears before verify-build.ps1 has executed anything. Check the quarantine
+    count, not the threat history, before concluding a build broke.
+
     Produces a folder, not a single exe. A one-file build unpacks itself into
     %TEMP% and executes from there; on this machine (SentinelOne + CrowdStrike)
     that freshly-compiled unsigned self-extracting pattern is removed on
@@ -92,6 +105,12 @@ $av = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduc
 if ($av) {
     Write-Host "  Endpoint agent detected on this machine:" -ForegroundColor Yellow
     foreach ($a in $av) { Write-Host "    - $a" -ForegroundColor Yellow }
+    Write-Host "  A build here IS reported: expect a SentinelOne entry for this exe"
+    Write-Host "  under build\ and under dist\. That is the compiler writing an"
+    Write-Host "  unsigned exe, not a block -- read the quarantine count (it should"
+    Write-Host "  be 0) rather than the threat history, and do not rebuild to try to"
+    Write-Host "  clear it: the next build is flagged too, and repeated detections on"
+    Write-Host "  the same binary are how a console line becomes a ticket."
     Write-Host "  A single-file build was removed on execution here. Whether the"
     Write-Host "  folder build survives is not assumed - measure it:"
     Write-Host "    .\packaging\verify-build.ps1" -ForegroundColor Yellow

@@ -48,6 +48,13 @@ MFA stays a human decision.
 .\.venv\Scripts\python.exe -m app.main
 ```
 
+**This is the way to run the app.** It is what `install-autostart.ps1` points
+at by default, and it has a property the packaged build does not: it compiles
+nothing. A signed `python.exe` running source is not a binary the endpoint
+agents have to form an opinion about, so nothing here appears in the security
+console. The packaged build in "Building a standalone .exe" is optional and is
+reported when it is made.
+
 Command-line modes:
 
 ```powershell
@@ -73,7 +80,28 @@ reversible. `pythonw` rather than `python` so no console window flashes
 on every login. The app comes up in the tray, scrapes at 06:00, and
 stays out of the way.
 
-## Building a standalone .exe
+## Building a standalone .exe (optional — and the build is reported)
+
+**You do not need this to run the app, and it is not part of normal work.** The
+venv in "Running it" is the supported path, `install-autostart.ps1` already
+defaults to it, and it compiles nothing. Build this only when you specifically
+need a self-contained folder — to hand the app to someone without a checkout.
+
+Know the cost before you start: **making the exe puts an entry in the security
+console.** The 2026-09-21 build produced two of them, one second apart —
+`RotmanLSMCalendar.exe` under `build\` and again under `dist\`, both logged as
+`Suspicious Activity · Detected suspicious file`. Nothing was quarantined, the
+exe was intact at its full 7,952,049 bytes, and `verify-build.ps1` then passed
+end to end. So the report is noise rather than damage — but it is noise on a
+managed machine, it names this account in a console someone else reads, and
+repeated detections against the same unsigned binary are how a console line
+becomes a ticket. Note also that the detection lands when the file is *written*,
+not when it runs.
+
+So: build it when there is a reason to, not to keep `dist\` fresh. And do not
+leave `-UseExe` autostart pointing at a stale build "because it is already
+there". If the exe does have to exist as a shipped artefact, the fix is
+allow-listing or signing — see "On this machine" for what each costs.
 
 ```powershell
 .\packaging\build.ps1
@@ -85,7 +113,7 @@ Produces a **folder**, `dist\RotmanLSMCalendar\` — not a single file:
 |---|---|
 | files | 916 |
 | total | ~145 MB |
-| `RotmanLSMCalendar.exe` | 7.6 MB |
+| `RotmanLSMCalendar.exe` | 7.95 MB |
 | `_internal\` | everything else |
 
 The file count is a measurement, not an invariant — it is read off the build
@@ -150,6 +178,35 @@ passed end to end. So on this machine the folder build is reported and left
 alone, where the single-file build was reported and taken. Anyone rebuilding
 should expect the console to show a detection and should read the quarantine
 count, not the threat history, before concluding anything broke.
+
+**What would close the residual risk**, in order of cost — detection here is
+reputation-driven, so an unsigned build with a handful of users can be reported
+on first sight whatever it does. The folder shape rules out the *dropper*
+pattern, not the first impression:
+
+1. **Have the AV team allow-list it.** Key it on **path or publisher, not
+   hash** — every rebuild changes the hash, so a hash-keyed exclusion expires
+   with the next build. This is the cheap one, and it needs a request rather
+   than a config change.
+2. **Code-sign it.** The durable fix, and the only one that travels if the app
+   ever moves machines. Note that since 2023 an OV certificate needs a hardware
+   token or HSM, so this has a purchase and a physical object in it.
+3. **Unpack it on one AV machine and read the quarantine count.** Not a fix,
+   just the cheapest honest check that the build survives somewhere other than
+   here.
+
+None of the three is testable from this box, so none of them should be
+promised. Worth naming in an allow-list request is the network surface, which
+for this app is small and entirely one-directional: it binds **`127.0.0.1:8765`
+only** (loopback, no authentication, no host override), and its only outbound
+traffic is HTTPS to `lsm.utoronto.ca` in a Playwright-driven Chromium. There is
+no OAuth loopback listener here — that belongs to a different tool of mine, and
+naming the wrong port in a security request is worse than naming none. AV teams
+approve far faster when told what the binary talks to and why.
+
+A draft of that request, with the measured facts and the placeholders to fill
+in, is `packaging/allow-list-request.md`. Both files must agree; the request is
+the one that gets sent.
 
 A 90-second dwell is evidence, not a guarantee. If a build ever stops working
 here, `verify-build.ps1` is the thing to run, and its output names the stage
