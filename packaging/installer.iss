@@ -47,6 +47,15 @@
 ; The number of dots decides how many parts are still missing, so any plain
 ; x.y.z, x.y.z.w or shorter spells itself into a quad. The dev fallback is
 ; caught by its hyphen, and anything else unrecognised falls to a zero quad.
+;
+; The dots are counted by deleting them and comparing lengths, which looks like
+; a strange way to count, and would be -- if ISPP had a choice. It does not:
+; there is no StrToIntDef and no exception handling, so there is no way to ask
+; whether a string is numeric and then act on the answer. ISCC 6.7.3 rejects
+; StrToIntDef as an "Undeclared identifier" rather than accepting it with
+; different semantics. Every test in this block therefore has to be one that
+; cannot fail whatever the string holds -- which is why the whole derivation is
+; string surgery, and why the final else exists at all.
 ; Neither ISPP nor a malformed four-part string reaches ISCC: a version that is
 ; not numeric gets the zero quad rather than the compile error ISCC would raise,
 ; so this cannot become the reason a build stops working.
