@@ -10,15 +10,19 @@ Fill in before sending — the bracketed fields are placeholders, not prose:
   it is true, and a number you cannot stand behind is worse than a small one
 - `[ASSET TAG]` if the machine has one
 
-Send it **only if the exe is actually needed as a shipped artefact.** If it is
+Send it **only if an exe is actually needed as a shipped artefact.** If it is
 not, the request is unnecessary: the venv path is now the default, it compiles
 nothing, and it triggers no detection. Saying so in the request is deliberate —
 it gives the reviewer an easy answer and makes the ask smaller, which is what
 gets it approved.
 
+Two artefacts are listed below, because there are two unsigned binaries now. If
+only one of them is ever going to leave this machine, delete the other's section
+rather than leaving the reviewer to work out which one you mean.
+
 ---
 
-**Subject:** Allow-list request — RotmanLSMCalendar.exe, unsigned internal tool (reputation-based detection)
+**Subject:** Allow-list request — Rotman LSM Calendar, unsigned internal tool (reputation-based detection)
 
 Hello,
 
@@ -83,6 +87,31 @@ entries are timestamped 08:52:21 and 08:52:22, and the exe was written at
 | Signature | Not signed |
 | Packaging | PyInstaller `--onedir`: a folder of 916 files (~145 MB), **not** a single-file self-extracting build |
 
+**A second, newer artefact: the installer**
+
+Since the report above, the tool has been given an installer, so there are now
+two unsigned binaries rather than one — and a request that names only the exe
+would be answered on the wrong file. This one was **not** flagged on this
+machine. That is one observation and not a verdict, but it is the observation
+that matters to a reputation scanner, because it survived being executed: the
+single-file PyInstaller build was removed on execution here, and this one was
+not.
+
+| | |
+|---|---|
+| Name | `RotmanLSMCalendar-Setup-1.0.0.exe` |
+| Size | 42.3 MB |
+| Signature | Not signed |
+| Packaging | Inno Setup 6.7.3, `PrivilegesRequired=lowest` — installs per-user under `%LOCALAPPDATA%\Programs`, so it raises no UAC prompt |
+
+What it installs is a per-user copy of the app plus a Desktop shortcut and one
+in the Startup folder. No service, no driver, no scheduled task, no machine-wide
+change, and nothing written outside the user's own profile. The uninstaller asks
+separately before deleting the data directory and defaults to keeping it. Its
+only network activity on install is fetching Chromium into the per-user
+Playwright cache, which is the same download the app would otherwise do on first
+run.
+
 **Detection record, 2026-09-21**
 
 - Two console entries, both "Suspicious Activity · Detected suspicious file":
@@ -94,8 +123,8 @@ entries are timestamped 08:52:21 and 08:52:22, and the exe was written at
 
 **What I am asking for**
 
-1. Review the binary and, if you are satisfied, allow-list it keyed on path or
-   publisher so it survives a rebuild; **or**
+1. Review the binaries and, if you are satisfied, allow-list them keyed on path
+   or publisher so they survive a rebuild; **or**
 2. tell me signing is required, and whether a certificate from UofT's own PKI
    would be acceptable rather than a commercial one; **or**
 3. tell me the exe is not needed and I will drop it — the venv path is what I
