@@ -3,10 +3,14 @@
     Build the app into dist\RotmanLSMCalendar\ as a folder (PyInstaller onedir).
 
 .DESCRIPTION
-    You do not need this to run the app. .\packaging\setup.ps1 plus the venv
-    (.venv\Scripts\python.exe -m app.main) is the supported path, and it is what
-    install-autostart.ps1 points at by default. Build this only when you need a
-    self-contained folder to hand to someone without a checkout.
+    NOT THE SUPPORTED PATH. The app is run from the venv --
+    .venv\Scripts\python.exe -m app.main, set up by .\packaging\setup.ps1 --
+    and that is what install-autostart.ps1 points at. Nothing in this
+    repository aims at the exe any more.
+
+    You do not need this. Build it only when you need a self-contained folder
+    to hand to someone without a checkout, and read the "Not the supported
+    path" section of README.md first.
 
     Expect the build to be reported. Compiling an unsigned exe on this machine
     puts entries in the SentinelOne console -- measured 2026-09-21: the exe is

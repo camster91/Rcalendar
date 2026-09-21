@@ -49,11 +49,16 @@ MFA stays a human decision.
 ```
 
 **This is the way to run the app.** It is what `install-autostart.ps1` points
-at by default, and it has a property the packaged build does not: it compiles
-nothing. A signed `python.exe` running source is not a binary the endpoint
-agents have to form an opinion about, so nothing here appears in the security
-console. The packaged build in "Building a standalone .exe" is optional and is
-reported when it is made.
+at, and it has a property the packaged build does not: it compiles nothing. A
+signed `python.exe` running source is not a binary the endpoint agents have to
+form an opinion about, so nothing here appears in the security console.
+
+There used to be a second documented path — a PyInstaller folder build. It is
+still possible and the record of it is kept under [Not the supported
+path](#not-the-supported-path-building-an-exe) below, but it is not how the app
+is run, nothing points at it, and building it writes an unsigned binary the
+endpoint agents report. If you find yourself reading that section, read the
+cost paragraph first.
 
 Command-line modes:
 
@@ -64,7 +69,7 @@ python -m app.main --scrape-once    # scrape and exit (for Task Scheduler)
 python -m app.main --backfill       # redo the one-time history fill and exit
 python -m app.main --backfill --months 6   # ...or a shorter reach
 python -m app.main --probe          # report session state and exit
-python -m app.main --selftest       # check a packaged build is intact, and exit
+python -m app.main --selftest       # health-check this install end to end, and exit
 ```
 
 ## Starting automatically at login
@@ -80,154 +85,20 @@ reversible. `pythonw` rather than `python` so no console window flashes
 on every login. The app comes up in the tray, scrapes at 06:00, and
 stays out of the way.
 
-## Building a standalone .exe (optional — and the build is reported)
-
-**You do not need this to run the app, and it is not part of normal work.** The
-venv in "Running it" is the supported path, `install-autostart.ps1` already
-defaults to it, and it compiles nothing. Build this only when you specifically
-need a self-contained folder — to hand the app to someone without a checkout.
-
-Know the cost before you start: **making the exe puts an entry in the security
-console.** The 2026-09-21 build produced two of them, one second apart —
-`RotmanLSMCalendar.exe` under `build\` and again under `dist\`, both logged as
-`Suspicious Activity · Detected suspicious file`. Nothing was quarantined, the
-exe was intact at its full 7,952,049 bytes, and `verify-build.ps1` then passed
-end to end. So the report is noise rather than damage — but it is noise on a
-managed machine, it names this account in a console someone else reads, and
-repeated detections against the same unsigned binary are how a console line
-becomes a ticket. Note also that the detection lands when the file is *written*,
-not when it runs.
-
-So: build it when there is a reason to, not to keep `dist\` fresh. And do not
-leave `-UseExe` autostart pointing at a stale build "because it is already
-there". If the exe does have to exist as a shipped artefact, the fix is
-allow-listing or signing — see "On this machine" for what each costs.
-
-```powershell
-.\packaging\build.ps1
-```
-
-Produces a **folder**, `dist\RotmanLSMCalendar\` — not a single file:
-
-| | |
-|---|---|
-| files | 916 |
-| total | ~145 MB |
-| `RotmanLSMCalendar.exe` | 7.95 MB |
-| `_internal\` | everything else |
-
-The file count is a measurement, not an invariant — it is read off the build
-and drifts by a file or two when a dependency changes. What matters is that
-`_internal\` travels with the exe.
-
-**Ship the folder: `_internal\` has to travel with the exe.** It holds the
-Python runtime, the .NET assemblies the window needs, `web\` and the Playwright
-driver. The exe on its own is not the app. It is not a thin launcher either —
-the bootloader embeds the Python archive, which is why it is a few MB rather
-than a few hundred KB.
-
-The Playwright *browser* is still deliberately **not** embedded: it is ~150 MB
-and only needs installing once per machine. `build.ps1` runs
-`playwright install chromium`, which puts it in the normal user-level cache at
-`%LOCALAPPDATA%\ms-playwright`, and the packaged build reads it from there.
-That last clause needed saying in code, not just here — Playwright points
-*frozen* builds at a browsers directory inside the bundle instead, so
-`app/config.py` names the real cache explicitly. Without that the app starts,
-serves the UI, and fails every scrape.
-
-### Verifying a build
-
-```powershell
-.\packaging\verify-build.ps1
-```
-
-Runs the packaged app's `--selftest` — which imports the GUI stack, checks the
-web assets, launches a browser, opens the database and fetches the calendar over
-HTTP — then watches the folder for 90 seconds and re-inventories every file
-afterwards. It uses a scratch data directory and a spare port, so it will not
-disturb a running instance.
-
-The dwell and the inventory are the point. A build does not have to be *deleted*
-to be broken: losing one `.pyd` leaves something that starts and misbehaves,
-which is worse than a clean kill and invisible to an existence check.
-
-### On this machine
-
-The folder build **runs here**. That is measured, not assumed:
-`verify-build.ps1` passes end to end — every check green, 916 files present and
-unchanged after the dwell — and the app launches with its window, its web UI and
-Chromium all working. (The tray starts too: it logs a line if it fails, and no
-such line appears.)
-
-This is a UofT-managed machine: Windows Defender is switched off in favour of
-**SentinelOne** and **CrowdStrike Falcon**. A freshly-compiled unsigned binary
-is what such agents remove, and the *single-file* build here was removed on
-execution. The plausible reason is the one thing the folder build does not do: a
-single-file build unpacks itself into `%TEMP%` and executes from there, and that
-self-extracting shape is what reads as hostile. That attribution was never
-proven, and nothing here depends on it — the folder build is simply measured to
-work.
-
-**Flagged is not the same as removed, and the folder build is flagged.** Rebuilt
-and verified on 2026-09-21, `build.ps1` produced two SentinelOne detections —
-`RotmanLSMCalendar.exe` under `build\` and again under `dist\`, both one second
-apart as PyInstaller wrote then collected it, both "Suspicious Activity ·
-Detected suspicious file". The console showed **0 quarantined files**, the exe
-was still on disk afterwards at its full size, and `verify-build.ps1` then
-passed end to end. So on this machine the folder build is reported and left
-alone, where the single-file build was reported and taken. Anyone rebuilding
-should expect the console to show a detection and should read the quarantine
-count, not the threat history, before concluding anything broke.
-
-**What would close the residual risk**, in order of cost — detection here is
-reputation-driven, so an unsigned build with a handful of users can be reported
-on first sight whatever it does. The folder shape rules out the *dropper*
-pattern, not the first impression:
-
-1. **Have the AV team allow-list it.** Key it on **path or publisher, not
-   hash** — every rebuild changes the hash, so a hash-keyed exclusion expires
-   with the next build. This is the cheap one, and it needs a request rather
-   than a config change.
-2. **Code-sign it.** The durable fix, and the only one that travels if the app
-   ever moves machines. Note that since 2023 an OV certificate needs a hardware
-   token or HSM, so this has a purchase and a physical object in it.
-3. **Unpack it on one AV machine and read the quarantine count.** Not a fix,
-   just the cheapest honest check that the build survives somewhere other than
-   here.
-
-None of the three is testable from this box, so none of them should be
-promised. Worth naming in an allow-list request is the network surface, which
-for this app is small and entirely one-directional: it binds **`127.0.0.1:8765`
-only** (loopback, no authentication, no host override), and its only outbound
-traffic is HTTPS to `lsm.utoronto.ca` in a Playwright-driven Chromium. There is
-no OAuth loopback listener here — that belongs to a different tool of mine, and
-naming the wrong port in a security request is worse than naming none. AV teams
-approve far faster when told what the binary talks to and why.
-
-A draft of that request, with the measured facts and the placeholders to fill
-in, is `packaging/allow-list-request.md`. Both files must agree; the request is
-the one that gets sent.
-
-A 90-second dwell is evidence, not a guarantee. If a build ever stops working
-here, `verify-build.ps1` is the thing to run, and its output names the stage
-that broke.
-
-Running from the venv remains the least surprising option and is unaffected by
-any of this; `install-autostart.ps1` still defaults to it, and `-UseExe` points
-the Startup shortcut at the folder build.
-
 ## Where the data lives
 
-Everything writable is under one directory:
+Everything writable is under **`.\data`**, beside the checkout. Override it with
+the `LSM_DATA_DIR` environment variable. `LSM_PORT` does the same job for the
+web UI's port (default 8765), which is how a test runs alongside an instance
+already holding it. There is deliberately no *matching host* override — the
+process holds a live LSM session and binds loopback only.
 
-- **Running from the venv** — `.\data`
-- **Packaged .exe** — `%LOCALAPPDATA%\RotmanLSMCalendar`
-
-Override with the `LSM_DATA_DIR` environment variable. `LSM_PORT` does the
-same job for the web UI's port (default 8765), which is how a packaged build or
-a test runs alongside an instance already holding it. There is deliberately no
-*matching host* override — the process holds a live LSM session and binds
-loopback only.
+The packaged build used a different location, `%LOCALAPPDATA%\RotmanLSMCalendar`,
+and that directory may still exist from the exe era. **Do not delete it** until
+you have looked: it holds a separate `calendar.db` and a separate Chromium
+profile, so if it is where your sign-in and history actually live, deleting it
+loses both. `LSM_DATA_DIR` is how you point the app at it if it is the one you
+want. The venv path never reads it, so nothing breaks by leaving it alone.
 
 | File | Purpose |
 |---|---|
@@ -255,7 +126,14 @@ app/
   dpapi.py       Windows at-rest encryption
 web/             calendar.html, list.html, filters.js
 tests/           parser + end-to-end tests
+packaging/       setup, autostart, and the unsupported build
 ```
+
+`packaging/` holds `setup.ps1` and `install-autostart.ps1` — the two scripts
+this README tells you to run — plus `build.ps1`, `RotmanLSMCalendar.spec` and
+`verify-build.ps1`, which are the unsupported exe path and are marked as such in
+their own headers. `packaging/allow-list-request.md` is the draft AV request
+described in that appendix.
 
 `web/filters.js` holds the helpers both pages need — time and date formatting,
 escaping, the event merge, the encoding a booking travels through markup in,
@@ -472,3 +350,143 @@ it.
 - The web UI binds to `127.0.0.1` only and has no authentication, because
   it has no network surface. Do not change the host to `0.0.0.0` — the
   process holds a live LSM session.
+
+## Not the supported path: building an .exe
+
+**This is not how the app is run.** The venv in [Running it](#running-it) is the
+supported path, `install-autostart.ps1` points at it, and it compiles nothing.
+Nothing in this repository points at the build below any more — the `-UseExe`
+autostart switch that used to is gone. Build only when you specifically need a
+self-contained folder, to hand the app to someone with no checkout, and read the
+cost first.
+
+**Making the exe puts an entry in the security console.** The 2026-09-21 build
+produced two of them, one second apart — `RotmanLSMCalendar.exe` under `build\`
+and again under `dist\`, both logged as `Suspicious Activity · Detected
+suspicious file`. Nothing was quarantined, the exe was intact at its full
+7,952,049 bytes, and `verify-build.ps1` then passed end to end. So the report is
+noise rather than damage — but it is noise on a managed machine, it names this
+account in a console someone else reads, and repeated detections against the
+same unsigned binary are how a console line becomes a ticket. Note also that the
+detection lands when the file is *written*, not when it runs.
+
+No spec change prevents that, because the properties the agent scores — the
+PyInstaller bootloader, the embedded Python runtime, a bundled `node.exe`
+spawning headless Chromium — are what the app is. That is the whole reason this
+section is an appendix rather than a second way to run it.
+
+If the exe does have to exist as a shipped artefact, the fix is allow-listing or
+signing — see [On this machine](#on-this-machine) for what each costs.
+
+```powershell
+.\packaging\build.ps1
+```
+
+Produces a **folder**, `dist\RotmanLSMCalendar\` — not a single file:
+
+| | |
+|---|---|
+| files | 916 |
+| total | ~145 MB |
+| `RotmanLSMCalendar.exe` | 7.95 MB |
+| `_internal\` | everything else |
+
+The file count is a measurement, not an invariant — it is read off the build
+and drifts by a file or two when a dependency changes. What matters is that
+`_internal\` travels with the exe.
+
+**Ship the folder: `_internal\` has to travel with the exe.** It holds the
+Python runtime, the .NET assemblies the window needs, `web\` and the Playwright
+driver. The exe on its own is not the app. It is not a thin launcher either —
+the bootloader embeds the Python archive, which is why it is a few MB rather
+than a few hundred KB.
+
+The Playwright *browser* is still deliberately **not** embedded: it is ~150 MB
+and only needs installing once per machine. `build.ps1` runs
+`playwright install chromium`, which puts it in the normal user-level cache at
+`%LOCALAPPDATA%\ms-playwright`, and the packaged build reads it from there.
+That last clause needed saying in code, not just here — Playwright points
+*frozen* builds at a browsers directory inside the bundle instead, so
+`app/config.py` names the real cache explicitly. Without that the app starts,
+serves the UI, and fails every scrape.
+
+### Verifying a build
+
+```powershell
+.\packaging\verify-build.ps1
+```
+
+Runs the packaged app's `--selftest` — which imports the GUI stack, checks the
+web assets, launches a browser, opens the database and fetches the calendar over
+HTTP — then watches the folder for 90 seconds and re-inventories every file
+afterwards. It uses a scratch data directory and a spare port, so it will not
+disturb a running instance.
+
+The dwell and the inventory are the point. A build does not have to be *deleted*
+to be broken: losing one `.pyd` leaves something that starts and misbehaves,
+which is worse than a clean kill and invisible to an existence check.
+
+### On this machine
+
+This is a UofT-managed machine: Windows Defender is switched off in favour of
+**SentinelOne** and **CrowdStrike Falcon**. That is the whole reason this
+section exists. The measured history, which is *why* the app moved to the venv:
+
+- **The single-file build was removed on execution.** Its shape — unpacking
+  itself into `%TEMP%` and executing from there — is what reads as hostile. That
+  attribution was never proven.
+- **The folder build ran here.** `verify-build.ps1` passed end to end on
+  2026-09-21 — every check green, 916 files present and unchanged after the
+  dwell — and the app launched with its window, its web UI and Chromium all
+  working.
+- **The folder build is still flagged.** `build.ps1` produced two SentinelOne
+  detections that day, `RotmanLSMCalendar.exe` under `build\` and again under
+  `dist\`, one second apart as PyInstaller wrote then collected it, both
+  "Suspicious Activity · Detected suspicious file". The console showed **0
+  quarantined files**, the exe was still on disk afterwards at its full size,
+  and `verify-build.ps1` then passed.
+
+So the folder build is reported and left alone where the single-file build was
+reported and taken. That was the position until now: *usable, but noisy*.
+
+**The conclusion changed.** Reported-and-left-alone is one notch more permissive
+than this is worth. The app runs from the venv, which writes no binary at all, so
+there is nothing for an agent to score and no console line naming this account.
+That is the supported path, and building the exe is not — nothing points at it
+any more.
+
+The detections already in the console stay there. They are a record of past
+builds, not a live problem, and nothing here can or should remove them.
+
+**What would still close the residual risk**, if the exe ever has to exist as a
+shipped artefact. Detection here is reputation-driven, so an unsigned build with
+a handful of users can be reported on first sight whatever it does. The folder
+shape rules out the *dropper* pattern, not the first impression:
+
+1. **Have the AV team allow-list it.** Key it on **path or publisher, not
+   hash** — every rebuild changes the hash, so a hash-keyed exclusion expires
+   with the next build. This is the cheap one, and it needs a request rather
+   than a config change.
+2. **Code-sign it.** The durable fix, and the only one that travels if the app
+   ever moves machines. Note that since 2023 an OV certificate needs a hardware
+   token or HSM, so this has a purchase and a physical object in it.
+3. **Unpack it on one AV machine and read the quarantine count.** Not a fix,
+   just the cheapest honest check that the build survives somewhere other than
+   here.
+
+None of the three is testable from this box, so none of them should be
+promised. Worth naming in an allow-list request is the network surface, which
+for this app is small and entirely one-directional: it binds **`127.0.0.1:8765`
+only** (loopback, no authentication, no host override), and its only outbound
+traffic is HTTPS to `lsm.utoronto.ca` in a Playwright-driven Chromium. There is
+no OAuth loopback listener here — that belongs to a different tool of mine, and
+naming the wrong port in a security request is worse than naming none. AV teams
+approve far faster when told what the binary talks to and why.
+
+A draft of that request, with the measured facts and the placeholders to fill
+in, is `packaging/allow-list-request.md`. Both files must agree; the request is
+the one that gets sent.
+
+The same caveat as above: a 90-second dwell is evidence, not a guarantee. If a
+build ever stops working here, `verify-build.ps1` is the thing to run, and its
+output names the stage that broke.

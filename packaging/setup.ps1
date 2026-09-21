@@ -112,7 +112,7 @@ Write-Host "  Upgrading pip..."
 & $VenvPy -m pip install --upgrade pip --quiet
 
 Write-Host "  Installing dependencies (this takes a minute)..."
-& $VenvPy -m pip install --quiet playwright flask pywebview pystray pillow icalendar pyinstaller
+& $VenvPy -m pip install --quiet playwright flask pywebview pystray pillow icalendar
 if ($LASTEXITCODE -ne 0) { throw "dependency install failed" }
 
 Write-Host "  Downloading Chromium for Playwright..."

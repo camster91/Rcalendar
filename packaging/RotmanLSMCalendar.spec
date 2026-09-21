@@ -1,5 +1,10 @@
 # PyInstaller spec — builds dist\RotmanLSMCalendar\ (onedir)
 #
+# NOT THE SUPPORTED PATH. The app is run from the venv
+# (.venv\Scripts\python.exe -m app.main); nothing points at this build any
+# more. See the "Not the supported path" section of README.md. The comments
+# below are kept because they are the record of why this shape was chosen.
+#
 # One directory, not one file, and that is the whole point. A single-file
 # build unpacks itself into %TEMP% and executes from there; on a machine
 # running SentinelOne + CrowdStrike that freshly-compiled unsigned
