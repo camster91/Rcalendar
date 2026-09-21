@@ -51,15 +51,31 @@ if (-not (Test-Path $VenvPy)) {
     exit 1
 }
 
+# setup.ps1 does not install the packer any more, because building is not the
+# supported path and setup is. Without this check the missing module surfaces as
+# a bare "PyInstaller failed" from the invocation below, which does not say what
+# to do about it.
+& $VenvPy -c "import PyInstaller" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  PyInstaller is not installed in this venv." -ForegroundColor Red
+    Write-Host "  Install it if you mean to build:"
+    Write-Host "    .\.venv\Scripts\python.exe -m pip install pyinstaller" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  (setup.ps1 leaves it out on purpose - see README.md.)" -ForegroundColor DarkGray
+    exit 1
+}
+
 # The frozen app does not embed the browser; it relies on the per-user
 # Playwright cache, so make sure that is populated before shipping.
 Write-Host "  Ensuring Chromium is present..."
 & $VenvPy -m playwright install chromium
 
-# A single-file build from before this change leaves dist\RotmanLSMCalendar.exe
-# behind. Nothing else removes it -- COLLECT only cleans its own folder -- and
-# install-autostart.ps1 checks that exact path, so a leftover would silently
-# keep pointing at the old, unrunnable artefact.
+# A single-file build from before the onedir change leaves
+# dist\RotmanLSMCalendar.exe behind. Nothing else removes it -- COLLECT only
+# cleans its own folder -- and a leftover named like the app is the worst kind
+# of stale: it is the self-extracting shape the agents removed, so it invites
+# exactly the detection this build exists to avoid, and it is what someone
+# would try to run.
 if (Test-Path $StaleOnefile) {
     Write-Host "  Removing stale single-file build from the previous layout..."
     Remove-Item $StaleOnefile -Force
