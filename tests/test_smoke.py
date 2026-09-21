@@ -577,6 +577,76 @@ def test_login_detection() -> None:
     check("none is not a login", is_login_url(None), False)
 
 
+def test_icon() -> None:
+    """The mark: that its geometry is what it claims, and that the shipped
+    .ico is still the drawing in app/icon.py.
+
+    The icon is a picture, so most of it cannot be asserted in a way worth
+    having. Two things can, and both are defects that actually happened:
+
+    1. The header band is *clipped* to the body. It used to be drawn as a plain
+       white rectangle over a rounded one, which left square white pixels
+       outside the curve -- visible as square shoulders on the top corners of
+       the tray icon. Asserted as transparency at the pixel just outside the
+       corner.
+
+    2. packaging/RotmanLSMCalendar.ico is a committed build output. Change
+       app/icon.py and forget to re-run make-icon.py and the exe keeps the old
+       mark with nothing to say so. Asserted by rebuilding every frame here and
+       comparing.
+    """
+    print("\nicon")
+
+    from PIL import Image
+
+    from app.icon import paint
+
+    for size in (16, 20, 24, 32, 48, 64, 256):
+        img = paint(size)
+        check(f"paint({size}) is {size}x{size} RGBA",
+              (img.mode, img.size), ("RGBA", (size, size)))
+
+    # The corner defect. At 64px the body's left edge is at x=6 and its top-left
+    # corner arc runs from there, so pixels to the left of it, at header height,
+    # must be empty -- opaque white there is exactly the old bug. y=14 is inside
+    # the header band (40..84 of the 256 grid, i.e. 10..21 at 64px).
+    #
+    # A tolerance rather than ==0 because the reduction from the supersampled
+    # drawing can leave a faint edge value on the pixel beside a hard edge; 255
+    # is the failure being caught, and nothing near it.
+    body_left_alpha = [paint(64).getpixel((x, 14))[3] for x in (2, 4, 5)]
+    ok("the body's rounded corner is not filled in by the header band",
+       all(a < 16 for a in body_left_alpha))
+
+    # ...and the header really is there, so the check above cannot pass by the
+    # band having been dropped altogether.
+    inside = paint(64).getpixel((32, 14))
+    check("the header band is white where it should be", inside, (255, 255, 255, 255))
+
+    ico = ROOT / "packaging" / "RotmanLSMCalendar.ico"
+    ok("the .ico is committed", ico.is_file())
+    if ico.is_file():
+        with Image.open(ico) as f:
+            frames = sorted(f.ico.sizes())
+            expected = sorted({(n, n) for n in (16, 20, 24, 32, 40, 48, 64, 128, 256)})
+            check("it holds every size Windows asks for", frames, expected)
+            stale = []
+            for n, _ in expected:
+                f.size = (n, n)
+                f.load()
+                if f.convert("RGBA").tobytes() != paint(n).tobytes():
+                    stale.append(n)
+            check("every frame matches app/icon.py (re-run make-icon.py if not)",
+                  stale, [])
+
+    # The browser tab. This was a bare 204, which draws nothing.
+    client = create_app(StubOrch()).test_client()
+    resp = client.get("/favicon.ico")
+    check("GET /favicon.ico", resp.status_code, 200)
+    check("...declares an icon", resp.headers.get("Content-Type"), "image/x-icon")
+    ok("...and is a real .ico", resp.data[:4] == b"\x00\x00\x01\x00" and len(resp.data) > 500)
+
+
 def test_single_instance() -> None:
     """A second instance must not share the data directory.
 
@@ -664,6 +734,7 @@ def main() -> int:
     test_ics_uids()
     test_login_detection()
     test_single_instance()
+    test_icon()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

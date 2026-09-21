@@ -35,12 +35,18 @@ from flask import Flask, Response, jsonify, request, send_file, send_from_direct
 
 from app import avail, store
 from app.config import APP_NAME, WEB_DIR, log
+from app.icon import paint
 from app.ics import build_ics
 from app.rooms import floor_sort_key
 
 # Hosts that mean "this machine". The UI is reachable as 127.0.0.1 and, if a
 # person typed it, as localhost; both are the same app.
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+# The favicon, built on the first request that wants one rather than at import:
+# it is the only thing here that needs PIL, and no other request should pay for
+# it. Module scope so it is built once instead of per request.
+_FAVICON: bytes | None = None
 
 
 def create_app(orchestrator: Any) -> Flask:
@@ -105,7 +111,21 @@ def create_app(orchestrator: Any) -> Flask:
 
     @app.get("/favicon.ico")
     def favicon() -> Response:
-        return Response(status=204)
+        """The app's mark, built from app/icon.py rather than shipped as a file.
+
+        This was a bare 204, which is a valid answer and leaves the browser tab
+        blank. Generating it here keeps the tab, the tray and the exe showing
+        one mark from one function, and avoids committing a second copy of a
+        binary that would then be the one that goes stale.
+        """
+        global _FAVICON
+        if _FAVICON is None:
+            import io
+
+            buf = io.BytesIO()
+            paint(32).save(buf, format="ICO", sizes=[(16, 16), (32, 32), (48, 48)])
+            _FAVICON = buf.getvalue()
+        return Response(_FAVICON, mimetype="image/x-icon")
 
     # ── Data ─────────────────────────────────────────────────────────────
 
