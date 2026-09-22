@@ -199,7 +199,7 @@ def scrape(
             say(f"Dates set: {date_from} → {date_to}")
 
             # ── Rooms ──
-            rooms = _select_all_rooms(page)
+            rooms, selection_ok = _select_all_rooms(page)
             say(f"Selected {len(rooms)} rooms")
 
             # ── Run ──
@@ -223,6 +223,13 @@ def scrape(
             if not csv_text:
                 say("CSV download unavailable — falling back to HTML table")
                 csv_text = _html_table_to_csv(page)
+                complete = False
+            if not selection_ok:
+                # The third thing the reconcile delete is allowed to trust,
+                # alongside the window and the export. A report that ran with
+                # only some rooms selected is not the calendar, whatever its
+                # dates say — its silence about an unselected room would
+                # otherwise file that room's bookings as cancellations.
                 complete = False
 
             if not csv_text.strip():
@@ -253,7 +260,10 @@ def scrape(
                              f"the reconcile delete."),
                 )
 
-            if not complete:
+            if not selection_ok:
+                say("Room selection was incomplete — the export may cover "
+                    "only part of the calendar, so nothing will be deleted")
+            elif not complete:
                 say(f"Read {len(events)} bookings from the page — the page is "
                     f"not the whole report, so nothing will be deleted")
             say(f"Parsed {len(events)} bookings")
@@ -381,10 +391,11 @@ def _item_date(raw: Any) -> date | None:
     return None
 
 
-def _select_all_rooms(page: Any) -> list[str]:
+def _select_all_rooms(page: Any) -> tuple[list[str], bool]:
     """
     Move every available room into the shuttle's selected side.
-    Returns the resulting selection.
+    Returns the resulting room set, and whether the selection provably
+    covers all of it — the shuttle's left list is empty afterwards.
     """
     # Select everything in the left list first, so "Move All" has a target.
     page.evaluate(
@@ -431,8 +442,22 @@ def _select_all_rooms(page: Any) -> list[str]:
     page.keyboard.press("Escape")
     page.wait_for_timeout(200)
 
-    all_rooms = sorted(set(selected) | set(_shuttle_values(page, "P51_ROOM_LEFT")))
-    return all_rooms
+    # Everything the shuttle offered should now be on the selected side. APEX
+    # keeps item values in session state, so a page that rendered with a
+    # previous run's subset *starts* with rooms still on the left — and if
+    # the Move All click above silently did nothing, they stay there. A union
+    # alone would hide that (the caller would see a full-looking room list),
+    # so the leftover left list is also the check: non-empty means the
+    # selection is only a subset, and a subset report's silence about a room
+    # is not evidence that room's bookings are gone.
+    leftover = _shuttle_values(page, "P51_ROOM_LEFT")
+    if leftover:
+        log.error("room selection incomplete: %d room(s) still unselected "
+                  "after Move All — the export may cover only part of the "
+                  "calendar, so it will not be trusted to delete",
+                  len(leftover))
+    all_rooms = sorted(set(selected) | set(leftover))
+    return all_rooms, not leftover
 
 
 def _shuttle_values(page: Any, element_id: str) -> list[str]:

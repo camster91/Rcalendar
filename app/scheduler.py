@@ -321,6 +321,12 @@ class Orchestrator:
             self._set(busy=False, busy_action="", progress="")
 
     def _do_scrape(self, trigger: str = "manual", interactive: bool = False) -> None:
+        # The day this run counts against is the day it started. Stamping
+        # _last_daily with the completion date would let a run that crosses
+        # midnight mark the new day as already scraped — suppressing its 06:00
+        # run and stretching the gap to ~30 hours, with a window computed
+        # against the old day besides.
+        started_date = datetime.now().date()
         self._set(busy=True, busy_action="Scraping LSM",
                   progress="Starting…", last_scrape_message="")
         run_id = store.start_run(trigger)
@@ -393,7 +399,7 @@ class Orchestrator:
                     progress="",
                     session="ok",
                 )
-                self._last_daily = datetime.now().date()
+                self._last_daily = started_date
                 self._last_heartbeat = datetime.now()
                 log.info("scrape complete — %d bookings stored", len(kept))
             else:
@@ -500,7 +506,14 @@ class Orchestrator:
             if not state.ok:
                 store.finish_run(run_id, "auth_required",
                                  message="Backfill skipped — sign in required")
-                self._set_backfill(running=False, message="Sign in required")
+                # `failed` is what the CLI's exit code reads, and every
+                # window here is one that was not fetched. Leaving it at 0
+                # let --backfill exit 0 over an empty fill the run still owes.
+                # finished_at goes with it so the row is not left looking
+                # in-flight, unlike the mid-fill path below.
+                self._set_backfill(running=False, message="Sign in required",
+                                   failed=len(windows),
+                                   finished_at=datetime.now().isoformat())
                 return
 
             for i, (win_from, win_to) in enumerate(windows, 1):
@@ -529,9 +542,13 @@ class Orchestrator:
                     )
                     self._set(session="expired",
                               session_message="Session expired — sign in required")
+                    # Every month after the last fetched one is skipped by
+                    # this stop, so they count as failed for the CLI exit.
                     self._set_backfill(running=False,
                                        finished_at=datetime.now().isoformat(),
-                                       message="Session expired")
+                                       message="Session expired",
+                                       failed=len(errored)
+                                             + (len(windows) - (i - 1)))
                     log.info("backfill stopped: session expired")
                     return
 

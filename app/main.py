@@ -322,9 +322,18 @@ def run_scrape_once() -> int:
     store.init_db()
     orch = Orchestrator()
     orch._do_scrape(trigger="manual")
-    st = orch.status()
     session.shutdown()
-    return 0 if st.get("session") == "ok" else 1
+    # The exit code is the only thing Task Scheduler can see. The status
+    # dict's "session" would be the wrong oracle: the probe sets it "ok"
+    # before the report runs, and a scrape that fails never touches it, so a
+    # failed run still looked successful here. The run row is what the run
+    # actually did. "empty" is a real outcome rather than a failure — the
+    # report ran and held nothing — so a scheduled empty day is not an alarm.
+    last = store.last_run()
+    outcome = (last or {}).get("status") or "no run recorded"
+    print(f"scrape-once: {outcome}"
+          + (f" — {last['message']}" if last and last.get("message") else ""))
+    return 0 if outcome in ("ok", "empty") else 1
 
 
 def run_backfill(months: int | None = None) -> int:
