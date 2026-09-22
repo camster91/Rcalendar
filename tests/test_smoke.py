@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import sqlite3
+import threading
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -647,6 +648,91 @@ def test_icon() -> None:
     ok("...and is a real .ico", resp.data[:4] == b"\x00\x00\x01\x00" and len(resp.data) > 500)
 
 
+def test_quit_can_actually_end_the_process() -> None:
+    """Tray Quit has to get past the handler that hides the window to tray.
+
+    pywebview fires the `closing` event for a programmatic `window.destroy()`
+    exactly as it does for the user clicking X, and the handler answers every
+    close by returning False, which cancels it. So Tray._quit destroyed the
+    window, had its own quit cancelled, and left the process with no window,
+    no tray icon (icon.stop() had already run) and nothing able to end it.
+
+    Measured against the installed pywebview 6.2.1, not inferred:
+    destroy() returned in 0.01s, the handler ran and returned False, and
+    webview.start() never returned -- a 12s watchdog killed the probe.
+
+    The window here is a fake that reproduces the one mechanism that matters
+    (destroy fires the event; a False cancels), so the ordering is asserted
+    rather than assumed. A real window would need a display and a human.
+    """
+    print("\nquit -- the tray's Quit must be able to end the process")
+
+    from app.main import Tray, closing_action
+
+    class FakeWindow:
+        """destroy() fires `closing`; any handler returning False cancels it."""
+
+        def __init__(self, quitting: threading.Event) -> None:
+            self.quitting = quitting
+            self.destroyed = False
+            self.hidden = 0
+            self.flag_at_destroy: bool | None = None
+
+        def hide(self) -> None:
+            self.hidden += 1
+
+        def destroy(self) -> None:
+            # What pywebview does, and the reason the ordering is the whole
+            # bug: this is recorded *before* the handler runs, so the test can
+            # see whether the flag was already set when destroy() was called.
+            self.flag_at_destroy = self.quitting.is_set()
+            if closing_action(self.quitting.is_set()) == "close":
+                self.destroyed = True
+
+    class FakeIcon:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    class FakeOrch:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    # The decision itself, both ways -- without this the rest could pass on a
+    # handler that never consults the flag at all.
+    check("an ordinary close hides to tray", closing_action(False), "hide")
+    check("...and the quit's own close is let through",
+          closing_action(True), "close")
+
+    quitting = threading.Event()
+    quit_only = FakeWindow(quitting)
+    check("a window is not destroyed while nothing is quitting",
+          quit_only.destroyed, False)
+
+    window = FakeWindow(quitting)
+    orch, icon = FakeOrch(), FakeIcon()
+    tray = Tray(orch, window, quitting)
+    tray._icon = icon
+    tray._quit()
+
+    check("quit stops the worker", orch.stopped, True)
+    check("quit stops the tray icon", icon.stopped, True)
+    # The ordering, which is what was wrong: destroy() must be called with the
+    # flag already set. Setting it after would be too late -- the handler has
+    # already run and cancelled by then.
+    ok("the quitting flag is set before destroy() is called",
+       window.flag_at_destroy is True)
+    # And the outcome the user sees: the process can end.
+    ok("...so the window is really destroyed and start() can return",
+       window.destroyed)
+    check("...and it did not merely hide again", window.hidden, 0)
+
+
 def test_single_instance() -> None:
     """A second instance must not share the data directory.
 
@@ -733,6 +819,7 @@ def main() -> int:
     test_cross_site_writes()
     test_ics_uids()
     test_login_detection()
+    test_quit_can_actually_end_the_process()
     test_single_instance()
     test_icon()
 

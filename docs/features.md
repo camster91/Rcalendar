@@ -115,6 +115,7 @@ for.
 | Feature | Where |
 |---|---|
 | Closing the window hides it; the app keeps scraping | `app/main.py` |
+| Tray **Quit** really ends the process — a quit is told apart from a close, or the hide-to-tray handler cancels it | `app/main.py` |
 | Tray menu: Open Calendar, List View, a live session label, Scrape Now, Sign in to LSM, Check Session, Open Data Folder, Open in Browser, Quit | `app/main.py` |
 | Startup shortcut — points at the venv, and there is no exe fallback | `packaging/install-autostart.ps1` |
 | Nine keyboard shortcuts, with two gating rules | README → *Keyboard* |
@@ -128,6 +129,6 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 675 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 683 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The same seven suites in CI | `.github/workflows/tests.yml` |

@@ -58,10 +58,30 @@ BASE_URL = f"http://{WEB_HOST}:{WEB_PORT}"
 TRAY_ICON_SIZE = 64
 
 
+def closing_action(quitting: bool) -> str:
+    """What a window-close event should do: ``"close"`` or ``"hide"``.
+
+    Pure, and kept out of the closure that wires it to pywebview for the same
+    reason `session.login_progress` is pure: the decision is the part that can
+    be wrong, and it is the part that can be tested without opening a window.
+
+    Two different closes arrive here as the same event. The user clicking X
+    should hide to tray -- the app keeps scraping, and that is the documented
+    behaviour. `window.destroy()` from Tray._quit fires *this same event*, and
+    that one has to be allowed through, or the quit cancels itself. Nothing in
+    the event says which it is, so the caller passes that in.
+    """
+    return "close" if quitting else "hide"
+
+
 class Tray:
-    def __init__(self, orch: Orchestrator, window: Any) -> None:
+    def __init__(self, orch: Orchestrator, window: Any,
+                 quitting: threading.Event | None = None) -> None:
         self.orch = orch
         self.window = window
+        # Shared with the window's `closing` handler, which must be able to
+        # tell "the user clicked X" from "we are quitting". See _quit.
+        self.quitting = quitting if quitting is not None else threading.Event()
         self._icon = None
 
     def start(self) -> None:
@@ -147,6 +167,16 @@ class Tray:
 
     def _quit(self) -> None:
         log.info("quit requested")
+        # Set *before* destroy(), and the ordering is the whole point.
+        # window.destroy() fires the `closing` event, and the handler that
+        # hides to tray answers every close -- including this one -- by
+        # returning False, which cancels it. So a quit that destroyed the
+        # window before announcing itself had its own quit cancelled, and by
+        # then orch.stop() and icon.stop() had already run: no window, no tray
+        # icon, and nothing left that could end the process. Measured against
+        # pywebview 6.2.1 -- destroy() returned in 0.01s, the handler ran,
+        # webview.start() never returned.
+        self.quitting.set()
         self.orch.stop()
         if self._icon:
             self._icon.stop()
@@ -564,8 +594,17 @@ def run_app(show_window: bool = True) -> int:
         text_select=True,
     )
 
+    # Shared with Tray._quit, which sets it to say "this close is a quit, let
+    # it through". Without it the handler below cancels the programmatic
+    # destroy exactly as it cancels the user's X, and the process can no
+    # longer be ended at all -- see Tray._quit.
+    quitting = threading.Event()
+
     def on_closing() -> bool:
-        # Closing hides to tray; the app keeps scraping in the background.
+        # Closing hides to tray; the app keeps scraping in the background,
+        # unless this close is the quit itself.
+        if closing_action(quitting.is_set()) == "close":
+            return True  # a real quit: let the close through
         try:
             window.hide()
         except Exception:
@@ -574,7 +613,7 @@ def run_app(show_window: bool = True) -> int:
 
     window.events.closing += on_closing
 
-    tray = Tray(orch, window)
+    tray = Tray(orch, window, quitting)
 
     def after_start() -> None:
         try:
