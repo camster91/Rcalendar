@@ -255,6 +255,24 @@ was trusted** — removing the second group heading made three assertions fail
 which is the evidence that the assertions are about the grouping rather than
 about the panel merely having rendered something.
 
+One thing the suite **cannot** check, and says so: `test_smoke.py`'s quit test
+fakes the window, so it asserts what the app does on a `closing` event rather
+than that pywebview *raises* one. `tests/probe_quit_path.py` is the manual
+counterpart — it opens a real window, closes it twice, and prints what happens
+to each, including whether `webview.start()` actually returns. Run it only when
+that premise is in question, because it needs a display and the broken shape
+runs to its own twelve-second watchdog:
+
+```
+.venv\Scripts\python.exe tests\probe_quit_path.py --before   # the bug: HANG
+.venv\Scripts\python.exe tests\probe_quit_path.py            # the fix: start() returns
+```
+
+It is not part of any suite and CI never runs it. It earns its place because it
+is the only thing in the repo that measures the library directly, and the
+measurement is what turned "the quit path looks wrong" into "destroy() fires
+`closing`, the handler cancels it, and the process outlives the window".
+
 ## History and changes
 
 The app keeps a **rolling year** of bookings, not just the four months it

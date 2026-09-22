@@ -7,8 +7,10 @@ installed pywebview. No network, no LSM, no app imports.
 Run with no argument for the fixed shape, or `--before` for the shape this
 fix replaced (destroy() before the quitting flag is set).
 
-  py -3 .repro_quit.py --before   ->  the handler cancels the quit; HANG
-  py -3 .repro_quit.py            ->  the close goes through; start() returns
+  py -3 tests/probe_quit_path.py --before  ->  the handler cancels; HANG
+  py -3 tests/probe_quit_path.py           ->  the close goes through; start() returns
+
+Not part of any suite -- it opens a real window, so CI never runs it.
 """
 import os
 import sys
