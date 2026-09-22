@@ -1514,40 +1514,91 @@ def test_the_focus_ring_is_not_removed_without_replacement(browser, base: str) -
     border and a glow. list.html removed it from the room select too and put
     nothing back, so the one control there you reach with Tab and then change
     with the arrow keys was the one that never showed where the focus was.
+
+    Asserted as a *difference* — the chrome blurred against the chrome focused
+    — because the first version of this test read the focused box-shadow and
+    asked whether it was "none", and that cannot fail here: both controls carry
+    a resting `box-shadow: var(--sh)` for depth. Deleting the room select's
+    focus rule outright still left the suite at 160 passed, because the
+    assertion was reading the card shadow and calling it a focus ring. The
+    delta has no such escape: the page sets `outline:none`, so the browser's
+    own focus outline is suppressed and the only thing that can make the two
+    readings differ is the page's own `:focus` rule.
     """
+    CHROME = ("el => { const s = getComputedStyle(el);"
+              " return [s.outlineStyle, s.boxShadow, s.borderColor].join(' | '); }")
+
     page = open_page(browser, base, "/list")
     try:
-        page.focus("#roomFilter")
-        ring = page.eval_on_selector(
-            "#roomFilter",
-            "el => { const s = getComputedStyle(el);"
-            " return { outline: s.outlineStyle, shadow: s.boxShadow,"
-            " border: s.borderColor }; }")
-        ok("list: the room select shows focus some way other than an outline",
-           ring["shadow"] != "none" or ring["outline"] != "none")
+        for where, sel, what in (("/", "#q", "the search box"),
+                                 ("/list", "#search", "the search box"),
+                                 ("/list", "#roomFilter", "the room select")):
+            p = page if where == "/list" else open_page(browser, base, where)
+            try:
+                p.eval_on_selector(sel, "el => el.blur()")
+                blurred = p.eval_on_selector(sel, CHROME)
+                p.focus(sel)
+                focused = p.eval_on_selector(sel, CHROME)
+            finally:
+                if p is not page:
+                    p.close()
+            ok(f"{where} {sel}: focusing {what} changes something visible",
+               focused != blurred)
 
-        # And the ring rule itself is present on both pages, so tabbing looks
-        # the same in both rather than the browser's default in one.
+        # The structural half of the same claim, and the half that catches the
+        # next control rather than these three: every selector in the page's
+        # own stylesheet that removes the outline must have a :focus rule
+        # putting something back. The computed check above only covers the
+        # controls this test happens to name.
         for where in ("/", "/list"):
             p = open_page(browser, base, where)
             try:
-                style = p.evaluate(
-                    # Only same-origin sheets are readable: reading cssRules
-                    # off the Google Fonts <link> throws a SecurityError, and
-                    # that sheet is aborted by the route guard anyway. The rule
-                    # being looked for is in the page's own inline <style>,
-                    # whose href is null.
-                    "() => { for (const sheet of document.styleSheets) {"
+                pairs = p.evaluate(
+                    "() => { const stripped = [], ringed = [];"
+                    " for (const sheet of document.styleSheets) {"
                     "  if (sheet.href) continue;"
                     "  let rules; try { rules = sheet.cssRules; } catch (e) { continue; }"
                     "  for (const rule of rules) {"
-                    "    if (rule.selectorText === ':focus-visible') return true;"
-                    "  } } return false; }")
+                    "   if (!rule.selectorText || !rule.style) continue;"
+                    "   const o = rule.style.outline || rule.style.outlineStyle || '';"
+                    "   if (/none|^0/.test(o)) stripped.push(rule.selectorText);"
+                    "   if (rule.selectorText.includes(':focus')"
+                    "       && rule.style.boxShadow"
+                    "       && rule.style.boxShadow !== 'none')"
+                    "     ringed.push(rule.selectorText);"
+                    "  } } return { stripped, ringed }; }")
             finally:
                 p.close()
-            ok(f"{where}: has a :focus-visible rule", style)
+            stripped, ringed = pairs["stripped"], pairs["ringed"]
+            ok(f"{where}: the stylesheet removes an outline somewhere to check",
+               len(stripped) > 0)
+            missing = [s for s in stripped
+                       if not any(s.split(':')[0].strip() in r for r in ringed)]
+            check(f"{where}: every outline:none has a :focus ring beside it",
+                  missing, [])
     finally:
         page.close()
+
+    # And the ring rule itself is present on both pages, so tabbing looks
+    # the same in both rather than the browser's default in one.
+    for where in ("/", "/list"):
+        p = open_page(browser, base, where)
+        try:
+            style = p.evaluate(
+                # Only same-origin sheets are readable: reading cssRules
+                # off the Google Fonts <link> throws a SecurityError, and
+                # that sheet is aborted by the route guard anyway. The rule
+                # being looked for is in the page's own inline <style>,
+                # whose href is null.
+                "() => { for (const sheet of document.styleSheets) {"
+                "  if (sheet.href) continue;"
+                "  let rules; try { rules = sheet.cssRules; } catch (e) { continue; }"
+                "  for (const rule of rules) {"
+                "    if (rule.selectorText === ':focus-visible') return true;"
+                "  } } return false; }")
+        finally:
+            p.close()
+        ok(f"{where}: has a :focus-visible rule", style)
 
 
 def test_search_suggestions_are_reachable_by_keyboard(browser, base: str) -> None:
