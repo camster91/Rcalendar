@@ -298,16 +298,59 @@ def _another_instance_is_running(gui: bool = False) -> bool:
 
 
 def _wait_for_server(timeout: float = 20.0) -> bool:
-    import socket
+    """Wait until *this app's* server answers — not until the port does.
+
+    A bare TCP connect succeeds against whatever already holds the port, so
+    on its own it proves the wrong thing: when the bind fails, the web
+    thread dies, and something else owns the port, the connect "succeeds"
+    and the window opens on that other process's content. What only our
+    server does is answer /api/status with the session key, so that is the
+    handshake.
+    """
+    import json
+    import urllib.request
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.5)
-            if s.connect_ex((WEB_HOST, WEB_PORT)) == 0:
+        try:
+            with urllib.request.urlopen(
+                f"{BASE_URL}/api/status", timeout=2
+            ) as resp:
+                body = json.loads(resp.read().decode("utf-8", "replace"))
+            if "session" in body:
                 return True
+        except Exception:
+            pass
         time.sleep(0.2)
     return False
+
+
+def _startup_failure_notice(gui: bool = False) -> None:
+    """Say the UI never came up, where the reader will actually see it.
+
+    The windowed build has no console, so the log line this accompanies is
+    not something the person who double-clicked the exe will ever read —
+    before this notice a failed start was a silent no-op. The usual cause is
+    another process holding the port.
+    """
+    message = (
+        f"{APP_NAME} could not start its window.\n\n"
+        f"Another program may be using port {WEB_PORT}, or the app could "
+        f"not create the UI.\n\n"
+        f"Details are in the log at:\n{DATA_DIR}\\app.log\n\n"
+        f"If {APP_NAME} is already running, look for its icon in the "
+        f"notification area (it may be under the hidden-icons arrow)."
+    )
+    log.error("web UI failed to start on %s", BASE_URL)
+    print(message)
+    if not gui:
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, 0x10)
+    except Exception:
+        log.exception("could not show the startup-failure notice")
 
 
 # ── Modes ────────────────────────────────────────────────────────────────
@@ -579,7 +622,11 @@ def run_app(show_window: bool = True) -> int:
     threading.Thread(target=_serve, args=(orch,), name="web", daemon=True).start()
 
     if not _wait_for_server():
-        log.error("web UI failed to start on %s", BASE_URL)
+        # The bind may have failed against a port held by something else —
+        # in which case no window should open on that process's content —
+        # or the server died for another reason. Either way the user gets
+        # one clear message instead of a silent no-op.
+        _startup_failure_notice(gui=show_window)
         return 1
     log.info("web UI ready at %s", BASE_URL)
 

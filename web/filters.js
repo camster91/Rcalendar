@@ -38,7 +38,14 @@ function rcol(r, rooms){
 }
 
 function fmtT(iso){if(!iso)return'';const d=new Date(iso);return d.toLocaleTimeString('en-CA',{hour:'numeric',minute:'2-digit',hour12:true});}
-function fmtDur(s,e){if(!s||!e)return'';const ms=new Date(e)-new Date(s);const h=Math.floor(ms/36e5);const m=Math.round((ms%36e5)/6e4);return h>0?(m>0?h+'h '+m+'m':h+'h'):(m+'m');}
+// Duration from the wall-clock fields, not the millisecond delta: a booking
+// spanning the spring-forward hour is 8 wall-clock hours but 7 real ones, and
+// the parenthetical should agree with the times printed next to it. Times
+// here are naive local ISO, so the HH:MM pair is the whole truth.
+function fmtDur(s,e){if(!s||!e)return'';const t=x=>{const m=/T(\d{2}):(\d{2})/.exec(x);return m?(+m[1])*60+(+m[2]):null;};
+  const a=t(s),b=t(e);if(a===null||b===null||b<a)return'';
+  const m=b-a,h=Math.floor(m/60),mm=m%60;
+  return h>0?(mm>0?h+'h '+mm+'m':h+'h'):mm+'m';}
 // Takes either a bare date ('2026-09-17') or a full ISO timestamp. The
 // T12:00:00 is only for the bare-date case, where it keeps the parse out of
 // UTC rounding either side of midnight; appending it to an already-full

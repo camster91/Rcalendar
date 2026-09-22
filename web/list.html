@@ -261,7 +261,7 @@ function syncRoomSelect(){
   }else if(multi){multi.remove();}
   // Never shows a room that is not the whole selection: with two rooms picked
   // it says so instead of naming one of them.
-  sel.value=n===1?[...activeRooms][0]:'all';
+  sel.value=n===1?[...activeRooms][0]:(n>1?'__multi__':'all');
 }
 
 // Search

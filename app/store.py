@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS events (
     date        TEXT,
     description TEXT,
     class_code  TEXT,
+    location    TEXT NOT NULL DEFAULT '',
     cancelled   INTEGER NOT NULL DEFAULT 0,
     all_day     INTEGER NOT NULL DEFAULT 0,
     scraped_at  TEXT NOT NULL
@@ -131,6 +132,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE events ADD COLUMN all_day INTEGER NOT NULL DEFAULT 0"
         )
         log.info("migrated: added events.all_day")
+    if "location" not in have:
+        # The parser has always built a building-qualified location, but it
+        # never reached the export: without the column, the store dropped it
+        # and the ICS LOCATION fell back to the bare room number. Rows
+        # written before this keep the fallback.
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN location TEXT NOT NULL DEFAULT ''"
+        )
+        log.info("migrated: added events.location")
 
     # Same retrofit for the feed. Without this, a database created before the
     # column existed keeps the old shape and every INSERT that names it fails —
@@ -226,6 +236,7 @@ def replace_events(
             (ev.get("start") or "")[:10] or None,
             ev.get("description") or "",
             ev.get("class_code") or "",
+            ev.get("location") or "",
             1 if ev.get("cancelled") else 0,
             1 if ev.get("all_day") else 0,
             now,
@@ -310,12 +321,13 @@ def replace_events(
         conn.executemany(
             """INSERT INTO events
                  (uid, title, room, start_iso, end_iso, date, description,
-                  class_code, cancelled, all_day, scraped_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                  class_code, location, cancelled, all_day, scraped_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(uid) DO UPDATE SET
                  title=excluded.title,
                  description=excluded.description,
                  class_code=excluded.class_code,
+                 location=excluded.location,
                  cancelled=excluded.cancelled,
                  all_day=excluded.all_day,
                  scraped_at=excluded.scraped_at""",
@@ -706,6 +718,9 @@ def _row_to_event(r: sqlite3.Row) -> dict[str, Any]:
         "date": r["date"],
         "description": r["description"] or "",
         "class_code": r["class_code"] or "",
+        # The building-qualified string the parser builds; empty for rows
+        # written before the column existed, so consumers fall back to room.
+        "location": r["location"] or "",
         "cancelled": bool(r["cancelled"]),
         "all_day": bool(r["all_day"]),
     }

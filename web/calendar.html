@@ -779,9 +779,13 @@ function renderWeek(){
   const wkEnd=new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+7);
   const inWeek=ev=>{if(!ev.start)return false;const d=new Date(ev.start);return d>=sow&&d<wkEnd;};
   const allDayWeek=mergeEvts(filtered.filter(ev=>ev.all_day&&inWeek(ev)));
-  const weekEvts=filtered.filter(ev=>!ev.all_day&&ev.end&&inWeek(ev));
+  // A timed booking with no end is still a booking: the store allows the
+  // shape and Month/Today render it, so requiring ev.end here made the week
+  // view silently disagree with both. An end-less event renders at its start
+  // hour as a minimal bar, the same zero-length read avail makes of it.
+  const weekEvts=filtered.filter(ev=>!ev.all_day&&inWeek(ev));
   let H0=7,H1=22;
-  weekEvts.forEach(ev=>{H0=Math.min(H0,new Date(ev.start).getHours());const eh=new Date(ev.end);H1=Math.max(H1,eh.getHours()+(eh.getMinutes()?1:0));});
+  weekEvts.forEach(ev=>{H0=Math.min(H0,new Date(ev.start).getHours());const eh=ev.end?new Date(ev.end):new Date(ev.start);H1=Math.max(H1,eh.getHours()+(eh.getMinutes()?1:0));});
   H1=Math.min(H1,23);
   // All-day blocks get their own strip above the grid rather than being
   // dropped: they have no hour to land on, and silently omitting them made the
@@ -792,7 +796,7 @@ function renderWeek(){
   const hours=[];for(let hr=H0;hr<=H1;hr++)hours.push(hr);
   hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+fmtISO(new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d))+'" data-hour="'+hr+'"></div>';}});
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
-  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=new Date(ev.end);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room, ROOMS)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
+  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=ev.end?new Date(ev.end):new Date(ev.start);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room, ROOMS)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
 }
 
 function renderToday(){
@@ -856,8 +860,12 @@ function renderChanges(force){
     return;
   }
   if(force||!havePanel)buildChangesPanel(el);
-  CHANGE_KEY=key;
-  fetch('/api/changes?'+key).then(r=>r.json()).then(d=>{CHANGES=d;paintChanges();})
+  // The key is committed only when the data lands. Committing it before the
+  // fetch meant one failed fetch left the old feed keyed to the new filter:
+  // the next visit then painted last filter's changes under this one, with
+  // the old counts and no error anywhere.
+  fetch('/api/changes?'+key).then(r=>r.json())
+    .then(d=>{CHANGES=d;CHANGE_KEY=key;paintChanges();})
     .catch(e=>{const l=document.getElementById('chgList');
       if(l)l.innerHTML='<div class="freeload">Could not load changes: '+esc(e.message)+'</div>';});
 }
@@ -1734,6 +1742,21 @@ async function loadStatus(){
       toast((lb.status==='error'?'⚠️ History fill failed':'⚠️ History fill incomplete')
             +(lb.message?' — '+lb.message:''),true);
     }
+
+    // A scrape that ran behind this window — the 06:00 refresh while the app
+    // sat in the tray, or the tray's "Scrape Now" — changes the store, while
+    // this page's EVENTS were fetched once at boot. Without this the grid
+    // sits beside a sidebar that says "last scrape: today 06:00" and can
+    // directly contradict it: the Free panel next to it is on this same
+    // interval, but a booking cancelled overnight stays on the grid with no
+    // staleness marker. So when the scrape timestamp moves, the events do
+    // too. The first reading is adopted rather than acted on: it is, or is
+    // within a breath of, the data this page booted with.
+    const at=d.last_scrape;
+    if(at){
+      if(EVENTS_AT===null)EVENTS_AT=at;
+      else if(at!==EVENTS_AT){EVENTS_AT=at;refreshEvents();}
+    }
   }catch(e){}
 }
 
@@ -1854,6 +1877,30 @@ function syncExportLinks(){
   if(activeGroups.size)lp.push('groups='+encodeURIComponent([...activeGroups].join(',')));
   if(searchQ)lp.push('q='+encodeURIComponent(searchQ));
   document.getElementById('tab-list').href='/list'+(lp.length?'?'+lp.join('&'):'');
+}
+
+// The last_scrape the displayed EVENTS were loaded under. Null until the
+// first status reading adopts it; it moves when a scrape finished behind
+// this window, which is the moment the grid goes stale.
+let EVENTS_AT=null;
+// Reload bookings without reloading the page. The URL's filters were read
+// once at boot and the user's choices since are theirs to keep: whoever had
+// every room active still does (a room added by the scrape joins the active
+// set rather than quietly narrowing it), and a deliberate narrowing is not
+// silently widened.
+async function refreshEvents(){
+  try{
+    const r=await fetch('/api/bootstrap');
+    if(!r.ok)return;
+    const d=await r.json();
+    const prev=new Set(activeRooms),hadAll=prev.size>=ROOMS.length;
+    EVENTS=d.events||[];GROUPS=d.groups||{};ROOM_META=d.room_meta||{};
+    ROOMS=d.rooms||[];
+    activeRooms=hadAll?new Set(ROOMS):new Set([...prev].filter(rm=>ROOMS.includes(rm)));
+    document.getElementById('roomcnt').textContent=ROOMS.length+' rooms';
+    buildChips();buildGroupBtns();
+    applyFilters();
+  }catch(e){}
 }
 
 async function boot(){
