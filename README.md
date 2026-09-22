@@ -559,12 +559,14 @@ the cursor.
 
 ## Versions and releases
 
-`APP_VERSION` in `app/config.py` is the version, and `__version__` in
-`app/__init__.py` mirrors it; `packaging/build.ps1` reads the first, so the
-number the installer would carry and the number the app reports are one
-string. The log line at the top of every run names it — the point of that is a
-log from a machine nobody can look at, which should say which build produced it
-without being asked.
+`APP_VERSION` in `app/config.py` is the version; `__version__` in
+`app/__init__.py` is the same string by import (`from app.config import
+APP_VERSION as __version__`), not a second copy that could drift.
+`packaging/build.ps1` reads the first, and `--selftest` writes it into
+`selftest.json`, so the number the installer would carry and the number the app
+reports are one string. The log line at the top of every run names it,
+whichever mode the run takes — the point of that is a log from a machine nobody
+can look at, which should say which build produced it without being asked.
 
 Releases are tagged `v<APP_VERSION>` on GitHub, and a release carries the
 **source** — GitHub's own archives of that tag — and no built exe. That is

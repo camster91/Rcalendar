@@ -9,6 +9,11 @@ Fill in before sending — the bracketed fields are placeholders, not prose:
 - `[N USERS]` — say the real number; "just me" is a strong and honest answer if
   it is true, and a number you cannot stand behind is worse than a small one
 - `[ASSET TAG]` if the machine has one
+- `[SETUP NAME]` and `[SETUP SIZE]` — the installer's filename and size, which
+  change with every version: `RotmanLSMCalendar-Setup-<APP_VERSION>.exe`, where
+  `APP_VERSION` is the one place the version lives (`app/config.py`). For 1.0.0
+  these were `RotmanLSMCalendar-Setup-1.0.0.exe` and 42.3 MB. Asking for a
+  filename no build produces is how this request gets a yes that fixes nothing.
 
 Send it **only if an exe is actually needed as a shipped artefact.** If it is
 not, the request is unnecessary: the venv path is now the default, it compiles
@@ -99,8 +104,8 @@ not.
 
 | | |
 |---|---|
-| Name | `RotmanLSMCalendar-Setup-1.0.0.exe` |
-| Size | 42.3 MB |
+| Name | `[SETUP NAME]` (for 1.0.0: `RotmanLSMCalendar-Setup-1.0.0.exe`) |
+| Size | `[SETUP SIZE]` (for 1.0.0: 42.3 MB) |
 | Signature | Not signed |
 | Packaging | Inno Setup 6.7.3, `PrivilegesRequired=lowest` — installs per-user under `%LOCALAPPDATA%\Programs`, so it raises no UAC prompt |
 

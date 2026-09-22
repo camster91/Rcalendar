@@ -463,6 +463,9 @@ def run_selftest() -> int:
 
     report = {
         "ok": not failures,
+        # selftest.json is the artefact someone verifying a shipped build
+        # reaches for, so it names the build as well as the checks it passed.
+        "version": APP_VERSION,
         "failures": failures,
         "checks": checks,
         "frozen": bool(getattr(sys, "frozen", False)),
@@ -557,11 +560,8 @@ def run_app(show_window: bool = True) -> int:
     if _another_instance_is_running(gui=show_window):
         return 1
 
-    # The version, in the log, at the top of a run. The point of it is the
-    # machine nobody can look at: a log from someone else's computer should say
-    # which build produced it without being asked.
-    log.info("%s %s starting (data: %s)", APP_NAME, APP_VERSION, DATA_DIR)
-
+    # The version was logged by main() before dispatching here, so the GUI
+    # mode says it in the same place every other mode does.
     store.init_db()
 
     orch = Orchestrator()
@@ -651,6 +651,14 @@ def main(argv: list[str] | None = None) -> int:
                              "exit (run once after installing on a new "
                              "machine; the installer does it for you)")
     args = parser.parse_args(argv)
+
+    # The version, in the log, at the top of every run — whichever of the
+    # modes below it takes. The point of it is the machine nobody can look
+    # at: a log from someone else's computer should say which build produced
+    # it without being asked, and the CLI modes that run unattended
+    # (--scrape-once under Task Scheduler especially) are precisely the ones
+    # whose logs outlive their machines.
+    log.info("%s %s starting (data: %s)", APP_NAME, APP_VERSION, DATA_DIR)
 
     if args.selftest:
         return run_selftest()
