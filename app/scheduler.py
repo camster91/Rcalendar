@@ -274,12 +274,13 @@ class Orchestrator:
 
     def _do_heartbeat(self) -> None:
         log.info("heartbeat")
-        ok = session.heartbeat()
+        # The probe's own state and message, not a collapsed ok/expired: a
+        # slow or unreachable LSM fails this the same way an expired session
+        # does, and the two call for different advice from the sidebar.
+        state = session.heartbeat()
         self._last_heartbeat = datetime.now()
         self._set(last_heartbeat=datetime.now().isoformat())
-        self._set(session="ok" if ok else "expired")
-        if not ok:
-            self._set(session_message="Session expired — sign in when convenient")
+        self._set_session(state)
 
     def _do_logout(self) -> None:
         """Clear the session, then report what the probe found afterwards.
@@ -342,16 +343,25 @@ class Orchestrator:
                 self._set_session(state)
 
             if not state.ok:
+                # The probe knows why it failed, and the reasons want different
+                # advice: an expired session is fixed by signing in, a failed
+                # navigation is not — one message for both sent the user
+                # chasing a sign-in no amount of signing in could fix. The
+                # panel was already told by _set_session above; this is the
+                # message that gets persisted with the run.
+                why = ("Session expired — sign in required"
+                       if state.state == "expired"
+                       else (state.message or "Could not reach LSM"))
                 store.finish_run(
                     run_id, "auth_required",
-                    message="Session expired — sign in required",
+                    message=why,
                 )
                 self._set(
                     last_scrape=datetime.now().isoformat(),
-                    last_scrape_message="Session expired — sign in required",
+                    last_scrape_message=why,
                     progress="",
                 )
-                log.info("scrape skipped: session expired")
+                log.info("scrape skipped: %s", why)
                 return
 
             self._set(progress="Running report…")
@@ -504,14 +514,20 @@ class Orchestrator:
             state = session.probe(headless=True)
             self._set_session(state)
             if not state.ok:
-                store.finish_run(run_id, "auth_required",
-                                 message="Backfill skipped — sign in required")
+                # Same distinction as _do_scrape's: an expired session wants
+                # the sign-in advice, an unreachable LSM wants its own
+                # message, and neither benefits from the other's.
+                why = ("Backfill skipped — sign in required"
+                       if state.state == "expired"
+                       else "Backfill skipped — "
+                            + (state.message or "could not reach LSM"))
+                store.finish_run(run_id, "auth_required", message=why)
                 # `failed` is what the CLI's exit code reads, and every
                 # window here is one that was not fetched. Leaving it at 0
                 # let --backfill exit 0 over an empty fill the run still owes.
                 # finished_at goes with it so the row is not left looking
                 # in-flight, unlike the mid-fill path below.
-                self._set_backfill(running=False, message="Sign in required",
+                self._set_backfill(running=False, message=why,
                                    failed=len(windows),
                                    finished_at=datetime.now().isoformat())
                 return

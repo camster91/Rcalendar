@@ -350,14 +350,20 @@ def probe(headless: bool = True) -> SessionState:
             return SessionState("error", message=str(exc))
 
 
-def heartbeat() -> bool:
-    """Lightweight keep-warm ping. Never opens a window."""
+def heartbeat() -> "SessionState":
+    """Lightweight keep-warm ping. Never opens a window.
+
+    Returns the probe's own state rather than a bool: an expired session
+    and an unreachable LSM both fail this, and the caller shows the
+    difference — a collapsed ok/not-ok told the user to sign in when
+    signing in could not have helped.
+    """
     state = probe(headless=True)
     if state.ok:
         log.info("heartbeat ok")
     else:
         log.info("heartbeat: %s (%s)", state.state, state.message)
-    return state.ok
+    return state
 
 
 # ── Interactive login ────────────────────────────────────────────────────
