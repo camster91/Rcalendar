@@ -44,11 +44,27 @@ _MONTHS = {
     "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
 }
 
-# Spellings that actually occur in the LSM comment field: "Cancld may 11",
-# "CANCLD DCIT 07.29". Note "cancl" is NOT a substring of "cancel", so it
-# needs its own alternative — without it this never matched anything, and
-# every cancelled booking was treated as live.
-_CANCELLED_RE = re.compile(r"cancel|cancl|cnxld|cncld", re.IGNORECASE)
+# The report marks a cancellation by *leading* the Comment field with it —
+# "CANCLD DCIT 07.29", "Cancld may 11" — optionally behind the ZZ/ marker it
+# puts on the title. Anchored, because the alternative is a substring search
+# over free text: unanchored, any booking whose notes merely mention the word
+# is read as cancelled, and a cancelled booking is not stored at all, so the
+# booking vanishes and nothing says why. "CANCELLATION POLICY" as a course
+# topic was enough.
+#
+# Erring toward *not* flagging is the safe direction and the asymmetry is the
+# reason. A cancellation we miss stays on the calendar for one scrape and then
+# disappears when the report stops listing it — the reconcile removes it and
+# the feed records it, so it corrects itself within a day. A booking we
+# wrongly flag is deleted with no trace, and the report will never mention it
+# again, so nothing brings it back.
+#
+# Note "cancl" is NOT a substring of "cancel", so it needs its own
+# alternative — without it this never matched anything, and every cancelled
+# booking was treated as live.
+_CANCELLED_RE = re.compile(
+    r"^\s*(?:ZZ\s*/\s*)?[-–—:.\s]*(?:cancel|cancl|cnxld|cncld)", re.IGNORECASE
+)
 _TIME_RANGE_RE = re.compile(r"\b(\d{3,4})\s*[-–—]\s*(\d{3,4})\b")
 # Longest alternative first — otherwise "ROTMAN" matches as "RT" and
 # leaves "MAN L1060" behind.

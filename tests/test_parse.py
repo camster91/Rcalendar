@@ -203,12 +203,56 @@ def _one(comment: str) -> dict:
 
 def test_cancelled_spellings() -> None:
     print("\ncancellation spellings")
-    # The report spells it "CANCLD" / "Cancld". The old pattern was
-    # "cancel|cnxld|cncld", and "cancl" is not a substring of "cancel" — so
-    # nothing ever matched and every cancelled booking showed as live.
+    # The report spells it "CANCLD" / "Cancld", leading the Comment field.
+    # The old pattern was "cancel|cnxld|cncld", and "cancl" is not a substring
+    # of "cancel" — so nothing ever matched and every cancelled booking showed
+    # as live.
     for comment in ("CANCLD DCIT 07.29", "Cancld may 11", "CANCELLED", "cnxld"):
         check(f"flagged: {comment!r}", _one(comment)["cancelled"], True)
-    check("not flagged: 'CAT/ CLEAN'", _one("CAT/ CLEAN")["cancelled"], False)
+    # The marker the report puts ahead of it on some rows.
+    for comment in ("ZZ/ CANCLD 07.29", "ZZ/Cancld", "  CANCLD  may 11"):
+        check(f"flagged behind the ZZ marker: {comment!r}",
+              _one(comment)["cancelled"], True)
+
+    # The direction the anchor exists for. The Comment field is free text, so
+    # a substring search reads any booking that merely *mentions* cancellation
+    # as cancelled — and a cancelled booking is never stored, so it disappears
+    # with nothing to say why. "CAT/ CLEAN" is the easy negative; these are the
+    # ones a substring search got wrong.
+    for comment in ("CAT/ CLEAN",
+                    "RSM6307 Cancellation Policy",
+                    "Course topic: cancellation modelling",
+                    "Dept meeting re cancelled flights",
+                    "AV UPGRADES - cnxld vendor on site"):
+        check(f"not flagged: {comment!r}", _one(comment)["cancelled"], False)
+
+
+def test_a_mentioned_cancellation_does_not_drop_the_booking() -> None:
+    """The consequence, not the flag: the booking is still on the calendar.
+
+    parse.py setting `cancelled` is only half of it — `_do_scrape` drops every
+    event the flag is set on, so a false positive is a deleted booking rather
+    than a mislabelled one. Asserted through the store path because that is
+    where the loss happens: a comment that mentions cancellation is a real
+    course, and it has to come back from parse_csv and survive the filter.
+    """
+    print("\na mentioned cancellation keeps its booking")
+    csv_text = (
+        "Room,Event/Course,Date,Start Time,End Time,Building,Class Code,Comment\n"
+        "RT 1065,RSM2600 Cancellation Policy,04-August-26,900,1200,RT,A,"
+        "Course topic: cancellation modelling\n"
+        "RT 1065,RSM2601 Finance,04-August-26,1300,1600,RT,A,CANCLD DCIT 07.29\n"
+    )
+    events = parse_csv(csv_text)
+    check("both rows parsed", len(events), 2)
+    check("the course about cancellation is not cancelled",
+          events[0]["cancelled"], False)
+    check("...and the genuinely cancelled one is", events[1]["cancelled"], True)
+    kept = [e for e in events
+            if e.get("room") != "" and not e.get("cancelled")]
+    check("only the course on cancellation survives to storage", len(kept), 1)
+    check("...and it is the right one",
+          kept[0]["title"], "RSM2600 Cancellation Policy")
 
 
 def test_all_day() -> None:
@@ -245,6 +289,7 @@ def main() -> int:
     test_cleanup()
     test_csv()
     test_cancelled_spellings()
+    test_a_mentioned_cancellation_does_not_drop_the_booking()
     test_all_day()
 
     print("\n" + "=" * 60)
