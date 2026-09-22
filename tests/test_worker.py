@@ -1,15 +1,18 @@
 """
-Background-worker tests: the report window guard, and the retry-storm guard.
+Background-worker tests: the report window guard, the retry-storm guard, and
+the worker's survival of a failing command.
 
     python tests/test_worker.py
 
-Both of these exist because the alternative to checking is silent. A report
+All of these exist because the alternative to checking is silent. A report
 that rendered a *narrower* window than we asked for is not merely missing
 data — the window's bounds are the bounds of the reconcile delete, so it
 erases real bookings and reports success. A daily scrape that is marked done
 only on success re-launches a browser against LSM every tick while the
-session is dead. Neither produces an error anyone would see, which is what
-makes them worth a test rather than a comment.
+session is dead. And a worker thread that dies on an exception takes the
+app's only scraper with it, without restarting anything and without saying
+so. None of the three produces an error anyone would see, which is what makes
+them worth a test rather than a comment.
 
 Nothing here opens a browser or touches LSM. The page is faked, the worker's
 scrape is stubbed, and app.config is pointed at a scratch data directory
@@ -21,6 +24,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -320,6 +324,78 @@ def test_logout_reports_what_the_probe_found() -> None:
         scheduler.session.logout = real
 
 
+def test_a_failed_command_does_not_kill_the_worker() -> None:
+    """The worker thread is the app's only scraper, and nothing restarts it.
+
+    _run had no guard around its dispatch, and only _do_scrape and _do_backfill
+    catch anything: _bootstrap_session, _do_probe, _do_heartbeat and _tick are
+    try/finally with no except, so an exception out of any of them -- a
+    Playwright launch failure inside the probe, an OSError out of the
+    heartbeat, a raising store read -- ended _run for the life of the process.
+    Nothing would ever be scraped again, nothing would say so, and the window
+    would go on displaying the status it held when the thread died.
+
+    Driven through the real loop rather than by calling the guard, because the
+    guard's value is that it survives a real dispatch. The failing command is
+    one whose handler raises, and the proof it did not end the loop is that the
+    command queued behind it is still handled. The bootstrap is made to raise
+    too, so the failure that skips the loop entirely is covered by the same
+    test -- that is the one that would leave the thread dead before it ever
+    polled for work.
+    """
+    print("\nworker loop")
+
+    orch = scheduler.Orchestrator()
+    seen: list[str] = []
+    real = {
+        "bootstrap": orch._bootstrap_session,
+        "probe": orch._do_probe,
+        "login": orch._do_login,
+        "shutdown": scheduler.session.shutdown,
+    }
+    try:
+        def exploding_bootstrap() -> None:
+            raise RuntimeError("no browser for you")
+
+        def exploding_probe() -> None:
+            raise RuntimeError("probe blew up")
+
+        def recording_login() -> None:
+            seen.append("login")
+
+        orch._bootstrap_session = exploding_bootstrap
+        orch._do_probe = exploding_probe
+        orch._do_login = recording_login
+        # Stopping must not touch a browser here either, and the STOP path has
+        # its own guard to exercise.
+        scheduler.session.shutdown = lambda: None
+
+        orch.start()
+
+        # Both are queued before either runs, so the login landing in `seen` is
+        # proof the loop carried on after the probe raised -- not merely that
+        # the thread had not been joined yet.
+        orch.request_probe()
+        orch.request_login()
+
+        deadline = time.monotonic() + 10
+        while "login" not in seen and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        check("a command that raises does not stop the next one being handled",
+              seen, ["login"])
+        ok("the worker thread is still alive after both failures",
+           orch._thread is not None and orch._thread.is_alive())
+        check("...and the failed command did not leave the UI claiming to be busy",
+              orch.status()["busy"], False)
+    finally:
+        orch._bootstrap_session = real["bootstrap"]
+        orch._do_probe = real["probe"]
+        orch._do_login = real["login"]
+        scheduler.session.shutdown = real["shutdown"]
+        orch.stop()
+
+
 def test_parse_time() -> None:
     """A SCRAPE_TIME nobody can read must not mean "scrape constantly"."""
     print("\nscrape time")
@@ -398,6 +474,7 @@ def main() -> int:
     test_window_guard()
     test_no_retry_storm()
     test_logout_reports_what_the_probe_found()
+    test_a_failed_command_does_not_kill_the_worker()
     test_exclusions()
     test_parse_time()
 

@@ -118,7 +118,18 @@ class Orchestrator:
         except Exception:
             log.exception("database init failed")
 
-        self._bootstrap_session()
+        # This thread is the app's only scraper and nothing restarts it, so
+        # every failure inside it is contained here. Before this, one exception
+        # anywhere below -- a Playwright launch failure inside the bootstrap
+        # probe, an OSError out of the heartbeat, a raising store read -- ended
+        # _run for the life of the process: no further scrape would ever be
+        # queued, no error would be shown, and the window would go on
+        # displaying whatever status it held at the time. A dropped command is
+        # a bad afternoon. A dead worker is a silently frozen app.
+        try:
+            self._bootstrap_session()
+        except Exception:
+            log.exception("session bootstrap failed; the worker will keep running")
 
         while True:
             timeout = self._seconds_until_next_tick()
@@ -129,25 +140,43 @@ class Orchestrator:
 
             if command == CMD_STOP:
                 log.info("worker stopping")
-                session.shutdown()
+                # Guarded too, and for the same reason: raising here would
+                # kill the thread on its way out rather than stop it, so the
+                # browser would be left open with nothing to close it later.
+                try:
+                    session.shutdown()
+                except Exception:
+                    log.exception("session shutdown failed")
                 return
 
-            if command == CMD_PROBE:
-                self._do_probe()
-            elif command == CMD_LOGIN:
-                self._do_login()
-            elif command == CMD_LOGOUT:
-                self._do_logout()
-            elif command == CMD_SCRAPE:
-                self._do_scrape(
-                    trigger=kwargs.get("trigger", "manual"),
-                    interactive=kwargs.get("interactive", False),
-                )
-            elif command == CMD_BACKFILL:
-                self._do_backfill(months=kwargs.get("months"),
-                                  auto=kwargs.get("auto", False))
-            else:
-                self._tick()
+            try:
+                self._dispatch(command, kwargs)
+            except Exception:
+                log.exception("command %r failed; the worker will keep running",
+                              command or "(tick)")
+                # busy is cleared as well. A handler that died between setting
+                # it and reaching its own finally would otherwise leave the UI
+                # claiming work is in progress that nothing is doing -- the
+                # same freeze as a dead thread, seen from the window.
+                self._set(busy=False, busy_action="", progress="")
+
+    def _dispatch(self, command: str, kwargs: dict) -> None:
+        if command == CMD_PROBE:
+            self._do_probe()
+        elif command == CMD_LOGIN:
+            self._do_login()
+        elif command == CMD_LOGOUT:
+            self._do_logout()
+        elif command == CMD_SCRAPE:
+            self._do_scrape(
+                trigger=kwargs.get("trigger", "manual"),
+                interactive=kwargs.get("interactive", False),
+            )
+        elif command == CMD_BACKFILL:
+            self._do_backfill(months=kwargs.get("months"),
+                              auto=kwargs.get("auto", False))
+        else:
+            self._tick()
 
     def _seconds_until_next_tick(self) -> float:
         """Sleep in short slices so manual commands feel responsive."""
