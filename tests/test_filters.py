@@ -353,6 +353,93 @@ def test_changes_filters() -> None:
     check("q and rooms are ANDed, not ORed", both["count"], 0)
 
 
+# ── 2.7 search ───────────────────────────────────────────────────────────
+
+def test_search_wildcards_are_literal() -> None:
+    """A `_` typed into the search box is a `_`, not "any one character".
+
+    The pattern was built as f"%{q}%" with no escaping and no ESCAPE clause,
+    so the two characters LIKE reserves as wildcards arrived as wildcards.
+    Typing `_` -- which is exactly what a room code uses -- returned every
+    booking in the window, and a search for L1060_A also matched L1060XA as
+    though the underscore were not there. Both are silent failures: the
+    result still looks like a result, just too many of them.
+
+    Asserted at the store, because that is where the pattern is built, and
+    through the route, because that is where `q` comes from.
+    """
+    print("\nsearch — LIKE wildcards are literal")
+
+    # One call, so the state asserted below is the state this sets. The window
+    # is DAY..NEXT, matching seeded_day's, because replace_events reconciles
+    # the window it is given -- a narrower one here would delete the rest.
+    store.replace_events([
+        booking(iso(DAY, "09:00"), iso(DAY, "13:00"), room="142",
+                title="Morning Lecture"),
+        booking(iso(DAY, "08:00"), iso(DAY, "09:00"), room="368", title="Early"),
+        booking(iso(NEXT, "10:00"), iso(NEXT, "11:00"), room="147",
+                title="Tomorrow Only"),
+        # The pair that makes the underscore visible: one room has one, the
+        # other has a different character where the underscore is.
+        booking(iso(DAY, "14:00"), iso(DAY, "15:00"), room="L1060_A",
+                title="Underscore Room"),
+        booking(iso(DAY, "15:00"), iso(DAY, "16:00"), room="L1060XA",
+                title="Lookalike Room"),
+    ], DAY, NEXT, run_id=901, trigger="manual")
+
+    total = len(store.get_events(limit=500))
+    check("there is data for an unescaped wildcard to over-match", total, 5)
+
+    # The symptom as a user meets it. Unescaped, each of these matched all
+    # five rows -- everything in the window. `_` must now match only the one
+    # row that genuinely has an underscore in it, and `%` must match nothing,
+    # because no booking here contains a percent sign. The count going 5 -> 1
+    # is the whole fix; a count of 5 would mean the wildcard is still live.
+    check("a bare '_' matches only the room that really has one",
+          [e["room"] for e in store.get_events(q="_", limit=500)],
+          ["L1060_A"])
+    check("a bare '%' matches nothing, not everything",
+          len(store.get_events(q="%", limit=500)), 0)
+
+    check("an underscore matches the room that has one",
+          [e["room"] for e in store.get_events(q="L1060_A", limit=500)],
+          ["L1060_A"])
+    check("...and not the room with the same shape but no underscore",
+          [e["room"] for e in store.get_events(q="L1060XA", limit=500)],
+          ["L1060XA"])
+
+    # The backslash is the escape character now, so it has to be escaped too
+    # -- and escaping it *first*. Left raw, `\L1060` would mean "the literal
+    # character L, then 1060", which matches both rooms above rather than
+    # neither. This is what catches the half-fix that adds ESCAPE to the SQL
+    # but forgets the pattern's own backslash.
+    check("a typed backslash cannot make the next character literal",
+          len(store.get_events(q="\\L1060", limit=500)), 0)
+
+    # Ordinary search is untouched, case-insensitivity included.
+    check("plain search still finds its booking",
+          [e["title"] for e in store.get_events(q="MORNING", limit=500)],
+          ["Morning Lecture"])
+
+    # The change feed builds the same pattern at a second call site, so
+    # fixing only get_events would leave the changes view over-matching.
+    check("the change feed escapes it too",
+          {c["room"] for c in store.get_changes(q="_", limit=500)},
+          {"L1060_A"})
+    found = store.get_changes(q="Morning", limit=500)
+    check("...and still finds by title there",
+          [c["title"] for c in found], ["Morning Lecture"])
+
+    client = create_app(StubOrch()).test_client()
+    check("the events route passes it through",
+          [e["room"] for e in client.get("/api/events?q=_").get_json()["events"]],
+          ["L1060_A"])
+    check("the changes route passes it through",
+          {c["room"] for c in
+           client.get("/api/changes?limit=500&q=_").get_json()["changes"]},
+          {"L1060_A"})
+
+
 # ── 2.6 groups ───────────────────────────────────────────────────────────
 
 def test_groups() -> None:
@@ -466,6 +553,7 @@ def main() -> int:
     test_today_window_and_crosscheck()
     test_today_batch_is_per_day()
     test_changes_filters()
+    test_search_wildcards_are_literal()
     test_groups()
     test_presets()
 

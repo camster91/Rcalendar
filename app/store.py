@@ -547,6 +547,29 @@ def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
 
 # ── Change feed ──────────────────────────────────────────────────────────
 
+def _like(q: str) -> str:
+    """A LIKE pattern for "contains q", with q's own wildcards defused.
+
+    LIKE has two wildcards and the search box has neither. `%` and `_` arrive
+    from the front end as ordinary characters, so an unescaped pattern reads
+    them as "anything" and "any one character": typing `_` into the search box
+    returned every booking in the window, and a search for `L1060_A` would
+    match `L1060XA` as though the underscore were not there. Neither is
+    exotic -- `_` is what a room code uses.
+
+    The backslash is escaped *first*. Doing it after the others would escape
+    the escapes this had just added, turning a literal backslash-then-`%` into
+    a live wildcard again.
+
+    Each call site must pair this with `ESCAPE '\\'` in the SQL. SQLite's LIKE
+    does not treat the backslash as an escape character on its own -- the
+    clause is what gives it that meaning, and without it the pattern is
+    searched for literally, backslashes and all, and matches nothing.
+    """
+    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{esc}%"
+
+
 def get_changes(
     since: str | None = None,
     kind: str | None = None,
@@ -591,9 +614,9 @@ def get_changes(
         sql.append(f"AND room IN ({','.join('?' for _ in rooms)})")
         args += list(rooms)
     if q:
-        sql.append("AND (title LIKE ? OR room LIKE ? OR description LIKE ?)")
-        like = f"%{q}%"
-        args += [like, like, like]
+        sql.append("AND (title LIKE ? ESCAPE '\\' OR room LIKE ? ESCAPE '\\'"
+                   " OR description LIKE ? ESCAPE '\\')")
+        args += [_like(q), _like(q), _like(q)]
     if run_id is not None:
         sql.append("AND run_id = ?")
         args.append(run_id)
@@ -664,9 +687,9 @@ def get_events(
         sql.append("AND date <= ?")
         args.append(date_to)
     if q:
-        sql.append("AND (title LIKE ? OR room LIKE ? OR description LIKE ?)")
-        like = f"%{q}%"
-        args += [like, like, like]
+        sql.append("AND (title LIKE ? ESCAPE '\\' OR room LIKE ? ESCAPE '\\'"
+                   " OR description LIKE ? ESCAPE '\\')")
+        args += [_like(q), _like(q), _like(q)]
     sql.append("ORDER BY start_iso LIMIT ?")
     args.append(limit)
 
