@@ -1626,6 +1626,48 @@ def test_search_suggestions_are_reachable_by_keyboard(browser, base: str) -> Non
             page.close()
 
 
+def test_returning_to_changes_rebuilds_the_panel(browser, base: str) -> None:
+    """The Changes view has to come back after you leave it.
+
+    renderChanges memoises the fetched feed under a key made of the filters, so
+    returning to the view with nothing changed skips the refetch. The memo was
+    also being read as a promise about the *screen*: every other renderer
+    replaces mainArea wholesale, so Month (or Week, or Today) destroys
+    #chgList while CHANGES and CHANGE_KEY survive it. Coming back then took
+    the memo path, painted into an element that no longer existed, and returned
+    early -- bringing the Changes view up blank.
+
+    It failed on the *second* visit every time the filters had not changed,
+    which is why one page load would never have found it: the first visit has
+    no memo to hit. So the trip here is out and back, and the assertion is on
+    the panel and its rows rather than on the fetch having happened.
+    """
+    print("\nchanges view")
+    D = "2026-04-15"
+    page = open_page(browser, base, f"/?view=changes&date={D}")
+    try:
+        # First visit: no memo yet, so this is the path that always worked.
+        page.wait_for_selector("#chgList .chg")
+        first = page.eval_on_selector_all("#chgList .chg", "els => els.length")
+        ok("changes: the first visit lists changes", first > 0)
+
+        # Away and back, with the filters untouched so the memo is hit.
+        page.click("#v-month")
+        page.wait_for_selector("#mainArea .cgrid")
+        check("changes: the panel is gone once we leave",
+              page.eval_on_selector_all("#chgList", "els => els.length"), 0)
+
+        page.click("#v-changes")
+        page.wait_for_selector("#chgList")
+        rows = page.eval_on_selector_all("#chgList .chg", "els => els.length")
+        check("changes: the second visit lists the same changes", rows, first)
+        cnt = (page.inner_text("#chgCnt") or "").strip()
+        ok("changes: and the count is filled in, not left at 'loading…'",
+           cnt and cnt != "loading…" and "+" in cnt)
+    finally:
+        page.close()
+
+
 def test_free_now_is_grouped_timestamped_and_filters_in_place(browser, base: str) -> None:
     """The sidebar's Free Right Now: what it measured, and when.
 
@@ -1765,6 +1807,7 @@ TESTS = [
     test_toggle_state_is_not_colour_alone,
     test_the_focus_ring_is_not_removed_without_replacement,
     test_search_suggestions_are_reachable_by_keyboard,
+    test_returning_to_changes_rebuilds_the_panel,
     test_free_now_is_grouped_timestamped_and_filters_in_place,
 ]
 

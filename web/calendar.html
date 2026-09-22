@@ -843,17 +843,30 @@ function renderChanges(force){
   // before any client-side filter could: "no changes for room 142" computed
   // here could be a lie about the newest 200 rows. The key is what the memo is
   // good for, so changing a filter refetches.
-  if(!force&&CHANGES&&key===CHANGE_KEY){paintChanges();return;}
-  if(force||!el.querySelector('#chgList')){
-    el.innerHTML='<div class="chead"><h2>Changes</h2>'
-      +'<span class="badge bg-bl" id="chgCnt">loading…</span>'
-      +'<button class="btn" onclick="renderChanges(true)" title="Fetch the feed again">⟳ Refresh</button></div>'
-      +'<div id="chgList"><div class="freeload">loading…</div></div>';
+  const havePanel=!!el.querySelector('#chgList');
+  // The memo is a promise about the *data*, not about the screen. Every other
+  // renderer replaces mainArea wholesale, so leaving Changes for Month and
+  // coming back leaves CHANGES and CHANGE_KEY intact with the panel they
+  // described destroyed. Painting straight from the memo then found no
+  // #chgList, returned early, and brought the view up blank — which a second
+  // visit to Changes hit every time the filters had not changed.
+  if(!force&&CHANGES&&key===CHANGE_KEY){
+    if(!havePanel)buildChangesPanel(el);
+    paintChanges();
+    return;
   }
+  if(force||!havePanel)buildChangesPanel(el);
   CHANGE_KEY=key;
   fetch('/api/changes?'+key).then(r=>r.json()).then(d=>{CHANGES=d;paintChanges();})
     .catch(e=>{const l=document.getElementById('chgList');
       if(l)l.innerHTML='<div class="freeload">Could not load changes: '+esc(e.message)+'</div>';});
+}
+
+function buildChangesPanel(el){
+  el.innerHTML='<div class="chead"><h2>Changes</h2>'
+    +'<span class="badge bg-bl" id="chgCnt">loading…</span>'
+    +'<button class="btn" onclick="renderChanges(true)" title="Fetch the feed again">⟳ Refresh</button></div>'
+    +'<div id="chgList"><div class="freeload">loading…</div></div>';
 }
 
 function paintChanges(){
