@@ -178,11 +178,25 @@ an hour. They also pin the 12-hour clock, which the reader accepts and
 therefore has to read correctly: `2:00 PM` is 14:00, and `12:30 AM` is
 00:30 rather than 12:30.
 
-`test_worker.py` covers the two background-worker guards whose failure is
-silent: the report window is read back and checked, and the daily scrape is
-marked attempted *before* it runs. Neither opens a browser — the page is
-faked and the scrape is stubbed — and both are written so the test fails if
-the guard is removed rather than merely passing.
+`test_worker.py` covers the background-worker guards whose failure is silent:
+the report window is read back and checked, the daily scrape is marked
+attempted *before* it runs, and the worker thread survives a command that
+raises. None of them opens a browser — the page is faked and the scrape is
+stubbed — and each is written so the suite fails if the guard is removed
+rather than merely passing.
+
+Two of its tests are about the **export path**, which is what decides whether a
+scrape may delete anything. The Download link hands over the whole report; the
+rendered results table is one page of an interactive report. `replace_events`
+deletes every stored booking in the window the report did not mention, so
+reading the page as if it were the report would erase everything past the first
+page and file it as a cancellation. `scrape()` therefore marks a page-read
+result incomplete, and an incomplete report adds and updates but deletes
+nothing — seeing a booking is evidence it exists, whereas not seeing one says
+nothing at all. The export path is asserted from both ends: that `scrape()`
+sets the flag, and that the flag reaches the store through `_do_scrape`.
+Verified by removal in all three places — dropping the store's guard, the
+scrape-side flag, or the scheduler's pass-through each turns the suite red.
 
 `test_web.py` is the only suite that drives a **real browser** against a real
 server, because the defects it exists for lived in the pages and nothing else

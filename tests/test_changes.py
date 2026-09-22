@@ -49,6 +49,10 @@ def check(label: str, got, want) -> None:
         print(f"  FAIL  {label}\n          got:  {g}\n          want: {w}")
 
 
+def ok(label: str, cond: bool) -> None:
+    check(label, bool(cond), True)
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────────
 
 def ev(title: str, room: str, day: int, hour: int = 9, hours: int = 2) -> dict:
@@ -207,6 +211,73 @@ def test_backfill_logs_no_changes() -> None:
     check("the stored rows read back", len(store.get_events(room="L1025")), 2)
     check("nothing reached the feed",
           len(store.get_changes(include_backfill=True, limit=2000)), before)
+
+
+def test_partial_report_adds_but_never_deletes() -> None:
+    """A report that is only part of the window may not delete what it omits.
+
+    The empty-report guard above catches the case where a failed render shows
+    *nothing*. This is the case it cannot see: a render that shows some of the
+    window and not the rest. `replace_events` was written to treat every
+    non-empty report as the whole report, so a scrape that read three bookings
+    out of two hundred deleted the other hundred and ninety-seven and filed
+    them as cancellations — bookings that were never cancelled, gone from the
+    calendar, with a change feed that reads as if they had been.
+
+    That the scrape can produce such a report is not hypothetical:
+    `scrape()` falls back to reading the rendered results table when the
+    Download link yields no file, and the rendered table is one page of an
+    interactive report. So the caller marks the result incomplete, and the
+    incomplete case is what this asserts — adds land, deletes do not.
+    """
+    print("\na partial report adds but never deletes")
+    w_from, w_to = win(-45, -5)
+
+    store.replace_events([ev("Iota Guard A", "L1035", -40),
+                          ev("Iota Guard B", "L1035", -35),
+                          ev("Iota Guard C", "L1035", -30)],
+                         w_from, w_to, run_id=50)
+    check("three stored", len(store.get_events(room="L1035")), 3)
+
+    # One booking re-reported, the other two simply missing from the page.
+    # Complete would mean two deletions; incomplete must mean none.
+    n = store.replace_events([ev("Iota Guard A", "L1035", -40)],
+                             w_from, w_to, run_id=51, complete=False)
+    check("the report is still stored", n, 1)
+    check("the bookings it did not show survive",
+          len(store.get_events(room="L1035")), 3)
+    check("no phantom removals reached the feed",
+          len([r for r in store.get_changes(kind="removed", limit=2000)
+               if r["room"] == "L1035"]), 0)
+
+    # And the same report *with* completeness still deletes, so the guard is
+    # what is doing the work rather than the fixture never being able to fail.
+    store.replace_events([ev("Iota Guard A", "L1035", -40)],
+                         w_from, w_to, run_id=52, complete=True)
+    check("a complete report still reconciles",
+          len(store.get_events(room="L1035")), 1)
+    check("...and logs what it removed",
+          len([r for r in store.get_changes(kind="removed", limit=2000)
+               if r["room"] == "L1035"]), 2)
+
+    # The additions an incomplete report carries are real evidence and must
+    # still land: a booking that has appeared has appeared, whatever else the
+    # page failed to show.
+    n = store.replace_events([ev("Iota Guard D", "L1035", -20)],
+                             w_from, w_to, run_id=53, complete=False)
+    check("a booking the partial report showed is stored", n, 1)
+    ok("...and is readable", any(e["title"] == "Iota Guard D"
+                                 for e in store.get_events(room="L1035")))
+    check("...and the one it omitted still survives",
+          len(store.get_events(room="L1035")), 2)
+
+    # The default stays complete. Every caller that has not thought about it
+    # keeps the reconcile it had, so this cannot quietly disarm the deletions
+    # cancellations depend on.
+    store.replace_events([ev("Iota Guard A", "L1035", -40)],
+                         w_from, w_to, run_id=54)
+    check("omitting the flag reconciles as before",
+          len(store.get_events(room="L1035")), 1)
 
 
 def test_empty_report_does_not_wipe() -> None:
@@ -612,6 +683,7 @@ def main() -> int:
     test_narrow_rescrape_adds_nothing()
     test_edited_booking_is_a_remove_and_an_add()
     test_backfill_logs_no_changes()
+    test_partial_report_adds_but_never_deletes()
     test_empty_report_does_not_wipe()
     test_runs_and_retention()
     test_prune()

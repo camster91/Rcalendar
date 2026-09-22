@@ -48,6 +48,12 @@ class ScrapeResult:
     date_to: str = ""
     rooms: list[str] = field(default_factory=list)
     message: str = ""
+    # False when the report was read off the rendered page rather than out of
+    # the export. The distinction is load-bearing rather than informational:
+    # the window's bounds are the bounds of the reconcile delete, so a report
+    # that is a *page* of the results would delete every booking it did not
+    # show. Only the export is the whole report. See _download_csv.
+    complete: bool = True
 
     @property
     def ok(self) -> bool:
@@ -206,10 +212,18 @@ def scrape(
                                     date_to=date_to, rooms=rooms)
 
             # ── Export ──
+            # Which of the two paths this takes decides whether the result may
+            # be reconciled. The Download link hands over the report itself,
+            # so what it returns is the whole window and its silence about a
+            # booking is evidence the booking is gone. The rendered table is
+            # one page of an interactive report, so its silence means nothing
+            # and the result is marked incomplete.
             csv_text = _download_csv(page, downloads)
+            complete = True
             if not csv_text:
                 say("CSV download unavailable — falling back to HTML table")
                 csv_text = _html_table_to_csv(page)
+                complete = False
 
             if not csv_text.strip():
                 return ScrapeResult(
@@ -221,11 +235,14 @@ def scrape(
             for ev in events:
                 ev["title"] = clean_title(ev["title"])
 
+            if not complete:
+                say(f"Read {len(events)} bookings from the page — the page is "
+                    f"not the whole report, so nothing will be deleted")
             say(f"Parsed {len(events)} bookings")
             return ScrapeResult(
                 "ok" if events else "empty",
                 events=events, date_from=date_from, date_to=date_to,
-                rooms=rooms,
+                rooms=rooms, complete=complete,
             )
 
     except Exception as exc:

@@ -365,21 +365,31 @@ class Orchestrator:
                     if e.get("room") not in excluded and not e.get("cancelled")
                 ]
                 store.replace_events(kept, result.date_from, result.date_to,
-                                     run_id=run_id, trigger=trigger)
+                                     run_id=run_id, trigger=trigger,
+                                     complete=result.complete)
                 store.replace_rooms(
                     [describe(r) for r in _rooms_from(kept, result.rooms)]
                 )
                 store.prune()
 
                 status = "ok" if kept else "empty"
+                # An incomplete report is not a quiet success. What it stored
+                # is only part of the window and, more to the point, the
+                # sidebar is about to say "N bookings" over a window that
+                # really holds more. Saying so is the difference between a
+                # scrape someone can act on and one that looks fine.
+                note = (f"{len(result.events)} parsed, {len(kept)} kept"
+                        if result.complete else
+                        f"{len(kept)} bookings — read from the page, not the "
+                        f"export, so this is partial")
                 store.finish_run(
                     run_id, status, events_count=len(kept),
                     date_from=result.date_from, date_to=result.date_to,
-                    message=f"{len(result.events)} parsed, {len(kept)} kept",
+                    message=note,
                 )
                 self._set(
                     last_scrape=datetime.now().isoformat(),
-                    last_scrape_message=f"{len(kept)} bookings",
+                    last_scrape_message=note,
                     progress="",
                     session="ok",
                 )
@@ -561,6 +571,7 @@ class Orchestrator:
                     kept, result.date_from, result.date_to,
                     run_id=run_id, trigger="backfill",
                     record_changes=False,
+                    complete=result.complete,
                 )
                 store.replace_rooms(
                     [describe(r) for r in _rooms_from(kept, result.rooms)]

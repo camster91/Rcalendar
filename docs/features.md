@@ -22,6 +22,7 @@ and nothing here writes to the university's system.
 | One-time history fill: 12 months, first launch with a live session, resumable | README → *History and changes* |
 | Repair path for a cut-short fill: `python -m app.main --backfill [--months N]` | `app/main.py` |
 | The report's own window is read back and checked before its data is used | README → *Notes and limits* |
+| Only a **whole** report is reconciled: read off the rendered page, it adds and updates but deletes nothing | `app/scrape.py`, `app/store.py` |
 | Room exclusions (134-series study rooms) filtered **before storage** | `app/config.py` |
 | Change feed: what appeared or disappeared between scrapes | `app/store.py`, Changes view |
 | Rolling-year retention (`KEEP_DAYS`, 410 days) | `app/config.py`, `app/store.py` |
@@ -125,6 +126,6 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 607 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 636 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The same seven suites in CI | `.github/workflows/tests.yml` |

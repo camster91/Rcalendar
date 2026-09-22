@@ -190,7 +190,140 @@ def test_window_guard() -> None:
           scrape._item_date(date(2026, 3, 1)), date(2026, 3, 1))
 
 
+# ── Which export path a report came from ─────────────────────────────────
+
+CSV_HEAD = ("Room,Event/Course,Date,Start Time,End Time,Class Code,Comment\n")
+
+
+def _csv_row(room: str, title: str, day: str) -> str:
+    return f'"{room}","{title}","{day}","0900","1100","A","Lecture"\n'
+
+
+class FakeDownload:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def path(self) -> Path:
+        # A Path, as Playwright's Download.path() returns — not a str.
+        # Returning a string here made _download_csv fail on read_text, which
+        # the caller swallows and answers with the page fallback, so the whole
+        # export path silently tested nothing.
+        return self._path
+
+
+class FakeDlCtx:
+    def __init__(self, path: Path) -> None:
+        self._value = FakeDownload(path)
+
+    @property
+    def value(self) -> FakeDownload:
+        return self._value
+
+    def __enter__(self) -> "FakeDlCtx":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+class ReportPage:
+    """A page good enough for scrape() to run all the way to the export.
+
+    Everything is keyed on the script text rather than on call order, because
+    call order is exactly the thing a fake should not be re-asserting: the
+    test's subject is which export path was taken, and a fake that broke every
+    time scrape() made an extra evaluate() call would be testing the wrong
+    thing.
+
+    `has_download` decides which path: with the Download link present scrape()
+    takes the downloaded file, and with it absent it reads the rendered table.
+    """
+
+    def __init__(self, csv_text: str, has_download: bool,
+                 readback: list | None = None,
+                 download_path: Path | None = None) -> None:
+        self._csv = csv_text
+        self._has_download = has_download
+        self._readback = readback if readback is not None else [None, None]
+        self._download_path = download_path
+
+    @property
+    def url(self) -> str:
+        return APEX_URL
+
+    def set_default_timeout(self, ms: int) -> None:
+        pass
+
+    def on(self, event: str, handler) -> None:
+        pass
+
+    def goto(self, url: str, **kwargs) -> None:
+        pass
+
+    def wait_for_timeout(self, ms: int) -> None:
+        pass
+
+    def wait_for_load_state(self, *args, **kwargs) -> None:
+        pass
+
+    def wait_for_function(self, script: str, **kwargs) -> None:
+        """_wait_for_item: returning normally means the item exists."""
+
+    @property
+    def keyboard(self):
+        return self
+
+    def press(self, key: str) -> None:
+        pass
+
+    def expect_download(self, timeout: int = 0) -> FakeDlCtx:
+        assert self._download_path is not None, "no download was staged"
+        return FakeDlCtx(self._download_path)
+
+    def locator(self, selector: str):
+        # Only the Download link matters here; when it is present the fake
+        # returns a locator that finds it, and when it is not, nothing.
+        return _FoundLink() if (self._has_download and "Download" in selector) \
+            else _CountNothing()
+
+    def evaluate(self, script: str, arg=None):
+        if "P51_FR_DATE" in script:
+            # The set passes both dates and the readback passes nothing. The
+            # readback has to agree with the request or _set_dates refuses the
+            # run, which is a different test's subject.
+            return None if isinstance(arg, list) else list(self._readback)
+        if "P51_ROOM" in script:
+            return [] if isinstance(arg, str) else None
+        if "querySelectorAll('table')" in script:
+            return self._csv
+        return []
+
+
+class _CountNothing:
+    def count(self) -> int:
+        return 0
+
+    def inner_text(self) -> str:
+        # The "no data found" probe reads body text; an empty report is a
+        # different test's subject, so this page always has data.
+        return ""
+
+
+class _FoundLink:
+    """A locator that finds the Download link, and clicks into a download."""
+
+    def count(self) -> int:
+        return 1
+
+    @property
+    def first(self) -> "_FoundLink":
+        return self
+
+    def click(self) -> None:
+        pass
+
 # ── The daily scrape's retry guard ───────────────────────────────────────
+
 
 class FrozenDatetime(datetime):
     """A datetime whose now() is whatever the test says.
@@ -396,6 +529,178 @@ def test_a_failed_command_does_not_kill_the_worker() -> None:
         orch.stop()
 
 
+def test_a_report_read_off_the_page_is_marked_incomplete() -> None:
+    """Which export path a scrape took has to reach the reconcile.
+
+    `_download_csv` returns the report itself — the Download link hands over
+    every row of the window. `_html_table_to_csv` returns whatever table the
+    rendered page happened to contain, which for an interactive report is one
+    page of it. `store.replace_events` deletes every stored booking in the
+    window the report did not mention, so the two are not interchangeable: a
+    page read as if it were the report deletes everything past the first page
+    and files it as a cancellation.
+
+    The store's side of that is asserted in tests/test_changes.py. This is the
+    other half — that `scrape()` knows the difference and says so — because a
+    flag nothing ever sets is the same defect with more code.
+    """
+    print("\nexport path")
+
+    readback = ["01/03/2026", "31/03/2026"]
+    asked = ("01/03/2026", "31/03/2026")
+    csv_text = CSV_HEAD + _csv_row("142", "Alpha", "1-Mar-2026")
+
+    # The document's own path, and the one case where a report may delete.
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(csv_text)
+        csv_path = Path(fh.name)
+    try:
+        downloaded = with_fake_browser(
+            ReportPage(csv_text, has_download=True, readback=readback,
+                       download_path=csv_path),
+            lambda: scrape.scrape(date_from=asked[0], date_to=asked[1]),
+        )
+        check("the downloaded export is the whole report", downloaded.complete, True)
+        check("...and it parses", len(downloaded.events), 1)
+        check("...and the run is ok", downloaded.status, "ok")
+    finally:
+        csv_path.unlink(missing_ok=True)
+
+    # The fallback. Same data on the page, no download — the result is usable
+    # but may not be spoken for.
+    said: list[str] = []
+    from_page = with_fake_browser(
+        ReportPage(csv_text, has_download=False, readback=readback),
+        lambda: scrape.scrape(date_from=asked[0], date_to=asked[1],
+                              on_status=said.append),
+    )
+    check("a report read off the page is not complete", from_page.complete, False)
+    ok("...but its bookings are still reported",
+       len(from_page.events) == 1
+       and from_page.events[0]["room"] == "142")
+    ok("...and the run says nothing will be deleted",
+       any("nothing will be deleted" in m for m in said))
+    check("...and the run is still ok, not an error", from_page.status, "ok")
+
+    # The whole-report path must not carry that warning, or the message is
+    # boilerplate and the next reader stops believing it.
+    said_ok: list[str] = []
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False,
+                            encoding="utf-8") as fh:
+        fh.write(csv_text)
+        dl_path = Path(fh.name)
+    try:
+        with_fake_browser(
+            ReportPage(csv_text, has_download=True, readback=readback,
+                       download_path=dl_path),
+            lambda: scrape.scrape(date_from=asked[0], date_to=asked[1],
+                                  on_status=said_ok.append),
+        )
+    finally:
+        dl_path.unlink(missing_ok=True)
+    ok("the export path does not warn about deletion",
+       not any("nothing will be deleted" in m for m in said_ok))
+
+    # A page that could not be read at all is an error, and stays one: the
+    # incomplete flag must not turn "we got nothing" into a usable report.
+    empty = with_fake_browser(
+        ReportPage("", has_download=False, readback=readback),
+        lambda: scrape.scrape(date_from=asked[0], date_to=asked[1]),
+    )
+    check("an unreadable page is still an error", empty.status, "error")
+    check("...and reports nothing", empty.events, [])
+
+
+def test_a_partial_scrape_does_not_delete_stored_bookings() -> None:
+    """The wire, end to end: a page-read report must not empty the window.
+
+    `scrape()` sets `complete` and `replace_events` honours it, but they are
+    two modules apart, and the link between them is one keyword argument in
+    `_do_scrape`. This drives the real handler with a `scrape()` that reports a
+    single booking out of a window holding two, which is exactly the shape of
+    the failure: the third booking is still real, and the report simply never
+    showed it.
+    """
+    print("\npartial scrape")
+
+    from datetime import date as _date
+
+    from app import session as _session
+
+    scheduler.store.init_db()
+    room = "P51WIRE"
+    d1 = _date.today().isoformat()
+    d2 = (_date.today() + timedelta(days=1)).isoformat()
+    window = (f"{_date.today():%d/%m/%Y}",
+              f"{_date.today() + timedelta(days=1):%d/%m/%Y}")
+
+    def booking(uid_title: str, day: str) -> dict:
+        return {"title": uid_title, "room": room,
+                "start": f"{day}T09:00:00", "end": f"{day}T11:00:00",
+                "description": "Lecture", "class_code": "A",
+                "cancelled": False}
+
+    # Two bookings stored, then a report that shows only the first.
+    scheduler.store.replace_events([booking("Wire Kept", d1),
+                                    booking("Wire Omitted", d2)],
+                                   *window, run_id=700)
+    check("the window holds two bookings",
+          len(scheduler.store.get_events(room=room)), 2)
+
+    real = {
+        "probe": _session.probe,
+        "scrape": scheduler.scrape,      # bound into scheduler's namespace by
+        "shutdown": _session.shutdown,   # `from app.scrape import scrape`, so
+    }                                    # patching the module attribute would
+    try:                                 # be patching nothing scheduler reads.
+        _session.probe = lambda headless=True: _session.SessionState("ok")
+        _session.shutdown = lambda: None
+
+        def one_booking_scrape(date_from=None, date_to=None, **kwargs):
+            return scrape.ScrapeResult(
+                "ok", events=[booking("Wire Kept", d1)],
+                date_from=window[0], date_to=window[1],
+                rooms=[room], complete=False,
+            )
+
+        scheduler.scrape = one_booking_scrape  # type: ignore[assignment]
+        orch = scheduler.Orchestrator()
+        orch._do_scrape(trigger="manual")
+
+        check("the booking the report omitted survives",
+              len(scheduler.store.get_events(room=room)), 2)
+        check("no phantom cancellation was logged",
+              len([r for r in scheduler.store.get_changes(kind="removed",
+                                                          limit=2000)
+                   if r["room"] == room]), 0)
+        ok("...and the sidebar says the scrape was partial",
+           "partial" in (orch.status()["last_scrape_message"] or ""))
+
+        # And with a complete report the same handler still reconciles, so the
+        # assertion above is the flag working rather than nothing ever
+        # deleting in this window.
+        def complete_scrape(date_from=None, date_to=None, **kwargs):
+            return scrape.ScrapeResult(
+                "ok", events=[booking("Wire Kept", d1)],
+                date_from=window[0], date_to=window[1],
+                rooms=[room], complete=True,
+            )
+
+        scheduler.scrape = complete_scrape  # type: ignore[assignment]
+        orch._do_scrape(trigger="manual")
+        check("a complete report reconciles as it always did",
+              len(scheduler.store.get_events(room=room)), 1)
+        check("...and logs the removal it saw",
+              len([r for r in scheduler.store.get_changes(kind="removed",
+                                                          limit=2000)
+                   if r["room"] == room]), 1)
+    finally:
+        _session.probe = real["probe"]
+        scheduler.scrape = real["scrape"]
+        _session.shutdown = real["shutdown"]
+
+
 def test_parse_time() -> None:
     """A SCRAPE_TIME nobody can read must not mean "scrape constantly"."""
     print("\nscrape time")
@@ -475,6 +780,8 @@ def main() -> int:
     test_no_retry_storm()
     test_logout_reports_what_the_probe_found()
     test_a_failed_command_does_not_kill_the_worker()
+    test_a_report_read_off_the_page_is_marked_incomplete()
+    test_a_partial_scrape_does_not_delete_stored_bookings()
     test_exclusions()
     test_parse_time()
 

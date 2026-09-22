@@ -169,6 +169,7 @@ def replace_events(
     run_id: int | None = None,
     trigger: str = "manual",
     record_changes: bool = True,
+    complete: bool = True,
 ) -> int:
     """
     Upsert a scraped window and record what changed in it.
@@ -188,6 +189,18 @@ def replace_events(
 
     `record_changes=False` is the backfill path: a first observation is not a
     change, and a year of them would bury the real feed.
+
+    `complete=False` says the caller could not establish that what it read was
+    the *whole* report. The absence of a booking is then no evidence that the
+    booking is gone, so nothing is deleted and no removal is recorded — but
+    adds and updates still land, because seeing a booking is evidence it
+    exists whatever else was missed. This is the same principle as the empty
+    guard below, at the resolution the caller can actually establish: the
+    guard catches "we saw nothing", this catches "we saw some, and do not know
+    whether that was all". A partial report that deletes is the worse failure
+    of the two, because it destroys bookings that are still real and logs them
+    as cancellations, so `scrape` marks a report incomplete whenever it reads
+    the rendered page instead of the export.
 
     Note that a booking whose time is edited gets a different uid, so it is
     recorded as one removal and one addition rather than a "move". The report
@@ -262,6 +275,18 @@ def replace_events(
             )
             added, removed = [], []
 
+        # A report the caller could not establish as whole. Keep the adds --
+        # seeing a booking says it exists -- and drop every deletion, because
+        # not seeing one says nothing.
+        if not complete:
+            if removed:
+                log.warning(
+                    "not reconciling removals: %s → %s was read from the "
+                    "rendered page, so the %d bookings it did not report may "
+                    "still exist", date_from, date_to, len(removed),
+                )
+            removed = []
+
         if record_changes and (added or removed):
             conn.executemany(
                 """INSERT INTO changes
@@ -273,7 +298,9 @@ def replace_events(
                              run_id, trigger, now),
             )
 
-        if have_window and not wipe:
+        # `complete` gates the delete as well as the feed: `removed` is what
+        # the feed reads, but the DELETE is what actually destroys the row.
+        if have_window and not wipe and complete:
             placeholders = ",".join("?" for _ in seen) or "''"
             conn.execute(
                 f"DELETE FROM events WHERE date BETWEEN ? AND ? "
