@@ -226,6 +226,16 @@ found by reading. The test settles it the only way that proves reachability —
 type, Tab, Enter, then remove the tag it made without a mouse — and it fails on
 a `div` at the Tab, which is how that was checked.
 
+One test covers the sidebar's **Free Right Now** panel, and it asserts the four
+things the redesign was for: that the answer is timestamped, that the rooms are
+grouped with each heading counting the rows beneath it, that every row is a real
+button, and that choosing one narrows the filter without discarding the rest of
+it or moving you off the view you were on. The grouping was **falsified before it
+was trusted** — removing the second group heading made three assertions fail
+(`got ['Free all day']`, and the all-day count absorbed the "free until" row),
+which is the evidence that the assertions are about the grouping rather than
+about the panel merely having rendered something.
+
 ## History and changes
 
 The app keeps a **rolling year** of bookings, not just the four months it
@@ -308,6 +318,42 @@ calendar: floor, capacity, equipment, and "free at a time".
   and a `dates=` batch for the days on screen, and answers both this and Free
   Right Now through the same predicate (`app/avail.py`), so the two cannot drift
   apart.
+
+**The Active filters row beside *Rooms* is derived from the filter state, not a
+history of what you added.** That is the whole point of it: `readURL` and a
+saved filter both replace the whole filter at once, and a row that had
+accumulated chips would leave the previous filter's chips on screen naming a
+filter that was no longer on — and because each chip undoes its filter by type,
+removing one then acted on the *new* filter rather than the one it named. A room
+chip left over from before widened a two-room saved filter to the whole
+building. Deriving the row from the state makes that unrepresentable, and the
+count in the ⚙ badge comes from the same list (it used to count four of the
+seven filters, so the badge denied three of them). **clear all** sits at the end
+of the row and is a plain button rather than a chip, because it is an action
+rather than a filter — and because a second element wearing the chip's class
+would make every count of the chips off by one, tests included.
+
+## Free Right Now
+
+The list is **grouped and stamped**, which is what the data asked for. Measured
+2026-09-21: of 91 rooms, 58 were free; of those 58, **49 had a booking later the
+same day** and **9 were free all day**. So *free* on its own is not the useful
+word, and the panel now splits exactly there — *Free all day* and *Free until
+HH:MM* — each group sorted by what makes the offers different rather than by room
+number, so a room free until 17:00 is not buried behind one free until 11:15.
+The section heading carries the strong count (the all-day figure).
+
+Every row is a **button**, so the list is reachable by keyboard like the rest of
+the page, and choosing one **narrows the filter to that room without discarding
+the rest of the filter** or moving you off the view you were on. It used to
+clear everything and change the view, from a panel the surrounding markup calls
+read-only.
+
+The list is stamped **as of HH:MM** because `/api/today` answers for the moment
+it is called. The sidebar fetches it at boot and every 60 seconds, and the row
+above it says "Right Now" — a claim about the wrong morning after a morning in a
+background tab, which the timestamp is there to make visible rather than to
+hide. **refresh ↻** re-measures on demand.
 
 **Rooms and search also reach the Changes view; the rest do not.** A change row
 describes a booking added or removed in the past, so floor, capacity, equipment

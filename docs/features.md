@@ -60,7 +60,28 @@ Applied the same way on both pages: **AND across filters, OR within one**.
 | Seats ≥ N | **Lenient** — a room with no recorded capacity passes, because a threshold is not a partition | README → *Filters* |
 | Panopto | The 13 rooms the report flags for capture (`PANOPTO_ROOMS`) | `app/config.py` |
 | Free at a time | "free from 14:00 for 60 min", answered **per day**, by `app/avail.py` | `app/avail.py`, `GET /api/today` |
-| Free Right Now | The same predicate as free-at, so the two cannot disagree | `app/avail.py` |
+| Free Right Now | The same predicate as free-at, so the two cannot disagree. Grouped into *free all day* and *free until HH:MM*, stamped with when it was measured, and each row a button that narrows the filter to that room | `app/avail.py`, `web/calendar.html` |
+
+## The Active filters row
+
+The row beside *Rooms* is **derived from the filter state**, never accumulated
+as a history of what was added. That is what makes a stale chip impossible by
+construction: `readURL` and a saved filter both replace the whole filter at
+once, and a history would leave the previous filter's chips on screen naming a
+filter that is no longer on — which is what happened, and removing one then
+acted on the new filter instead of the one it named. The ⚙ badge counts the
+same list, so it cannot deny filters it does not know about; it counted four of
+seven.
+
+## The free-room list
+
+Grouped rather than one run of rooms, because of what the data actually holds:
+of 91 rooms, 58 were free, 49 of those had a booking later the same day and 9
+were free all day — so *free* on its own is not the useful word. Each group is
+sorted by what makes the offers different (longest free first), and the section
+heading carries the strong count. The panel is stamped *as of HH:MM*, because
+`/api/today` answers for the moment it is called and a list fetched at boot is
+not still "Right Now" after a morning in a background tab.
 
 ## Exports
 
@@ -104,6 +125,6 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 593 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 607 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The same seven suites in CI | `.github/workflows/tests.yml` |

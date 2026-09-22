@@ -287,6 +287,18 @@ def events_shown(page) -> int:
     return int(page.inner_text("#evcnt").split()[0])
 
 
+def chip_labels(page) -> list:
+    """The Active filters row, as the labels a person reads.
+
+    The chip's own text is its first child; the ✕ is a real <button> inside it
+    and would otherwise be glued onto the label by inner_text. Reading the text
+    node rather than the rendered string is what makes this stable — the ✕ is
+    styled by the page and could change character, but the label is the data.
+    """
+    return page.eval_on_selector_all(
+        "#active .tag", "els => els.map(e => e.childNodes[0].textContent)")
+
+
 def open_presets(page) -> None:
     """Open the filter panel, which is what loads the preset tags."""
     page.evaluate("() => openFilters()")
@@ -1188,21 +1200,26 @@ def rename_group(page, old: str, new: str):
 
 
 def test_chips_do_not_outlive_the_filters_they_name(browser, base: str) -> None:
-    """A chip undoes its own filter by type, and only while it is current.
+    """A chip names the filter in force now, whoever put that filter there.
 
-    removeTag acts on the live state rather than on the chip: a room chip
-    resets the rooms to all of them, a group chip toggles that group. readURL
-    and applyPreset replace the whole filter without going through addTag, so
-    the row they leave behind names the filter that was just replaced — and
-    removing one then acts on the new one. A room chip left over from before
-    widens a two-room preset to every room in the building, which reads as the
-    preset not working rather than as a stale chip.
+    The row used to be a history: addTag appended a chip, and readURL and
+    applyPreset replaced the whole filter without clearing it, so the row could
+    name a filter that no longer existed. removeTag then acted on the live
+    state, so removing a stale room chip widened a two-room preset to every
+    room in the building — which reads as the preset not working rather than
+    as a stale chip.
+
+    The row is derived from the state now, so a stale chip cannot exist. What
+    is asserted is that it *follows the filter across both paths*, which is the
+    stronger property and the one that would have caught the bug: "no chips"
+    passes just as well when the row has stopped rendering altogether.
     """
     page = open_page(browser, base, f"/?view=month&date={D}")
     try:
         page.evaluate("() => addTag('room', '142')")
-        check("chips: adding a room shows one chip",
-              page.eval_on_selector_all("#tags .tag", "els => els.length"), 1)
+        check("chips: adding a room shows one chip", chip_labels(page), ["Room 142"])
+        check("chips: ...and the badge counts it",
+              page.inner_text("#advN"), "· 1")
         check("chips: ...and the filter followed it", events_shown(page), 2)
 
         open_presets(page)
@@ -1212,10 +1229,10 @@ def test_chips_do_not_outlive_the_filters_they_name(browser, base: str) -> None:
               page.evaluate("() => [...activeRooms].sort().join(',')"),
               "142,147")
         check("chips: ...and its bookings are shown", events_shown(page), 4)
-        # There is nothing left for the old chip to undo, so leaving it up is
-        # an offer to undo something that is no longer there.
-        check("chips: the chip for the replaced filter is gone",
-              page.eval_on_selector_all("#tags .tag", "els => els.length"), 0)
+        # The room chip is not left standing next to the preset's rooms: the
+        # row is rebuilt from the preset, so what is on screen names what is on.
+        check("chips: the row names the filter the preset installed",
+              chip_labels(page), ["2 rooms"])
     finally:
         page.close()
 
@@ -1551,7 +1568,7 @@ def test_search_suggestions_are_reachable_by_keyboard(browser, base: str) -> Non
     it was never looked at. Having added one, this checks it can be taken off
     again by something that is not a mouse.
     """
-    for path, box in (("/", "#q"), ("/list", "#search")):
+    for path, box, chips in (("/", "#q", "#active"), ("/list", "#search", "#tags")):
         page = open_page(browser, base, path)
         try:
             page.click(box)
@@ -1571,8 +1588,8 @@ def test_search_suggestions_are_reachable_by_keyboard(browser, base: str) -> Non
                landed.startswith("sdrop-item"))
 
             page.keyboard.press("Enter")
-            page.wait_for_selector("#tags .tag")
-            tag = page.inner_text("#tags .tag")
+            page.wait_for_selector(f"{chips} .tag")
+            tag = page.inner_text(f"{chips} .tag")
             ok(f"{path}: Enter adds the suggestion the focus was on",
                "14" in tag)
 
@@ -1580,18 +1597,137 @@ def test_search_suggestions_are_reachable_by_keyboard(browser, base: str) -> Non
             # announced, whatever it looks like. Then the wiring, so this
             # cannot pass on a control that is focusable and does nothing.
             x = page.eval_on_selector(
-                "#tags .tag .tag-x",
+                f"{chips} .tag .tag-x",
                 "el => ({ tag: el.tagName, label: el.getAttribute('aria-label')"
                 " || '', tabbable: el.tabIndex >= 0 })")
             ok(f"{path}: the remove control is a real button", x["tag"] == "BUTTON")
             ok(f"{path}: ...that a keyboard can land on", x["tabbable"])
             ok(f"{path}: ...and it says what it will remove", bool(x["label"]))
 
-            page.click("#tags .tag .tag-x")
+            # The remove control clears the filter its own chip names. Asserted
+            # by label rather than by "the row is now empty": choosing a
+            # suggestion adds that room, and the search term stays on as a
+            # filter of its own beside it, so the row can legitimately hold two
+            # chips here.
+            #
+            # Messages in this file stay ASCII: the suite prints them to a
+            # cp1252 console, and the page's own ✕ cannot be encoded there.
+            before = page.eval_on_selector(
+                f"{chips} .tag", "el => el.childNodes[0].textContent")
+            page.click(f"{chips} .tag .tag-x")
             page.wait_for_function(
-                "() => document.querySelectorAll('#tags .tag').length === 0")
+                "([sel, label]) => "
+                "![...document.querySelectorAll(sel + ' .tag')]"
+                ".some(e => e.childNodes[0].textContent === label)",
+                arg=[chips, before])
+            ok(f"{path}: the remove control cleared the filter its chip named",
+               before not in chip_labels(page))
         finally:
             page.close()
+
+
+def test_free_now_is_grouped_timestamped_and_filters_in_place(browser, base: str) -> None:
+    """The sidebar's Free Right Now: what it measured, and when.
+
+    Measured against the running app rather than guessed: 58 of 91 rooms free,
+    49 of them with a booking later that day, 9 free all day. The panel
+    rendered all of that as one unlabelled line of text -- "127 11:15" in a 62px
+    box -- with nothing saying which number was the room and which was the
+    clock, nothing saying when the answer had been measured, and 58 rooms
+    arriving as one undifferentiated run.
+
+    Four properties, each of which the old panel failed:
+
+      * the answer is timestamped, so a list fetched at boot is not still
+        labelled "Right Now" after a morning in a background tab;
+      * the rooms are grouped by the thing that makes them different offers --
+        free all day vs free until a time -- and each heading counts its own
+        rows;
+      * the rows are real buttons, so the list is reachable by keyboard;
+      * choosing a room narrows the filter to it without throwing the rest of
+        the filter away, and without changing the view. The old handler did
+        both, from a panel the surrounding markup calls read-only.
+    """
+    # A room free now and booked later today, so the list has both groups to
+    # show; the corpus otherwise has no bookings on today's date at all, which
+    # would leave every room in one group. 23:58 is the only window where this
+    # is not true, and by then there is no day left to ask about.
+    today = datetime.now().strftime("%Y-%m-%d")
+    store.replace_events(
+        store.get_events() + [booking("142", today, "23:58", "23:59", "Late slot")],
+        SOW, D2,
+    )
+    try:
+        page = open_page(browser, base, f"/?view=month&date={D}")
+        try:
+            page.wait_for_selector("#freeList .fr")
+
+            as_of = (page.inner_text("#freeAs") or "").strip()
+            ok("free: the panel says when the answer was measured",
+               as_of.startswith("as of ")
+               and len(as_of) > len("as of ") + 3
+               and as_of.split()[2].count(":") == 1)
+
+            # Read the group structure as rendered, rather than re-deriving it
+            # from the corpus: what is asserted is that the headings and the
+            # rows agree with each other.
+            structure = page.evaluate(
+                """() => {
+                     const out = [];
+                     let cur = null;
+                     for (const el of document.getElementById('freeList').children) {
+                       if (el.classList.contains('fgp')) {
+                         cur = {label: el.textContent, rows: 0, buttons: 0};
+                         out.push(cur);
+                       } else if (el.classList.contains('fr') && cur) {
+                         cur.rows++;
+                         if (el.tagName === 'BUTTON') cur.buttons++;
+                       }
+                     }
+                     return out;
+                   }""")
+            check("free: the free rooms are grouped, not one run of them",
+                  [g["label"].split(" (")[0] for g in structure],
+                  ["Free all day", "Free until"])
+            for g in structure:
+                label, _, count = g["label"].rpartition(" (")
+                check(f"free: '{label}' counts the rows under it",
+                      int(count.rstrip(")")), g["rows"])
+                check(f"free: every row under '{label}' is a real button",
+                      g["buttons"], g["rows"])
+
+            named = page.eval_on_selector_all(
+                "#freeList .fr",
+                "els => els.map(e => e.getAttribute('aria-label') || '')")
+            ok("free: each row says which room, and until when",
+               named and all("free until " in n or "free all day" in n for n in named))
+
+            # The heading's count is the strong one and the groups are the
+            # detail, so the two are shown to agree. textContent, not
+            # inner_text: the section title is small-caps in CSS, and reading
+            # it through the stylesheet would make this assert "4 FREE ALL DAY"
+            # -- the rendering, rather than the number.
+            check("free: the section heading counts the all-day rooms",
+                  page.eval_on_selector("#freeN", "el => el.textContent").strip(),
+                  f"{structure[0]['rows']} free all day")
+
+            page.fill("#q", "CIBC")
+            page.wait_for_selector("#active .tag")
+            room = page.eval_on_selector("#freeList .fr", "el => el.dataset.room")
+            page.click("#freeList .fr")
+            check("free: choosing a room narrows the filter to that room",
+                  page.evaluate("() => [...activeRooms].join(',')"), room)
+            check("free: ...without throwing away the rest of the filter",
+                  page.evaluate("() => searchQ"), "cibc")
+            check("free: ...and without moving you off the view you were on",
+                  page.evaluate("() => viewMode"), "month")
+        finally:
+            page.close()
+    finally:
+        # The seeded booking is for today, and today is not one of the fixture's
+        # fixed dates, so it is restored rather than left behind: a store that
+        # differs after this test is a different corpus for whatever runs next.
+        seeded()
 
 
 TESTS = [
@@ -1629,6 +1765,7 @@ TESTS = [
     test_toggle_state_is_not_colour_alone,
     test_the_focus_ring_is_not_removed_without_replacement,
     test_search_suggestions_are_reachable_by_keyboard,
+    test_free_now_is_grouped_timestamped_and_filters_in_place,
 ]
 
 

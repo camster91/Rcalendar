@@ -84,7 +84,14 @@ a.vtab{display:inline-flex;align-items:center}
 .tag-rm{background:var(--acg);color:var(--ac);border:1px solid rgba(59,130,246,.2)}
 .tag-grp{background:rgba(245,158,11,.08);color:var(--og);border:1px solid rgba(245,158,11,.2)}
 .tag-q{background:var(--sf2);color:var(--tx2);border:1px solid var(--bd)}
+/* The advanced filters, in green so "narrowed the rooms by a property" is a
+   different thing at a glance from "picked a room or a group". */
+.tag-f{background:rgba(11,126,88,.08);color:var(--gn2);border:1px solid rgba(11,126,88,.22)}
 .tag-x{cursor:pointer;opacity:.6;font-size:.78rem;margin-left:2px;background:none;border:none;padding:0;color:inherit;font-family:inherit;line-height:1}.tag-x:hover{opacity:1}
+/* "clear all" is an action, not a filter, so it deliberately does not carry
+   .tag: the row's chips are what .tag counts, and a second element wearing the
+   class would make every count of them off by one. */
+.tagclear{padding:4px 10px;border-radius:99px;font-size:.8rem;font-weight:500;background:none;border:1px dashed var(--bd);color:var(--tx3);cursor:pointer;font-family:inherit}.tagclear:hover{color:var(--tx);border-color:var(--tx3)}
 
 /* Room chips */
 .rchips{display:flex;flex-direction:column;gap:1px;flex:1;min-height:0;overflow-y:auto}
@@ -97,16 +104,27 @@ a.vtab{display:inline-flex;align-items:center}
    scrolling a 99-room column. */
 .rfloor{position:sticky;top:0;z-index:1;background:var(--bg);padding:8px 2px 3px;font-size:.7rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3)}
 
-/* "Free right now" panel. Two rows: enough to be a glance, not enough to
-   push the room list up. It scrolls internally past that. */
+/* "Free right now" panel. It was a wrap of room numbers in a 62px box, which
+   at this building's real numbers held 58 pills and hid the one fact worth
+   having: whether a room is free for the rest of the day or free until the
+   next class. It is a scrolling list of rows now, grouped on exactly that
+   distinction, with the times visible rather than behind a tooltip. */
 .freen{font-family:'JetBrains Mono',monospace;color:var(--gn,#22c55e)}
-.freelist{display:flex;flex-wrap:wrap;gap:4px;max-height:62px;overflow-y:auto}
+.fmeta{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:.74rem;color:var(--tx3);margin-bottom:5px}
+.fref{background:none;border:none;padding:0;font:inherit;font-size:.74rem;color:var(--ac);cursor:pointer}
+.fref:hover{text-decoration:underline}
+.freelist{display:flex;flex-direction:column;gap:1px;max-height:196px;overflow-y:auto}
 .freelist::-webkit-scrollbar{width:4px}.freelist::-webkit-scrollbar-thumb{background:var(--sf3);border-radius:4px}
 .freeload{font-size:.78rem;color:var(--tx3)}
-.free{padding:3px 7px;border-radius:5px;background:var(--sf2);border:1px solid var(--bd);font-size:.76rem;font-family:'JetBrains Mono',monospace;color:var(--tx2);cursor:pointer}
-.free:hover{background:var(--sf3)}
-.free.busy{border-color:var(--rd,#ef4444);color:var(--tx3)}
 .freenone{font-size:.78rem;color:var(--tx3)}
+/* A group heading inside the list, sticky for the same reason .rfloor is. */
+.fgp{position:sticky;top:0;z-index:1;background:var(--sf);padding:6px 2px 3px;font-size:.68rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--tx3)}
+.fr{display:flex;align-items:center;gap:7px;width:100%;padding:4px 6px;border-radius:5px;border:1px solid transparent;background:none;font:inherit;font-size:.8rem;color:var(--tx2);cursor:pointer;text-align:left}
+.fr:hover{background:var(--sf2);border-color:var(--bd)}
+.fr-r{font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--tx);min-width:31px}
+.fr-n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fr-c{font-size:.7rem;color:var(--tx3);white-space:nowrap}
+.fr-t{font-family:'JetBrains Mono',monospace;font-size:.72rem;font-weight:600;color:var(--og);white-space:nowrap}
 
 /* Group filters — multi-select */
 .gbar{display:flex;gap:5px;flex-wrap:wrap}
@@ -233,6 +251,12 @@ a.vtab{display:inline-flex;align-items:center}
 .frow input[type=text]{min-width:150px}
 .fempty{font-size:.85rem;color:var(--tx3);padding:4px 0}
 .fgrp{border:1px solid var(--bd);border-radius:var(--rs);padding:10px 12px;margin-bottom:10px;background:var(--sf)}
+/* A heading over a run of sections in the filter panel. Deliberately NOT the
+   .stit treatment the section titles use: they are both small caps, so the two
+   levels would have read as the same level and the grouping would have been
+   invisible. This one is larger and darker, with a rule above it. */
+.fgrp-hd-s{margin:22px 0 4px;padding-top:14px;border-top:1px solid var(--bd);font-size:.88rem;font-weight:700;color:var(--tx);letter-spacing:0;text-transform:none}
+.fgrp-hd-s:first-child{margin-top:0;padding-top:0;border-top:none}
 .fgrp-hd{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .fgrp-hd input{flex:1;background:var(--bg);border:1px solid var(--bd2);border-radius:var(--rs);color:var(--tx);padding:5px 8px;font:inherit;font-size:.85rem;font-weight:600}
 .fgrp-rooms{max-height:132px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:4px;padding:2px 0}
@@ -241,7 +265,9 @@ a.vtab{display:inline-flex;align-items:center}
 .fdel:hover{border-color:var(--rd)}
 .ftags{display:flex;flex-wrap:wrap;gap:6px}
 .ftags .tag{cursor:pointer}
-.facts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--bd)}
+/* No rule of its own any more: the "Actions" heading above it is the
+   separation, and two lines with a gap between them read as two dividers. */
+.facts{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 
 @media(max-width:900px){.side{display:none}.wrap{flex-direction:column}}
 </style>
@@ -280,11 +306,12 @@ a.vtab{display:inline-flex;align-items:center}
       <input type="text" id="q" placeholder="Room, group, event..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="setTimeout(()=>closeDrop(),200)">
       <div class="sdrop" id="sdrop"></div>
     </div>
-    <div class="tags" id="tags"></div>
     <!-- Opens the filter panel. Floor, seats, Panopto and free-at need more
          room than the column has left, so they live over the calendar in a
-         panel rather than in a sidebar that is already full. -->
-    <button class="btn" id="filterBtn" onclick="openFilters()">⚙ Filters <span id="advN"></span></button>
+         panel rather than in a sidebar that is already full. The badge counts
+         every filter that is on, not just the panel's four — see
+         renderActiveChips(). -->
+    <button class="btn" id="filterBtn" onclick="openFilters()">⚙ Filters</button>
   </div>
   <div>
     <div class="stit">Filter by Group</div>
@@ -296,10 +323,20 @@ a.vtab{display:inline-flex;align-items:center}
     <div class="stit">Rooms <span style="font-weight:400;text-transform:none;letter-spacing:0;cursor:pointer;font-size:.78rem;color:var(--ac)" onclick="roomClear()">clear</span></div>
     <div class="rchips" id="rchips"></div>
   </div>
-  <!-- Everything below is read-only. -->
+  <!-- Every filter that is on, as a chip you can take off. Derived from the
+       live state by renderActiveChips(), not accumulated as it changes — see
+       the comment there for why that distinction is the whole point. -->
+  <div>
+    <div class="stit">Active filters <span class="freen" id="advN"></span></div>
+    <div class="tags" id="active"></div>
+  </div>
   <div>
     <div class="stit">Free Right Now <span class="freen" id="freeN"></span></div>
-    <div class="freelist" id="freeList"><span class="freeload">checking…</span></div>
+    <div class="fmeta">
+      <span id="freeAs">checking…</span>
+      <button class="fref" onclick="loadFree()" aria-label="Refresh the free-rooms list">refresh ↻</button>
+    </div>
+    <div class="freelist" id="freeList"></div>
   </div>
   <div>
     <div class="stit">Status</div>
@@ -514,42 +551,94 @@ function showDrop(d){
   box.classList.add('show');
 }
 function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
-const tags=[];
-// The chips are addTag's own record of what the user added, and removeTag
-// undoes each one *by type*: a room chip resets the rooms to all of them, a
-// group chip toggles that group. That only holds while addTag is the only
-// thing changing the filters, so anything that replaces the filters wholesale
-// has to clear them — readURL and applyPreset did not, and left the previous
-// filter's chips on screen over the new filter. Removing one then acted on the
-// filter that had replaced it: a stale room chip widened a two-room preset to
-// every room in the building, and a stale group chip toggled a group the
-// preset had deliberately set.
-function clearTags(){tags.length=0;renderTags();}
-function addTag(type,value){if(tags.some(t=>t.type===type&&t.value===value))return;tags.push({type,value});if(type==='group')toggleGroup(value);else if(type==='room'){activeRooms.clear();activeRooms.add(value);syncChips();}else{searchQ=value.toLowerCase();document.getElementById('q').value='';}closeDrop();renderTags();applyFilters();}
-function removeTag(idx){const t=tags.splice(idx,1)[0];if(t.type==='group'){toggleGroup(t.value);}else if(t.type==='room'){activeRooms=new Set(ROOMS);syncChips();}else{searchQ='';document.getElementById('q').value='';}renderTags();applyFilters();}
-// textContent again: t.value is the raw search text or a group name, and the
-// old version wrote it into the page as markup.
-function renderTags(){
-  const box=document.getElementById('tags');
+
+// What the search dropdown and the free-room rows do, both. A room is chosen,
+// not accumulated: with every room selected there is nothing to add to, so the
+// pick narrows to that room; with a narrower selection already made, the pick
+// joins it. One function, because two entry points that filtered differently
+// would be two answers to "what does picking a room do".
+function pickRoom(room){
+  if(!ROOMS.includes(room))return;
+  if(activeRooms.size===ROOMS.length)activeRooms=new Set([room]);
+  else activeRooms.add(room);
+  syncChips();applyFilters();
+}
+function addTag(type,value){
+  if(type==='group')toggleGroup(value);
+  else if(type==='room')pickRoom(value);
+  else{searchQ=value.toLowerCase();document.getElementById('q').value='';}
+  closeDrop();applyFilters();
+}
+
+// ── ACTIVE FILTERS ──
+// Read out of the live state, not accumulated as it changes. The row this
+// replaces was a history of what had been *added*, which is why it needed
+// clearing by hand: readURL and applyPreset replace the whole filter without
+// going through addTag, so the old chips stayed on screen over the new filter,
+// and removing one then acted on the filter that had replaced it -- a stale
+// room chip widened a two-room preset to the whole building. Deriving the row
+// from the state means a chip cannot name a filter that is not on, and there is
+// no second copy of the filter to keep in step. The count in the ⚙ badge comes
+// from the same list, so the badge can no longer deny filters it does not know
+// about (it counted four; rooms, groups and search were the other three).
+function activeChipList(){
+  const out=[];
+  const q=document.getElementById('q');
+  const term=searchQ||(q?q.value.trim().toLowerCase():'');
+  if(term)out.push({cls:'tag-q',label:'“'+term+'”',
+    clear:()=>{searchQ='';if(q)q.value='';}});
+  activeGroups.forEach(g=>out.push({cls:'tag-grp',label:'📁 '+g,
+    clear:()=>toggleGroup(g)}));
+  if(activeRooms.size<ROOMS.length){
+    const rs=[...activeRooms].sort();
+    out.push({cls:'tag-rm',label:rs.length===1?'Room '+rs[0]:rs.length+' rooms',
+      clear:()=>{activeRooms=new Set(ROOMS);syncChips();}});
+  }
+  if(advFloors.size){
+    const fs=[...advFloors].sort();
+    out.push({cls:'tag-f',
+      label:fs.length===1?(fs[0]===NO_FLOOR?'No floor':fs[0]):fs.length+' floors',
+      clear:()=>advFloors.clear()});
+  }
+  if(advSeats)out.push({cls:'tag-f',label:'Seats ≥ '+advSeats,
+    clear:()=>{advSeats=0;}});
+  if(advPanopto)out.push({cls:'tag-f',label:'🎥 Panopto',
+    clear:()=>{advPanopto=false;}});
+  if(advFreeAt)out.push({cls:'tag-f',label:'Free '+advFreeAt+' for '+advFreeMins+' min',
+    clear:()=>{advFreeAt='';FREE_KEY='';FREE_DAYS=null;}});
+  return out;
+}
+function renderActiveChips(){
+  const box=document.getElementById('active');
+  if(!box)return;
+  const list=activeChipList();
+  const n=document.getElementById('advN');
+  if(n)n.textContent=list.length?'· '+list.length:'';
   box.innerHTML='';
-  tags.forEach((t,i)=>{
-    const cls=t.type==='room'?'tag-rm':t.type==='group'?'tag-grp':'tag-q';
-    const lbl=t.type==='room'?'Room '+t.value:t.type==='group'?'📁 '+t.value:t.value;
-    const el=document.createElement('span');
-    el.className='tag '+cls;el.textContent=lbl;
-    // A button, not a span with a handler -- the same fix list.html carries.
-    // As a span this was the one thing in the filter chips a keyboard could not
-    // reach: the tag could be added from the search box and only removed with a
-    // mouse. The class keeps the styling; the button's own chrome is reset on
-    // the rule below.
+  if(!list.length){
+    box.appendChild(el('span','freenone','Nothing filtered — everything is shown.'));
+    return;
+  }
+  list.forEach(c=>{
+    const t=document.createElement('span');
+    t.className='tag '+c.cls;
+    t.appendChild(document.createTextNode(c.label));
     const x=document.createElement('button');
     x.className='tag-x';x.type='button';
     x.textContent='✕';
-    x.setAttribute('aria-label','Remove filter: '+lbl);
-    x.onclick=()=>removeTag(i);
-    el.appendChild(x);
-    box.appendChild(el);
+    x.setAttribute('aria-label','Remove filter: '+c.label);
+    // Clearing runs the filter's own off-path, then re-renders the panel: the
+    // modal's chips carry their own on/off state and would otherwise still show
+    // the filter this just removed.
+    x.onclick=()=>{c.clear();buildFilterBody();applyFilters();};
+    t.appendChild(x);
+    box.appendChild(t);
   });
+  const all=document.createElement('button');
+  all.className='tagclear';all.type='button';all.textContent='clear all';
+  all.setAttribute('aria-label','Clear all filters');
+  all.onclick=()=>clearAllFilters();
+  box.appendChild(all);
 }
 
 // ── VIEW ──
@@ -589,17 +678,8 @@ function applyFilters(){
     if(advFreeAt&&FREE_DAYS&&!freeOn(e))return false;
     return true;
   });
-  advCount();
+  renderActiveChips();
   document.getElementById('evcnt').textContent=filtered.length+' events';render();
-}
-
-// How many advanced filters are on, so the sidebar button says so with the
-// panel closed. Rooms and search are not counted — they have their own chips
-// and their own place in the column.
-function advCount(){
-  const n=advFloors.size+(advSeats?1:0)+(advPanopto?1:0)+(advFreeAt?1:0);
-  const el=document.getElementById('advN');
-  if(el)el.textContent=n?'· '+n:'';
 }
 
 // ── HELPERS ──
@@ -982,6 +1062,14 @@ function sec(title){
   s.appendChild(el('div','stit',title));
   return s;
 }
+// A heading over a run of sections. The panel had seven sections at one level,
+// which made a filter, a group editor and a saved-filter list read as peers --
+// they are three different kinds of thing, and "Capacity" sitting beside
+// "Save groups" is what made the panel feel like a settings page. The heading
+// says which kind each run is.
+function secGroup(title){
+  return el('div','fgrp-hd-s',title);
+}
 
 function buildFilterBody(){
   const body=document.getElementById('filterBody');
@@ -998,6 +1086,8 @@ function buildFilterBody(){
       +'is about the past — so they are not applied here.';
     body.appendChild(cw);
   }
+
+  body.appendChild(secGroup('Narrow the rooms'));
 
   // ── Floor ──
   const fs=sec('Floor');
@@ -1069,6 +1159,8 @@ function buildFilterBody(){
   es.appendChild(ebar);
   body.appendChild(es);
 
+  body.appendChild(secGroup('Find a slot'));
+
   // ── Free at a time ──
   const tms=sec('Free at a time');
   const trow=el('div','frow');
@@ -1098,6 +1190,8 @@ function buildFilterBody(){
   tms.appendChild(fnote);
   body.appendChild(tms);
 
+  body.appendChild(secGroup('Manage'));
+
   // ── Groups ──
   const gs=sec('Groups');
   Object.keys(GEDIT).forEach(name=>gs.appendChild(groupEditorRow(name)));
@@ -1119,6 +1213,8 @@ function buildFilterBody(){
     +'room from a group keeps the group but selects nothing.'));
   body.appendChild(gs);
 
+  body.appendChild(secGroup('Saved'));
+
   // ── Presets ──
   const ps=sec('Saved filters');
   const ptags=el('div','ftags');ptags.id='presetTags';
@@ -1138,6 +1234,8 @@ function buildFilterBody(){
     +'it useless tomorrow. The link below is the opposite: it does carry the date.'));
   body.appendChild(ps);
   renderPresets();
+
+  body.appendChild(secGroup('Actions'));
 
   // ── Actions ──
   const acts=el('div','facts');
@@ -1381,8 +1479,9 @@ function applyPreset(p){
   // Clearing the key alone would leave the previous set in place and apply it
   // to the new filters for as long as the refetch took.
   FREE_KEY='';FREE_DAYS=null;
-  clearTags();
-  syncGroupBtns();syncChips();renderTags();buildFilterBody();applyFilters();
+  // No chip clearing here any more: the Active row is derived from the state
+  // set above, so it was never holding the previous filter's chips to clear.
+  syncGroupBtns();syncChips();buildFilterBody();applyFilters();
   toast('Applied “'+((p&&p.name)||'filter')+'”',true);
 }
 async function savePreset(rawName){
@@ -1410,7 +1509,6 @@ function clearAllFilters(){
   activeRooms=new Set(ROOMS);
   activeGroups.clear();
   searchQ='';document.getElementById('q').value='';
-  clearTags();
   advFloors.clear();advSeats=0;advPanopto=false;advFreeAt='';advFreeMins=60;
   FREE_DAYS=null;FREE_KEY='';
   syncGroupBtns();syncChips();buildFilterBody();
@@ -1472,8 +1570,7 @@ function readURL(){
   document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
   const tab=document.getElementById('v-'+viewMode);
   if(tab)tab.classList.add('on');
-  clearTags();
-  syncGroupBtns();syncChips();renderTags();
+  syncGroupBtns();syncChips();
   return p.toString().length>0;
 }
 
@@ -1619,22 +1716,71 @@ async function loadStatus(){
 }
 
 async function loadFree(){
-  const el=document.getElementById('freeList');
-  if(!el)return;
+  const box=document.getElementById('freeList');
+  if(!box)return;
+  const as=document.getElementById('freeAs');
   try{
     const d=await (await fetch('/api/today')).json();
-    const free=(d.rooms||[]).filter(r=>r.status==='free');
-    document.getElementById('freeN').textContent=free.length+' of '+(d.rooms||[]).length;
-    if(!free.length){el.innerHTML='<span class="freenone">Every room is booked right now.</span>';return;}
-    // Rooms with nothing else today first — those are the safe answers; a room
-    // that frees up for twenty minutes is technically free and practically not.
-    free.sort((a,b)=>(a.next_at?1:0)-(b.next_at?1:0)||a.room.localeCompare(b.room));
-    const desc=r=>{const m=ROOM_META[r.room]||{};return esc(m.display||('Room '+r.room))+(m.capacity?' · '+m.capacity+' seats':'')+(r.next_at?' — free until '+fmtT(r.next_at):' — free all day');};
-    el.innerHTML=free.map(r=>'<span class="free'+(r.next_at?' busy':'')+'" role="button" tabindex="0" aria-label="'+desc(r)+'" onclick="freePick(\''+esc(r.room)+'\')" title="'+desc(r)+'">'+esc(r.room)+(r.next_at?' <span style="opacity:.6">'+fmtT(r.next_at)+'</span>':'')+'</span>').join('');
-  }catch(e){el.innerHTML='<span class="freeload">Unavailable</span>';}
+    const rooms=d.rooms||[];
+    const free=rooms.filter(r=>r.status==='free');
+    // When the answer is about, said out loud. The panel is fetched once at
+    // boot and the row above it says "Right Now", which after a morning in a
+    // background tab is a claim about the wrong morning. /api/today answers for
+    // the moment it is called, so this is the moment it was called.
+    const now=new Date();
+    if(as)as.textContent='as of '+now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+    // The split the list exists for: 58 rooms were free and only 9 of them were
+    // free all day, so "free" on its own is not the useful word. The count in
+    // the heading is the strong one, and the groups below it are the detail.
+    const allDay=free.filter(r=>!r.next_at);
+    const until=free.filter(r=>r.next_at);
+    const n=document.getElementById('freeN');
+    if(n)n.textContent=free.length?allDay.length+' free all day':'';
+    if(!free.length){
+      box.innerHTML='<span class="freenone">Every room is booked right now.</span>';
+      return;
+    }
+    // Longest free first, inside each group: a room free until 17:00 and one
+    // free until 11:15 are different offers, and sorting by room number buries
+    // the difference. The all-day group needs no sort beyond the room number,
+    // which is the only tie-break it has.
+    allDay.sort((a,b)=>a.room.localeCompare(b.room,undefined,{numeric:true}));
+    until.sort((a,b)=>String(b.next_at).localeCompare(String(a.next_at))
+      ||a.room.localeCompare(b.room,undefined,{numeric:true}));
+    const row=r=>{
+      const m=ROOM_META[r.room]||{};
+      const name=m.display||('Room '+r.room);
+      const cap=m.capacity?m.capacity+' seats':'';
+      const title=name+(cap?' · '+cap:'')
+        +(r.next_at?' — free until '+fmtT(r.next_at):' — free all day');
+      // A real button, so the list is reachable by keyboard like everything
+      // else here; the room number is the report's, hence esc().
+      return '<button type="button" class="fr" data-room="'+esc(r.room)+'"'
+        +' title="'+esc(title)+'" aria-label="'+esc(title)+'"'
+        +' onclick="freePick(this.dataset.room)">'
+        +'<span class="fr-r">'+esc(r.room)+'</span>'
+        +'<span class="fr-n">'+esc(name)+'</span>'
+        +(cap?'<span class="fr-c">'+esc(cap)+'</span>':'')
+        +(r.next_at?'<span class="fr-t">'+fmtT(r.next_at)+'</span>':'')
+        +'</button>';
+    };
+    const group=(label,rows)=>'<div class="fgp">'+label+' ('+rows.length+')</div>'
+      +rows.map(row).join('');
+    let h='';
+    if(allDay.length)h+=group('Free all day',allDay);
+    if(until.length)h+=group('Free until',until);
+    box.innerHTML=h;
+  }catch(e){
+    if(as)as.textContent='';
+    box.innerHTML='<span class="freeload">Unavailable</span>';
+  }
 }
 
-function freePick(room){activeRooms=new Set([room]);syncChips();applyFilters();setView('today');}
+// Picking a room here filters to it and leaves you where you are. It used to
+// wipe the room filter, select this one room and switch to today's view, from a
+// panel the markup described as read-only — the jump in particular was a side
+// effect of a click that looked like a lookup.
+function freePick(room){pickRoom(room);}
 
 // The date span currently on screen, as [from, to] ISO dates.
 function viewWindow(){
