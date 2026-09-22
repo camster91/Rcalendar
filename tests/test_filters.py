@@ -94,7 +94,7 @@ NEXT = "2026-09-23"
 
 def seeded_day(day: str = DAY) -> None:
     """
-    Three rooms, chosen so the cross-check has something to disagree about:
+    Four rooms, chosen so the cross-check has something to disagree about:
     142 is booked across noon, 147 is free on the day, 368 is booked but not at
     noon. The instant the cross-check probes is 12:30 — mid-booking for 142,
     mid-free for 147 and 368 — and deliberately not on any booking boundary.
@@ -103,6 +103,11 @@ def seeded_day(day: str = DAY) -> None:
     /api/today seeds its room list from every room in the data and not from the
     day's bookings. A room with nothing anywhere would not be in the response
     at all, which is a different assertion from "this room is free today".
+
+    200 is booked at 00:30 the next day for the window that runs past midnight:
+    it is free for the whole of `day`, and asking for three hours from 23:00
+    reaches its booking. It is dated inside DAY..NEXT, so the later re-seed of
+    that window in test_search_wildcards_are_literal clears it too.
     """
     store.replace_events([
         booking(iso(day, "09:00"), iso(day, "13:00"), room="142",
@@ -111,6 +116,8 @@ def seeded_day(day: str = DAY) -> None:
                 title="Early"),
         booking(iso(NEXT, "10:00"), iso(NEXT, "11:00"), room="147",
                 title="Tomorrow Only"),
+        booking(iso(NEXT, "00:30"), iso(NEXT, "02:00"), room="200",
+                title="Overnight Setup"),
     ], day, NEXT, run_id=900, trigger="manual")
 
 
@@ -313,6 +320,78 @@ def test_today_batch_is_per_day() -> None:
           client.get(f"/api/today?dates={span(62)}&at=10:00").status_code, 200)
     check("one day over the cap is refused",
           client.get(f"/api/today?dates={span(63)}&at=10:00").status_code, 400)
+
+
+def test_a_window_that_crosses_midnight() -> None:
+    """A window opened late enough to reach tomorrow must see tomorrow's rows.
+
+    "Free from 23:00 for 180 min" is a question about three hours that end at
+    02:00 the next day, and the rows were filtered to the day the question was
+    asked about. Room 200 is booked at 00:30 the next day and free for the whole
+    of the day asked about, so it read as free for a window it was not free for.
+    Of everything here that is the one wrong answer that sends someone to a room
+    that is already taken.
+
+    The predicate is left to decide, rather than the window being refused
+    whenever it crosses midnight: an hour from 23:00 stops at midnight and is
+    still free, which is the case that fails if the fix widens the *answer*
+    instead of the rows the answer is computed from.
+    """
+    print("\n/api/today — a window that runs past midnight")
+    client = create_app(StubOrch()).test_client()
+
+    def free_rooms(payload: dict) -> set:
+        return {r["room"] for r in payload["rooms"] if r["status"] == "free"}
+
+    # The control. Nothing here depends on the window: at the instant it is
+    # booked, 200 is booked.
+    check("200 is booked at the instant its booking covers",
+          "200" in free_rooms(
+              client.get(f"/api/today?date={NEXT}&at=01:00").get_json()),
+          False)
+
+    crossed = client.get(f"/api/today?date={DAY}&at=23:00&for=180").get_json()
+    check("the window is the one that crosses", crossed["minutes"], 180)
+    check("a room booked just past midnight is not free for the window",
+          "200" in free_rooms(crossed), False)
+    # The widening is the rows, not a refusal: 147 is booked the next day at
+    # 10:00, which three hours from 23:00 do not reach.
+    check("a room booked later the next day is still free",
+          "147" in free_rooms(crossed), True)
+    # And the count stayed a count of the day the response names: DAY has two
+    # bookings of its own, NEXT has two more that the predicate now sees.
+    check("the day's booking count did not grow with the window",
+          crossed["total_bookings"], 2)
+    check("the payload's rows are still the day's",
+          sorted({b["room"] for r in crossed["rooms"] for b in r["bookings"]}),
+          ["142", "368"])
+    # `next` is "next today" and not "next ever", for the same reason.
+    check("a room with nothing left today is still free all day",
+          next(r for r in crossed["rooms"] if r["room"] == "147")["next_at"],
+          None)
+
+    # An hour from 23:00 stops at midnight. The booking half an hour past it is
+    # not in the window, so calling it booked would be a false refusal.
+    to_midnight = client.get(f"/api/today?date={DAY}&at=23:00&for=60").get_json()
+    check("a window that stops at midnight is unaffected",
+          "200" in free_rooms(to_midnight), True)
+
+    # The batch asks the same question of a month of days, and must not answer
+    # it differently. This is what fails if only one of the two forms learns to
+    # look past midnight.
+    batch = client.get(
+        f"/api/today?dates={DAY},{NEXT}&at=23:00&for=180"
+    ).get_json()
+    check("the batch agrees about the day asked",
+          set(batch["days"][DAY]["free"]), free_rooms(crossed))
+    check("the batch does not call it free either",
+          "200" in batch["days"][DAY]["free"], False)
+    check("the batch counts the day's own bookings",
+          batch["days"][DAY]["total_bookings"], 2)
+    # NEXT's own rows are both outside this window — one at 00:30, one at 10:00
+    # — so the day after is not dragged into the day before's answer.
+    check("the next day's own answer is about the next day",
+          set(batch["days"][NEXT]["free"]), {"142", "147", "200", "368"})
 
 
 # ── 2.8 the feed ─────────────────────────────────────────────────────────
@@ -552,6 +631,7 @@ def main() -> int:
     test_all_day()
     test_today_window_and_crosscheck()
     test_today_batch_is_per_day()
+    test_a_window_that_crosses_midnight()
     test_changes_filters()
     test_search_wildcards_are_literal()
     test_groups()

@@ -249,7 +249,8 @@ def create_app(orchestrator: Any) -> Flask:
         # Absent or zero means the point in time itself, which is what Free
         # Right Now asks and what the old implementation did. A window is
         # capped at a day because that is the longest the question is meaningful
-        # for — the payload it filters is one date's bookings.
+        # for — it is a question about the bookings of one date and the first
+        # hours of the next.
         minutes = max(0, min(request.args.get("for", 0, type=int) or 0, 24 * 60))
         when_iso = when.isoformat()
         day_iso = when.strftime("%Y-%m-%d")
@@ -265,6 +266,19 @@ def create_app(orchestrator: Any) -> Flask:
 
         events = [e for e in all_events if e.get("date") == day_iso]
 
+        # A window can run past midnight: "free from 23:00 for 180 min" ends at
+        # 02:00 the *next* day, and the rows were filtered to the day the
+        # question opened on — so a booking at 00:30 tomorrow was never seen,
+        # and the room it occupies read as free for a window it was not free
+        # for. That is the one answer here that sends someone to a room that is
+        # already taken, so the predicate is asked about both days and left to
+        # decide, rather than the window being refused whenever it crosses
+        # midnight (an hour from 23:00 stops at midnight and is still free).
+        end_day = (when + timedelta(minutes=minutes)).strftime("%Y-%m-%d")
+        window_events = (events if end_day == day_iso else
+                         events + [e for e in all_events
+                                   if e.get("date") == end_day])
+
         # Seed every known room, not just the ones with a booking that day.
         # Building this map from the day's bookings alone meant a room with a
         # completely empty day was absent from the response entirely — so the
@@ -272,15 +286,25 @@ def create_app(orchestrator: Any) -> Flask:
         by_room: dict[str, list[dict[str, Any]]] = {
             r["room"]: [] for r in _active_rooms(all_events)
         }
+        # The predicate's view of the room: the same rows, plus the next day's
+        # when the window reaches into it. Kept apart from by_room because the
+        # payload's `bookings`, `total_bookings` and `next` are about the day
+        # this response names, and only the free/busy answer is about the
+        # window.
+        win_room: dict[str, list[dict[str, Any]]] = {room: [] for room in by_room}
         for ev in events:
             by_room.setdefault(ev["room"], []).append(ev)
+        for ev in window_events:
+            win_room.setdefault(ev["room"], []).append(ev)
 
         until_iso = (when + timedelta(minutes=minutes)).isoformat()
         rooms = []
         for room, bookings in by_room.items():
             bookings.sort(key=lambda e: e.get("start") or "")
-            current = (avail.busy_between(bookings, when_iso, until_iso) if minutes
-                       else avail.busy_at(bookings, when_iso))
+            rows = win_room.get(room, bookings)
+            rows.sort(key=lambda e: e.get("start") or "")
+            current = (avail.busy_between(rows, when_iso, until_iso) if minutes
+                       else avail.busy_at(rows, when_iso))
             upcoming = [b for b in bookings if (b.get("start") or "") > when_iso]
             rooms.append({
                 "room": room,
@@ -509,6 +533,10 @@ def _availability_by_day(
     room is free for the window on its *own* day. That is still app.avail, asked
     once per day, so there is one predicate and one answer, rather than a second
     implementation in JavaScript that would drift from this one.
+
+    The rows a day's window is asked about are that day's and, when a length is
+    given and the window runs past midnight, the next day's — as in the
+    single-day form, and for the same reason.
     """
     days = [d.strip() for d in (dates_arg or "").split(",") if d.strip()]
     if not days or len(days) > MAX_DATES:
@@ -527,19 +555,29 @@ def _availability_by_day(
             ), 400
 
     clock = when.strftime("%H:%M")
-    wanted = set(days)
     # Seeded with every active room, for the same reason the single-day form
     # seeds it: a room with nothing booked is free, and it is the one you want.
     active = [r["room"] for r in _active_rooms(all_events)]
-    by_day: dict[str, dict[str, list[dict[str, Any]]]] = {
-        d: {room: [] for room in active} for d in days
+    # The days a window opened on each asked-for date can touch — itself, and
+    # the next when it runs past midnight. Same reason as the single-day form:
+    # the rows were bucketed by the day the question opened on, so an 00:30
+    # booking was invisible to "free from 23:00 for 180 min".
+    spans: dict[str, list[str]] = {}
+    for d in days:
+        end = datetime.fromisoformat(f"{d}T{clock}:00") + timedelta(minutes=minutes)
+        spans[d] = [d] if end.strftime("%Y-%m-%d") == d else [
+            d, end.strftime("%Y-%m-%d")
+        ]
+    # Read once for every date any of the spans needs, rather than per day.
+    rows_on: dict[str, list[dict[str, Any]]] = {
+        d: [] for d in {day for span in spans.values() for day in span}
     }
     for ev in all_events:
         # The row's own date — the same field the single-day form buckets on,
         # so the two cannot disagree about which day a booking belongs to.
         day = ev.get("date")
-        if day in wanted:
-            by_day[day].setdefault(ev["room"], []).append(ev)
+        if day in rows_on:
+            rows_on[day].append(ev)
 
     out: dict[str, Any] = {}
     for day in days:
@@ -548,16 +586,26 @@ def _availability_by_day(
         start = datetime.fromisoformat(f"{day}T{clock}:00")
         start_iso = start.isoformat()
         end_iso = (start + timedelta(minutes=minutes)).isoformat()
+        # The day's own rows are what gets counted; the predicate also sees the
+        # next day's when the window reaches into it, so the count stays a
+        # count of the day the entry is about.
+        own = rows_on[day]
+        window_rows = [e for d in spans[day] for e in rows_on[d]]
+        own_by_room: dict[str, list[dict[str, Any]]] = {room: [] for room in active}
+        win_by_room: dict[str, list[dict[str, Any]]] = {room: [] for room in active}
+        for ev in own:
+            own_by_room.setdefault(ev["room"], []).append(ev)
+        for ev in window_rows:
+            win_by_room.setdefault(ev["room"], []).append(ev)
         free: list[str] = []
-        bookings = 0
-        for room, rows in by_day[day].items():
+        for room, bookings in own_by_room.items():
+            rows = win_by_room.get(room, bookings)
             rows.sort(key=lambda e: e.get("start") or "")
-            bookings += len(rows)
             busy = (avail.busy_between(rows, start_iso, end_iso) if minutes
                     else avail.busy_at(rows, start_iso))
             if not busy:
                 free.append(room)
-        out[day] = {"free": sorted(free), "total_bookings": bookings}
+        out[day] = {"free": sorted(free), "total_bookings": len(own)}
 
     return jsonify({"at": clock, "minutes": minutes, "days": out})
 

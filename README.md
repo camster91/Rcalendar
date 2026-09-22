@@ -369,6 +369,14 @@ calendar: floor, capacity, equipment, and "free at a time".
   and a `dates=` batch for the days on screen, and answers both this and Free
   Right Now through the same predicate (`app/avail.py`), so the two cannot drift
   apart.
+- **A window that runs past midnight is a question about two days.** Three hours
+  from 23:00 end at 02:00 tomorrow, so the rows the predicate is given include
+  the next day's and the predicate is left to decide. It used to be given only
+  the day the question was asked about, which made a room booked at 00:30 read
+  as free for a window it was not free for — the one wrong answer here that
+  sends someone to a room already taken. Widening the *rows* and not the answer
+  is what keeps an hour from 23:00 free: it stops at midnight, and the booking
+  half an hour past it is not in it.
 
 **The Active filters row beside *Rooms* is derived from the filter state, not a
 history of what you added.** That is the whole point of it: `readURL` and a

@@ -65,6 +65,7 @@ Applied the same way on both pages: **AND across filters, OR within one**.
 | Seats ≥ N | **Lenient** — a room with no recorded capacity passes, because a threshold is not a partition | README → *Filters* |
 | Panopto | The 13 rooms the report flags for capture (`PANOPTO_ROOMS`) | `app/config.py` |
 | Free at a time | "free from 14:00 for 60 min", answered **per day**, by `app/avail.py` | `app/avail.py`, `GET /api/today` |
+| ...and a window that runs past midnight is asked of both days it touches | `app/server.py`, README → *Filters* |
 | Free Right Now | The same predicate as free-at, so the two cannot disagree. Grouped into *free all day* and *free until HH:MM*, stamped with when it was measured, and each row a button that narrows the filter to that room | `app/avail.py`, `web/calendar.html` |
 
 ## The Active filters row
@@ -131,6 +132,6 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 717 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 729 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The same seven suites in CI | `.github/workflows/tests.yml` |
