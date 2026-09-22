@@ -26,6 +26,7 @@ and nothing here writes to the university's system.
 | Room exclusions (134-series study rooms) filtered **before storage** | `app/config.py` |
 | Change feed: what appeared or disappeared between scrapes | `app/store.py`, Changes view |
 | Search reads `%` and `_` as the characters they are, not as LIKE wildcards | `app/store.py` |
+| No DPAPI means **no** cookie snapshot, never a cleartext one — the refusal is logged | `app/dpapi.py` |
 | Rolling-year retention (`KEEP_DAYS`, 410 days) | `app/config.py`, `app/store.py` |
 
 ## The session
@@ -127,6 +128,6 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 669 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 675 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The same seven suites in CI | `.github/workflows/tests.yml` |

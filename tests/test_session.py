@@ -141,6 +141,92 @@ def test_snapshot_guard() -> None:
             session.SESSION_FILE = real
 
 
+def test_the_session_cookie_is_never_written_in_cleartext() -> None:
+    """No cipher must mean no snapshot -- never a snapshot in the clear.
+
+    session.bin holds a Shibboleth cookie, which is a credential: anything
+    holding it reads the LSM portal with no MFA. `protect` used to return its
+    input unchanged when DPAPI was missing, so the cookie went to disk
+    readable -- and nothing distinguished that from success, because
+    `_save_cookies` logs "session snapshot saved (N cookies, N shibboleth)"
+    either way. A cleartext credential was indistinguishable from an encrypted
+    one in the log, in the UI, and in any backup that picked the file up.
+
+    The flag is patched rather than the platform faked. On this machine the
+    only way that branch is reached is sys.platform not reporting Windows --
+    which is exactly the case that would otherwise ship silently, so it is the
+    case worth pinning.
+    """
+    print("\na missing cipher means no snapshot, not a cleartext one")
+    import logging
+    import tempfile
+    from pathlib import Path as _Path
+
+    from app import dpapi, session
+
+    class FakeCtx:
+        def __init__(self, cookies):
+            self._c = cookies
+
+        def cookies(self):
+            return self._c
+
+    shib = {"name": "_shibsession_6465666", "value": "live-credential",
+            "domain": "lsm.utoronto.ca", "path": "/"}
+
+    told: list[str] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            told.append(record.getMessage())
+
+    capture = Capture()
+    logger = logging.getLogger("lsm")
+    logger.addHandler(capture)
+
+    real_flag = dpapi._IS_WINDOWS
+    real_file = session.SESSION_FILE
+    with tempfile.TemporaryDirectory() as tmp:
+        target = _Path(tmp) / "session.bin"
+        session.SESSION_FILE = target
+        dpapi._IS_WINDOWS = False
+        try:
+            # The primitive refuses outright...
+            refused = False
+            try:
+                dpapi.protect(b"a live cookie")
+            except OSError:
+                refused = True
+            check("protect refuses instead of passing the bytes through",
+                  refused, True)
+
+            # ...and the caller turns that into no file at all, which is the
+            # claim that matters: whatever else happens, a live credential
+            # does not reach the disk.
+            told.clear()
+            session._save_cookies(FakeCtx([shib]))
+            check("so the snapshot is not written", target.exists(), False)
+            check("...and the reason reaches the log",
+                  any("DPAPI is unavailable" in m for m in told), True)
+            check("...naming cleartext, not a transient failure",
+                  any("cleartext" in m for m in told), True)
+
+            # Reading is deliberately the lenient half. The file is already on
+            # disk in the clear, so refusing to read it would cost the session
+            # and protect nothing -- but it must still say so, because signing
+            # out is the only thing that clears it and the user is the only
+            # one who can do that.
+            told.clear()
+            check("unprotect still returns the bytes it was given",
+                  dpapi.unprotect(b'{"cookies":[]}'), b'{"cookies":[]}')
+            check("...and warns that it did not decrypt them",
+                  any("cleartext" in m for m in told), True)
+        finally:
+            dpapi._IS_WINDOWS = real_flag
+            session.SESSION_FILE = real_file
+            logger.removeHandler(capture)
+
+
 def test_logout_clears_and_reports() -> None:
     """Signing out has to clear the live session, and admit it when it cannot.
 
@@ -221,6 +307,7 @@ def main() -> int:
     test_arrival()
     test_junk()
     test_snapshot_guard()
+    test_the_session_cookie_is_never_written_in_cleartext()
     test_logout_clears_and_reports()
 
     print("\n" + "=" * 60)

@@ -174,6 +174,18 @@ def _save_cookies(ctx: Any) -> None:
             return
         blob = json.dumps({"saved_at": datetime.now().isoformat(),
                            "cookies": cookies}).encode("utf-8")
+        # Belt and braces with dpapi.protect, which refuses on its own. This
+        # check exists so the log line can be specific about *why* nothing was
+        # saved, rather than routing the reason through a generic exception
+        # handler: "could not save session snapshot: ..." reads like a failure,
+        # and not saving here is the intended behaviour.
+        if not dpapi.available():
+            log.warning(
+                "not saving the session snapshot: DPAPI is unavailable, so it "
+                "would be written in cleartext -- that file holds a live cookie, "
+                "and anything that can read it can read the LSM portal"
+            )
+            return
         SESSION_FILE.write_bytes(dpapi.protect(blob))
         log.info("session snapshot saved (%d cookies, %d shibboleth)",
                  len(cookies), len(shib))

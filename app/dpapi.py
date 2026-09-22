@@ -10,7 +10,9 @@ is useless to anyone else.
 crypt32 is called directly through ctypes — no pywin32 dependency, which
 keeps the PyInstaller bundle small.
 
-On non-Windows (dev/CI) this degrades to a passthrough and says so.
+On non-Windows (dev/CI) there is no cipher to use, and what happens then is
+deliberately *not* a passthrough: `protect` refuses, and `unprotect` says
+loudly that it is handing back bytes it did not decrypt. See both for why.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ from __future__ import annotations
 import ctypes
 import sys
 from ctypes import wintypes
+
+from app.config import log
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -60,9 +64,31 @@ def _entropy_blob() -> "_BLOB":
 
 
 def protect(data: bytes) -> bytes:
-    """Encrypt for the current Windows user. Passthrough off-Windows."""
+    """Encrypt for the current Windows user. Refuses without DPAPI.
+
+    This used to return `data` unchanged when DPAPI was missing, which put the
+    Shibboleth cookie on disk in cleartext — into a file whose entire purpose
+    is to be unreadable to anyone but this Windows account — and the caller
+    could not tell the two outcomes apart. `_save_cookies` logs "session
+    snapshot saved (%d cookies, %d shibboleth)" either way, so a cleartext live
+    credential was indistinguishable from an encrypted one in the log, in the
+    UI, and in any backup that picked the file up.
+
+    Refusing is the smaller loss by a wide margin. A snapshot is a convenience:
+    without it the user signs in again on the next launch. A cleartext live
+    credential is a credential — anything holding it reads the LSM portal with
+    no MFA — and it outlives the run that wrote it.
+
+    Raising is also what makes the caller's existing `except Exception` path
+    the correct one rather than an accident: it logs a warning and writes
+    nothing, which is exactly the desired outcome.
+    """
     if not _IS_WINDOWS:
-        return data
+        raise OSError(
+            "DPAPI is unavailable on this platform, and the session snapshot "
+            "holds a live cookie; refusing to write it to disk unencrypted. "
+            "The session will not be remembered between runs."
+        )
 
     blob_in = _blob(data)
     blob_entropy = _entropy_blob()
@@ -81,8 +107,24 @@ def protect(data: bytes) -> bytes:
 
 
 def unprotect(data: bytes) -> bytes:
-    """Decrypt. Raises OSError if the blob belongs to another user/machine."""
+    """Decrypt. Raises OSError if the blob belongs to another user/machine.
+
+    Off-Windows there is nothing to decrypt, so the bytes come back as they
+    are — a snapshot left by an older build, or by a run where sys.platform
+    did not report Windows. That is not a new leak: the file is already on
+    disk in the clear, and refusing to read it would only cost the user their
+    session while the credential sat there regardless. What it does need is
+    saying, because the actionable fact is that a live cookie is readable in
+    cleartext and signing out is what clears it. Silence here would leave the
+    one party who can act on it — the user — the only one not told.
+    """
     if not _IS_WINDOWS:
+        log.warning(
+            "DPAPI unavailable: handing back %d bytes read from the session "
+            "snapshot without decrypting them, so a live session cookie is "
+            "stored in cleartext. Signing out clears it.",
+            len(data),
+        )
         return data
 
     blob_in = _blob(data)

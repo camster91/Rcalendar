@@ -39,8 +39,13 @@ UTORid and password, the app keeps a **Chromium profile** on disk:
 
 The cookie snapshot is also written to `session.bin`, encrypted with
 Windows DPAPI — readable only by your Windows account on this machine.
-No password is ever stored, and the app never types credentials for you:
-MFA stays a human decision.
+If DPAPI is unavailable (which on Windows means the platform is not
+reporting as Windows) the snapshot is **not written at all** rather than
+written in the clear, and the log says so: that file holds a live
+session cookie, so "encryption unavailable" has to mean "no snapshot",
+not "snapshot anyone can read". The cost of refusing is signing in again
+on the next launch. No password is ever stored, and the app never types
+credentials for you: MFA stays a human decision.
 
 ## Running it
 
