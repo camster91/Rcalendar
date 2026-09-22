@@ -701,6 +701,92 @@ def test_a_partial_scrape_does_not_delete_stored_bookings() -> None:
         _session.shutdown = real["shutdown"]
 
 
+def test_a_page_read_backfill_does_not_retire_the_history_fill() -> None:
+    """A fill that could only read page one of a month is still owed.
+
+    `store.backfill_done()` is a **one-time** gate: the day it opens, nothing
+    ever reaches past the daily window again, so every month the fill skipped
+    is skipped for good. It opens on a `backfill` run with `status='ok'`,
+    which is what a page-read fill used to finish with — the report never
+    downloaded, each month stored its first page, and the run was filed as
+    clean. The months hold real bookings either way, so nothing on screen
+    distinguishes a fraction of a month from a quiet one, and the sidebar
+    read "History filled" over it.
+
+    Asserted in both directions on purpose. A gate that cannot open is the bug
+    the empty-month leniency was written for (see the comment at the empty
+    branch of `_do_backfill`): an eleven-month reach always spans a summer, and
+    refusing to settle on a month that is legitimately empty refetched all
+    eleven at every launch for ever. An *empty* month is the report's answer
+    and will answer the same way however often it is asked; a *partly read*
+    month is an answer about the export, and asking again can do better. Only
+    the second stays owed.
+    """
+    print("\npage-read backfill")
+
+    from datetime import date as _date
+
+    from app import session as _session
+
+    scheduler.store.init_db()
+    room = "P51BF"
+    check("nothing has settled the fill yet",
+          scheduler.store.backfill_done(), False)
+
+    real = {"probe": _session.probe, "scrape": scheduler.scrape}
+    try:
+        _session.probe = lambda headless=True: _session.SessionState("ok")
+
+        def fill(complete: bool):
+            def do_scrape(date_from=None, date_to=None, **kwargs):
+                day = datetime.strptime(date_from, "%d/%m/%Y").date()
+                return scrape.ScrapeResult(
+                    "ok",
+                    events=[{"title": f"History {date_from}", "room": room,
+                             "start": f"{day}T09:00:00",
+                             "end": f"{day}T11:00:00",
+                             "description": "Lecture", "class_code": "A",
+                             "cancelled": False}],
+                    date_from=date_from, date_to=date_to,
+                    rooms=[room], complete=complete,
+                )
+            return do_scrape
+
+        months = len(scheduler.backfill_windows(scheduler.BACKFILL_MONTHS,
+                                                scheduler.SCRAPE_MONTHS_BACK))
+        ok("the fill covers more than one month", months > 1)
+
+        scheduler.scrape = fill(complete=False)  # type: ignore[assignment]
+        orch = scheduler.Orchestrator()
+        orch._do_backfill(auto=True)
+
+        last = scheduler.store.last_backfill() or {}
+        check("a page-read fill does not settle the one-time gate",
+              scheduler.store.backfill_done(), False)
+        check("...the run is filed as partial rather than ok",
+              last.get("status"), "partial")
+        ok("...and the row says how many months were only partly read",
+           f"{months} month(s) only partly read" in (last.get("message") or ""))
+        check("...the count reaches the sidebar",
+              (orch.status()["backfill"] or {}).get("partial"), months)
+        # Nothing was destroyed to get here: the reads are adds and updates.
+        check("...and every month it did read kept its booking",
+              len(scheduler.store.get_events(room=room)), months)
+
+        # The other direction, and the one that matters as much: the gate can
+        # still open. A fill that downloads the report settles it.
+        scheduler.scrape = fill(complete=True)  # type: ignore[assignment]
+        orch._do_backfill(auto=True)
+
+        check("a fill that read the whole report settles the gate",
+              scheduler.store.backfill_done(), True)
+        check("...and is filed as a clean run",
+              (scheduler.store.last_backfill() or {}).get("status"), "ok")
+    finally:
+        _session.probe = real["probe"]
+        scheduler.scrape = real["scrape"]
+
+
 def test_parse_time() -> None:
     """A SCRAPE_TIME nobody can read must not mean "scrape constantly"."""
     print("\nscrape time")
@@ -782,6 +868,7 @@ def main() -> int:
     test_a_failed_command_does_not_kill_the_worker()
     test_a_report_read_off_the_page_is_marked_incomplete()
     test_a_partial_scrape_does_not_delete_stored_bookings()
+    test_a_page_read_backfill_does_not_retire_the_history_fill()
     test_exclusions()
     test_parse_time()
 

@@ -1356,6 +1356,37 @@ def test_history_fill_toast_reports_the_fill_not_the_edge(browser, base: str) ->
             store._conn().commit()
             check("history: the run row is cleaned up",
                   store.backfill_done(), False)
+
+        # The shape the fix is about: a fill that ran, reached the floor,
+        # stored a page of every month, and could not download the report. It
+        # is still owed, so the sidebar must not call it filled — and the
+        # months it read hold real bookings, so nothing else on screen marks
+        # the fill as a fraction of one. The pending line has to carry the
+        # run's own note or the reader has no way to tell why it came back.
+        ORCH.backfill = {"running": False}
+        run_id = store.start_run("backfill")
+        store.finish_run(run_id, "partial", events_count=5,
+                         date_from=floor.strftime("%d/%m/%Y"),
+                         date_to=datetime.now().strftime("%d/%m/%Y"),
+                         message="5 bookings over 11 months "
+                                 "(11 month(s) only partly read)")
+        try:
+            check("history: a partly-read fill does not settle the gate",
+                  store.backfill_done(), False)
+            line = page.evaluate(
+                """async () => { await loadStatus();
+                     return document.getElementById('histInfo').textContent; }"""
+            )
+            ok("history: the sidebar does not call a partial fill filled",
+               "Filled" not in (line or ""))
+            ok("history: ...it says the fill is still pending",
+               "History fill pending" in (line or ""))
+            ok("history: ...and says why, in the run's own words",
+               "only partly read" in (line or ""))
+        finally:
+            store._conn().execute("DELETE FROM scrape_runs WHERE id = ?",
+                                  (run_id,))
+            store._conn().commit()
     finally:
         ORCH.backfill = None
         page.close()

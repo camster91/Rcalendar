@@ -1703,7 +1703,16 @@ async function loadStatus(){
       const lb=d.last_backfill||{};
       tail='Filled '+esc(lb.when||'')+(lb.note?' — '+esc(lb.note):'');
     }
-    else                tail='History fill pending';
+    else {
+      // Pending, and *why*. A fill still owed has two shapes now: one that has
+      // not run yet, and one that ran but could only read page one of every
+      // month because the report would not download. The second is the one a
+      // person would never otherwise hear about — the months hold real
+      // bookings, so they read as quiet ones, and the fill comes back at every
+      // launch with nothing on screen to say what it is asking for again.
+      const lb=d.last_backfill||{};
+      tail='History fill pending'+(lb.note?' — '+esc(lb.note):'');
+    }
     document.getElementById('histInfo').innerHTML=
       '<strong>'+(d.total_events||0).toLocaleString()+' bookings</strong>'
       +(d.date_range?'<br>'+esc(d.date_range):'')

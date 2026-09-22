@@ -302,6 +302,20 @@ genuinely failed report is indistinguishable from a quiet month and goes
 unfilled. Nothing is lost by that: an empty report is never reconciled against
 stored bookings, so the month is simply never populated rather than emptied.
 
+A month that is only *partly read* is the opposite case, and does count. If
+the report cannot be downloaded the scraper falls back to the rendered results
+table, which is one page of an interactive report — so the month ends up
+holding its first page of bookings and nothing else. Nothing is destroyed
+either (an incomplete report is never reconciled against stored bookings, so
+this is adds and updates only), but the fill is not the history and stays
+owed. The run is filed as **`partial`** rather than `ok`, the sidebar shows
+the note — *11 month(s) only partly read* — and the fill is asked for again at
+the next launch or sign-in, when the same month can be read whole. The
+distinction is the whole reason the two cases are not one: a quiet month will
+answer the same way however often it is asked, and retrying it forever is what
+the leniency above exists to prevent, whereas a failed export is about us and
+a second attempt can genuinely do better.
+
 `python -m app.main --backfill` is the repair path, and the only way to ask
 for it a second time. Use it if a fill failed and you do not want to wait for
 the next launch. **It is safe to repeat**: a month already fetched reports no

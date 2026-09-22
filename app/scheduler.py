@@ -470,11 +470,12 @@ class Orchestrator:
                   progress="Starting…")
         self._set_backfill(running=True, months=months, done=0,
                            total=len(windows), stored=0, failed=0, empty=0,
-                           message="", finished_at=None)
+                           partial=0, message="", finished_at=None)
         run_id = store.start_run("backfill")
         stored = 0
         errored: list[str] = []      # fatal: threw, or reported a real failure
         empty: list[str] = []        # skipped: the report had nothing to give
+        partial: list[str] = []      # stored, but read off the page not the file
 
         try:
             if not windows:
@@ -576,17 +577,46 @@ class Orchestrator:
                 store.replace_rooms(
                     [describe(r) for r in _rooms_from(kept, result.rooms)]
                 )
+                if not result.complete:
+                    # The report could not be downloaded and this month was read
+                    # off the rendered page instead, which is one page of an
+                    # interactive report. `replace_events` already refuses to
+                    # delete anything for it, so nothing is lost — but what the
+                    # month holds is a fraction of its bookings, and the month
+                    # is indistinguishable from a genuinely quiet one once it
+                    # is stored. That has to reach the run's status.
+                    partial.append(win_from)
+                    self._set_backfill(partial=len(partial))
                 self._set_backfill(done=i, stored=stored)
 
             store.prune()
 
-            # `ok` turns on errored alone. store.backfill_done() gates the
-            # one-time fill on this status, so a run whose only blemish is a
-            # genuinely empty month has to be able to settle.
-            status = "ok" if not errored else "error"
+            # `ok` turns on errored alone, and `partial` exists for the one
+            # other blemish that is not a failure of the run: a month read off
+            # the page rather than out of the report. store.backfill_done()
+            # gates the one-time fill on this status, so both of the quiet
+            # blemishes have to be told apart from each other.
+            #
+            # An empty month settles the fill, because an empty month is the
+            # report's *answer* — a summer month with no Rotman bookings, which
+            # will answer the same way however many times it is asked. Refusing
+            # to settle on those retried eleven months at every launch for ever.
+            # A partial month is the opposite: it is an answer about us, not
+            # about the bookings. The export failed and we saw page one. Asking
+            # again can genuinely do better, so the fill must stay owed — a
+            # `partial` run retiring it would cement one page per month as the
+            # history, and the sidebar would call that "History filled".
+            if errored:
+                status = "error"
+            elif partial:
+                status = "partial"
+            else:
+                status = "ok"
             notes = []
             if empty:
                 notes.append(f"{len(empty)} month(s) empty")
+            if partial:
+                notes.append(f"{len(partial)} month(s) only partly read")
             if errored:
                 notes.append(f"{len(errored)} errored")
             store.finish_run(
@@ -596,13 +626,13 @@ class Orchestrator:
                          + ("; " + "; ".join(notes) if notes else "")),
             )
             self._set_backfill(running=False, failed=len(errored),
-                               empty=len(empty),
+                               empty=len(empty), partial=len(partial),
                                finished_at=datetime.now().isoformat(),
                                message=f"{stored} bookings over "
                                        f"{len(windows)} months"
                                        + (f" ({'; '.join(notes)})" if notes else ""))
-            log.info("%s complete — %d bookings, %d empty, %d errored",
-                     what, stored, len(empty), len(errored))
+            log.info("%s complete — %d bookings, %d empty, %d partial, %d errored",
+                     what, stored, len(empty), len(partial), len(errored))
         except Exception as exc:
             log.exception("backfill failed")
             try:

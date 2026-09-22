@@ -476,6 +476,21 @@ def test_backfill_gate() -> None:
                      message="Session expired after 4/11 months")
     check("an interrupted run leaves it owed", store.backfill_done(), False)
 
+    # A run that reached the floor and stored thousands of bookings, but read
+    # them off the rendered page because the report would not download. It is
+    # deliberately NOT filed as `error`: nothing failed and nothing was
+    # destroyed — `replace_events` will not delete for a report it cannot
+    # establish as whole. What it is not is the history: each month holds its
+    # first page, and those months look exactly like quiet ones, so nothing
+    # else in the app can say so. Only the status distinguishes it, which is
+    # why the status has to be its own word rather than `ok`.
+    rid = store.start_run("backfill")
+    store.finish_run(rid, "partial", events_count=2400, date_from=_full_reach(),
+                     message="2400 bookings over 11 months "
+                             "(11 month(s) only partly read)")
+    check("a fill read off the page leaves it owed",
+          store.backfill_done(), False)
+
     # A reach with no windows finishes 'ok' having fetched nothing. Counting
     # that would retire the fill for good without a single booking stored.
     rid = store.start_run("backfill")
