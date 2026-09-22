@@ -557,6 +557,24 @@ the cursor.
   reachable-from-the-network would mean an unauthenticated calendar that anyone
   could read and a scrape anyone could start.
 
+## Versions and releases
+
+`APP_VERSION` in `app/config.py` is the version, and `__version__` in
+`app/__init__.py` mirrors it; `packaging/build.ps1` reads the first, so the
+number the installer would carry and the number the app reports are one
+string. The log line at the top of every run names it — the point of that is a
+log from a machine nobody can look at, which should say which build produced it
+without being asked.
+
+Releases are tagged `v<APP_VERSION>` on GitHub, and a release carries the
+**source** — GitHub's own archives of that tag — and no built exe. That is
+deliberate rather than unfinished. The exe is unsigned, and this machine's
+endpoint agents log a fresh unsigned binary the moment it is *written* (see
+[Not the supported path](#not-the-supported-path-building-an-exe)), so attaching
+one to a release would ship the console noise along with the file. The
+supported way to run from a checkout is the venv, and the appendix says what an
+exe would need before it could be handed to anyone.
+
 ## Not the supported path: building an .exe
 
 **This is not how the app is run.** The venv in [Running it](#running-it) is the
