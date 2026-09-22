@@ -322,6 +322,76 @@ class _FoundLink:
     def click(self) -> None:
         pass
 
+def test_an_export_outside_the_window_is_refused() -> None:
+    """The export has to prove it belongs to the window that was asked for.
+
+    The dates are read back off the page before the report runs, but that is a
+    claim about the *items*, not about the render. `_generate_report` clicks
+    Generate and waits, and a click that missed leaves the page holding the
+    report it loaded with — the default window. Reading that as this window's
+    would delete the window's real bookings and file them as cancellations,
+    which is exactly what the readback exists to prevent, reached around it.
+
+    Every row carries a date, and a report filtered to the window cannot hold
+    one outside it. Both directions are asserted: the same rows inside the
+    window are accepted, so the refusal below is the check firing rather than
+    a scrape that never works.
+    """
+    print("\nexport window")
+
+    asked = ("01/03/2026", "31/03/2026")
+    readback = list(asked)
+    inside = CSV_HEAD + _csv_row("142", "Alpha", "1-Mar-2026")
+    outside = CSV_HEAD + _csv_row("142", "Alpha", "1-Mar-2026") \
+        + _csv_row("143", "Bravo", "1-Apr-2026")
+
+    def run(csv_text: str):
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(csv_text)
+            path = Path(fh.name)
+        try:
+            return with_fake_browser(
+                ReportPage(csv_text, has_download=True, readback=readback,
+                           download_path=path),
+                lambda: scrape.scrape(date_from=asked[0], date_to=asked[1]),
+            )
+        finally:
+            path.unlink(missing_ok=True)
+
+    kept = run(inside)
+    check("a report inside the window is read", kept.status, "ok")
+    check("...and its bookings are reported", len(kept.events), 1)
+
+    refused = run(outside)
+    check("a report holding another window's row is refused",
+          refused.status, "error")
+    check("...and reports nothing", refused.events, [])
+    ok("...and names the window it asked for",
+       "31/03/2026" in (refused.message or ""))
+    ok("...and says what would have happened",
+       "reconcile" in (refused.message or ""))
+    ok("...and names the row that gave it away",
+       "2026-04-01" in (refused.message or ""))
+
+    # The check is on both export paths. A page read cannot delete, but it
+    # can still store another window's bookings as if they were this one's.
+    said: list[str] = []
+    from_page = with_fake_browser(
+        ReportPage(outside, has_download=False, readback=readback),
+        lambda: scrape.scrape(date_from=asked[0], date_to=asked[1],
+                              on_status=said.append),
+    )
+    check("a page read outside the window is refused too",
+          from_page.status, "error")
+
+    # An unreadable date abstains rather than refusing the run, so a mask the
+    # report changes tomorrow does not stop every scrape.
+    check("an unreadable window has no opinion",
+          scrape._outside_window([{"start": "2026-04-01T09:00:00"}],
+                                 "garbage", "31/03/2026"), [])
+
+
 # ── The daily scrape's retry guard ───────────────────────────────────────
 
 
@@ -864,6 +934,7 @@ def main() -> int:
 
     test_window_guard()
     test_no_retry_storm()
+    test_an_export_outside_the_window_is_refused()
     test_logout_reports_what_the_probe_found()
     test_a_failed_command_does_not_kill_the_worker()
     test_a_report_read_off_the_page_is_marked_incomplete()

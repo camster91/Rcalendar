@@ -23,6 +23,7 @@ and nothing here writes to the university's system.
 | A month read off the page instead of the report leaves the fill **owed** — filed `partial`, never `ok` | `app/scheduler.py`, `app/store.py` |
 | Repair path for a cut-short fill: `python -m app.main --backfill [--months N]` | `app/main.py` |
 | The report's own window is read back and checked before its data is used | README → *Notes and limits* |
+| The **export** is made to prove its window too: a row dated outside it fails the run | `app/scrape.py` |
 | Only a **whole** report is reconciled: read off the rendered page, it adds and updates but deletes nothing | `app/scrape.py`, `app/store.py` |
 | Room exclusions (134-series study rooms) filtered **before storage** | `app/config.py` |
 | Change feed: what appeared or disappeared between scrapes | `app/store.py`, Changes view |
@@ -130,6 +131,6 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 708 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 717 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The same seven suites in CI | `.github/workflows/tests.yml` |

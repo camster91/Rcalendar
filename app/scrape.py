@@ -235,6 +235,24 @@ def scrape(
             for ev in events:
                 ev["title"] = clean_title(ev["title"])
 
+            # The second, independent check on the window, and the one the
+            # date readback cannot make: not "did the page keep the dates"
+            # but "did the report actually run them". See _outside_window.
+            outside = _outside_window(events, date_from, date_to)
+            if outside:
+                log.error("export holds %d booking(s) outside %s → %s (e.g. %s)",
+                          len(outside), date_from, date_to, outside[0])
+                return ScrapeResult(
+                    "error", date_from=date_from, date_to=date_to,
+                    rooms=rooms,
+                    message=(f"{len(outside)} booking(s) in the export fall "
+                             f"outside {date_from} → {date_to}, e.g. "
+                             f"{outside[0]} — the report did not run this "
+                             f"window. Refusing to reconcile against it, "
+                             f"because the window's bounds are the bounds of "
+                             f"the reconcile delete."),
+                )
+
             if not complete:
                 say(f"Read {len(events)} bookings from the page — the page is "
                     f"not the whole report, so nothing will be deleted")
@@ -468,6 +486,52 @@ def _download_csv(page: Any, downloads: list[Any]) -> str | None:
         except Exception:
             pass
     return None
+
+
+def _outside_window(events: list[dict[str, Any]],
+                    date_from: str, date_to: str) -> list[str]:
+    """
+    Export dates that fall outside the window that was asked for.
+
+    `_set_dates` already reads the dates back and refuses a confident
+    disagreement, and that check is about what the page will *run* — "the
+    model took it" against "the model kept it". It is not evidence that the
+    report ran again. `_generate_report` clicks Generate and waits, with no
+    way to tell a render from a click that missed, and a page that was never
+    regenerated is still showing the report it loaded with: the *default*
+    window, which is not the one that was just set on the items.
+
+    That is the same class of danger the readback exists for, because the
+    window's bounds are the bounds of the reconcile delete. A stale report
+    read as this window's erases the window's real bookings, files them as
+    cancellations, and reports success.
+
+    So the export is made to prove its own window. Every row carries a date,
+    and a report filtered to [from, to] cannot legitimately hold one outside
+    it — so a row outside means the report is not the window, whatever the
+    items say. A date that will not parse abstains, for the reason
+    `_item_date` gives: stopping every scrape the day a format changes is the
+    worse mistake of the two.
+
+    What this catches is a stale report whose bounds *differ* — the untouched
+    default, the previous window, a window a clamped date produced. What it
+    cannot catch is a stale report that happens to hold exactly the requested
+    window, which is the same content a fresh render would have produced and
+    so loses nothing.
+    """
+    lo, hi = _item_date(date_from), _item_date(date_to)
+    if lo is None or hi is None:
+        return []
+    out: list[str] = []
+    for ev in events:
+        day = str(ev.get("start") or "")[:10]
+        try:
+            when = date.fromisoformat(day)
+        except ValueError:
+            continue
+        if when < lo or when > hi:
+            out.append(day)
+    return out
 
 
 def _html_table_to_csv(page: Any) -> str:

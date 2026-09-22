@@ -492,6 +492,17 @@ the cursor.
   run. A readback this code cannot parse *abstains* instead: an unfamiliar
   date format is not evidence of a wrong window, and treating it as one would
   stop every scrape.
+- **And the export is made to prove its own window.** Reading the dates back
+  is a claim about the *items*, not about the render: the Generate click is
+  followed by a wait, and a click that missed leaves the page holding the
+  report it loaded with — the default window, not the one that was just set.
+  So every row's date is checked against the window asked for, and a row
+  outside it fails the run. A row cannot legitimately be outside: the report
+  is filtered to that window. This catches the stale report whose bounds
+  differ — the untouched default, the previous window, a clamped date. It
+  cannot catch a stale report that happens to hold exactly the requested
+  window, which is the content a fresh render would have produced and so
+  loses nothing.
 - Some bookings carry a slot index with no recoverable real time; those
   show as all-day rather than a wrong hour. Guessing would be worse. The
   same rule covers a 12-hour time: `2:00 PM` is read as 14:00 rather than
