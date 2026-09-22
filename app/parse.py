@@ -52,18 +52,34 @@ _MONTHS = {
 # booking vanishes and nothing says why. "CANCELLATION POLICY" as a course
 # topic was enough.
 #
+# Anchored at both ends: the stem has to *end* there. An anchor alone stops
+# the substring search and nothing else, because it still leaves the pattern
+# free to match the first six letters of a longer word that opens the field —
+# "Cancellation Policy discussion" led with the stem, matched, and the booking
+# disappeared with no trace. So the stem must be the *verb*: the abbreviation
+# the report uses, or the whole word in its past tense, and never the noun.
+# `(?![A-Za-z])` rather than `\b` because the boundary is about the word
+# continuing, and a report that runs the date straight onto the marker
+# ("CANCLD07.29") still ends the token it means — a digit is a boundary too.
+#
 # Erring toward *not* flagging is the safe direction and the asymmetry is the
 # reason. A cancellation we miss stays on the calendar for one scrape and then
 # disappears when the report stops listing it — the reconcile removes it and
 # the feed records it, so it corrects itself within a day. A booking we
 # wrongly flag is deleted with no trace, and the report will never mention it
-# again, so nothing brings it back.
+# again, so nothing brings it back. That is what decides "Cancelling" and
+# "Cancellations" too: both are prose, neither is the marker, and a booking
+# pulled off the calendar for one is the loss this whole pattern is shaped to
+# avoid.
 #
 # Note "cancl" is NOT a substring of "cancel", so it needs its own
 # alternative — without it this never matched anything, and every cancelled
 # booking was treated as live.
 _CANCELLED_RE = re.compile(
-    r"^\s*(?:ZZ\s*/\s*)?[-–—:.\s]*(?:cancel|cancl|cnxld|cncld)", re.IGNORECASE
+    r"^\s*(?:ZZ\s*/\s*)?[-–—:.\s]*"
+    r"(?:cancel(?:led|ed|d)?|cancl(?:d)?|cnxld|cncld)"
+    r"(?![A-Za-z])",
+    re.IGNORECASE,
 )
 _TIME_RANGE_RE = re.compile(r"\b(\d{3,4})\s*[-–—]\s*(\d{3,4})\b")
 # Longest alternative first — otherwise "ROTMAN" matches as "RT" and

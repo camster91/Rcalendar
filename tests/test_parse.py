@@ -213,6 +213,11 @@ def test_cancelled_spellings() -> None:
     for comment in ("ZZ/ CANCLD 07.29", "ZZ/Cancld", "  CANCLD  may 11"):
         check(f"flagged behind the ZZ marker: {comment!r}",
               _one(comment)["cancelled"], True)
+    # The word written out, and the token with the date run straight onto it.
+    # The boundary is `(?![A-Za-z])`, not `\b`, for this second one: a digit
+    # ends the marker just as a space does.
+    for comment in ("Cancelled 07.29", "Canceled", "CANCELD", "CANCLD07.29"):
+        check(f"flagged: {comment!r}", _one(comment)["cancelled"], True)
 
     # The direction the anchor exists for. The Comment field is free text, so
     # a substring search reads any booking that merely *mentions* cancellation
@@ -226,6 +231,22 @@ def test_cancelled_spellings() -> None:
                     "AV UPGRADES - cnxld vendor on site"):
         check(f"not flagged: {comment!r}", _one(comment)["cancelled"], False)
 
+    # The other direction, and the one an *anchor alone* does not close: the
+    # pattern is free to match the opening letters of any longer word that
+    # happens to lead the field. Every one of these was read as cancelled
+    # before the stem had to end where it does, so each booking was deleted
+    # with no trace — the same loss as the substring search above, reached
+    # from the other side. The line between these and "Cancelled 07.29" is
+    # verb against noun: the report's marker is the verb, or its abbreviation.
+    for comment in ("Cancellation Policy discussion",
+                    "Cancellations this term",
+                    "Cancellation of the previous booking",
+                    "Cancelation request",
+                    "Cancelling the booking",
+                    "Cancellations - see email"):
+        check(f"not flagged, it only opens with the stem: {comment!r}",
+              _one(comment)["cancelled"], False)
+
 
 def test_a_mentioned_cancellation_does_not_drop_the_booking() -> None:
     """The consequence, not the flag: the booking is still on the calendar.
@@ -235,24 +256,32 @@ def test_a_mentioned_cancellation_does_not_drop_the_booking() -> None:
     than a mislabelled one. Asserted through the store path because that is
     where the loss happens: a comment that mentions cancellation is a real
     course, and it has to come back from parse_csv and survive the filter.
+
+    The first row's comment *leads* with the stem, which is the shape the
+    anchor alone let through: "Cancellation" opening the field matched as if
+    it were the marker, and the course the flag names vanished.
     """
     print("\na mentioned cancellation keeps its booking")
     csv_text = (
         "Room,Event/Course,Date,Start Time,End Time,Building,Class Code,Comment\n"
         "RT 1065,RSM2600 Cancellation Policy,04-August-26,900,1200,RT,A,"
+        "Cancellation policy discussion\n"
+        "RT 1065,RSM2602 Ops,04-August-26,1200,1259,RT,A,"
         "Course topic: cancellation modelling\n"
         "RT 1065,RSM2601 Finance,04-August-26,1300,1600,RT,A,CANCLD DCIT 07.29\n"
     )
     events = parse_csv(csv_text)
-    check("both rows parsed", len(events), 2)
+    check("all three rows parsed", len(events), 3)
     check("the course about cancellation is not cancelled",
           events[0]["cancelled"], False)
-    check("...and the genuinely cancelled one is", events[1]["cancelled"], True)
+    check("...nor the one that only mentions it", events[1]["cancelled"], False)
+    check("...and the genuinely cancelled one is", events[2]["cancelled"], True)
     kept = [e for e in events
             if e.get("room") != "" and not e.get("cancelled")]
-    check("only the course on cancellation survives to storage", len(kept), 1)
-    check("...and it is the right one",
-          kept[0]["title"], "RSM2600 Cancellation Policy")
+    check("both courses survive to storage", len(kept), 2)
+    check("...and they are the right two",
+          [e["title"] for e in kept],
+          ["RSM2600 Cancellation Policy", "RSM2602 Ops"])
 
 
 def test_all_day() -> None:
