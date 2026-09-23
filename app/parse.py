@@ -356,3 +356,44 @@ def clean_title(raw: str) -> str:
     if s.upper().startswith("ZZ/"):
         s = s[3:]
     return s or "Booking"
+
+
+# The report prefixes every human-made booking with an internal code —
+# "208/CIBC.1/A.MAHAJAN" is code 208, the event, the person who booked it.
+# 20,358 of 29,057 stored titles carry one (25 distinct numeric codes, plus
+# XXX for special events). The code says nothing a reader wants: it is not
+# the room, not a date, and never differs within one event. A few carry a
+# second code segment too ("014/012/DEAN & HR MTG/T. YOUNG"), and longer
+# ones have middle qualifiers or a second person
+# ("007/PRE-TERM MTG/CHENG/D'ANGEL") — everything after the event name is
+# who/what material, so it travels together as the booker.
+_CODE_PREFIX = re.compile(r"^(\d{3}|X+)/")
+
+
+def split_title(raw: str) -> tuple[str, str]:
+    """'208/CIBC.1/A.MAHAJAN' -> ('CIBC.1', 'A.MAHAJAN').
+
+    Returns the event name and the who/what that follows it. A title with
+    no code prefix is not this report's shape — a plain course title, or
+    "Rotman System Booking" — and passes through untouched, with no booker.
+    """
+    s = (raw or "").strip()
+    # clean_title runs at ingest, so stored titles have no ZZ/ left; the
+    # strip is here so the function is safe on raw input too.
+    if s.upper().startswith("ZZ/"):
+        s = s[3:].strip()
+    if not _CODE_PREFIX.match(s):
+        return (s, "")
+    # The code is the first segment; everything after it is the content.
+    segs = [x.strip() for x in s.split("/", 1)[1].split("/")]
+    # Drop empties, not just the code: five titles in the corpus carry a
+    # blank segment ("227/END OF YR1 LUNCH//CHAR"), and a " · " with nothing
+    # beside it reads as data that was lost.
+    segs = [x for x in segs if x]
+    if not segs:
+        return ("Booking", "")
+    name, rest = segs[0], segs[1:]
+    # The doubled-code shape: the first segment is another code, not a name.
+    if rest and re.fullmatch(r"\d{3}|X+", name):
+        name, rest = rest[0], rest[1:]
+    return (name or "Booking", " · ".join(rest))

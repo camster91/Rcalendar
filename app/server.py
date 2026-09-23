@@ -27,7 +27,7 @@ what keeps all of them out of reach of a page the user merely has open.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -35,6 +35,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from app import avail, store
 from app.config import APP_NAME, WEB_DIR, log
 from app.icon import paint
+from app.parse import split_title
 from app.rooms import floor_sort_key
 
 # Hosts that mean "this machine". The UI is reachable as 127.0.0.1 and, if a
@@ -134,9 +135,9 @@ def create_app(orchestrator: Any) -> Flask:
         room list actually present in the data, and the group definitions.
         """
         events = store.get_events()
-        rooms = _active_rooms(events)
+        rooms = _active_rooms(e["room"] for e in events)
         return jsonify({
-            "events": events,
+            "events": [_public_event(e) for e in events],
             "rooms": [r["room"] for r in rooms],
             "room_meta": {r["room"]: r for r in rooms},
             "groups": store.load_groups(),
@@ -188,9 +189,12 @@ def create_app(orchestrator: Any) -> Flask:
         if not q:
             return jsonify({"rooms": [], "groups": [], "titles": []})
 
-        events = store.get_events()
-        rooms = sorted({e["room"] for e in events if q in (e["room"] or "").lower()})
-        titles = sorted({e["title"] for e in events if q in (e["title"] or "").lower()})
+        # The store answers in SQL rather than over a table read into Python:
+        # this runs on every keystroke. The matches are the same ones search
+        # finds, because both go through _like — a suggestion that search then
+        # came up empty for was the failure mode.
+        rooms = store.suggest_rooms(q)
+        titles = sorted({split_title(t)[0] for t in store.suggest_titles(q)})
         groups = [g for g in store.load_groups() if q in g.lower()]
         return jsonify({
             "rooms": rooms[:8],
@@ -232,36 +236,53 @@ def create_app(orchestrator: Any) -> Flask:
         when_iso = when.isoformat()
         day_iso = when.strftime("%Y-%m-%d")
 
-        all_events = store.get_events()
+        # A window can run past midnight, and the end day decides what to
+        # read: "free from 23:00 for 180 min" ends at 02:00 the *next* day,
+        # and a booking at 00:30 tomorrow decides whether the room is free
+        # for it. That is the one answer here that sends someone to a room
+        # that is already taken, so the predicate is asked about both days
+        # and left to decide, rather than the window being refused whenever
+        # it crosses midnight (an hour from 23:00 stops at midnight and is
+        # still free).
+        end_day = (when + timedelta(minutes=minutes)).strftime("%Y-%m-%d")
 
-        # Read once, above, and shared: the batch form is the same question
-        # asked of a month of days, and reading the table per day would be a
-        # full scan up to 42 times over.
         dates_arg = request.args.get("dates")
         if dates_arg is not None:
-            return _availability_by_day(all_events, dates_arg, when, minutes)
+            # The batch form gets the same narrowing across its whole span:
+            # one read bounded to [earliest, latest + 1], which covers every
+            # day a window can touch. Dates that do not parse are left to
+            # _availability_by_day to reject with its own 400 — the bounds
+            # are an optimisation, not a second validator.
+            days = [d.strip() for d in dates_arg.split(",") if d.strip()]
+            try:
+                lo = min(date.fromisoformat(d) for d in days)
+                hi = max(date.fromisoformat(d) for d in days)
+                batch_events = store.get_events(
+                    date_from=lo.strftime("%Y-%m-%d"),
+                    date_to=(hi + timedelta(days=1)).strftime("%Y-%m-%d"))
+            except ValueError:
+                batch_events = store.get_events()
+            return _availability_by_day(batch_events, dates_arg, when, minutes)
 
-        events = [e for e in all_events if e.get("date") == day_iso]
-
-        # A window can run past midnight: "free from 23:00 for 180 min" ends at
-        # 02:00 the *next* day, and the rows were filtered to the day the
-        # question opened on — so a booking at 00:30 tomorrow was never seen,
-        # and the room it occupies read as free for a window it was not free
-        # for. That is the one answer here that sends someone to a room that is
-        # already taken, so the predicate is asked about both days and left to
-        # decide, rather than the window being refused whenever it crosses
-        # midnight (an hour from 23:00 stops at midnight and is still free).
-        end_day = (when + timedelta(minutes=minutes)).strftime("%Y-%m-%d")
-        window_events = (events if end_day == day_iso else
-                         events + [e for e in all_events
-                                   if e.get("date") == end_day])
+        # Read only the days the answer is about, not the whole table. This
+        # endpoint is polled every 60 seconds, and the table is a rolling
+        # year — the full read spent a minute's worth of row objects to
+        # answer a question about one or two days.
+        rows = store.get_events(date_from=day_iso, date_to=end_day)
+        events = [e for e in rows if e.get("date") == day_iso]
+        # The window's rows are the same read: the day's own plus the next
+        # day's when the window reaches into it, exactly the span read.
+        window_events = (events if end_day == day_iso else rows)
 
         # Seed every known room, not just the ones with a booking that day.
         # Building this map from the day's bookings alone meant a room with a
         # completely empty day was absent from the response entirely — so the
         # emptiest rooms, the ones you actually want, were the ones missing.
+        # rooms_present() is the distinct-room read that makes the narrowed
+        # window above safe: it still sees rooms whose only bookings are
+        # months away.
         by_room: dict[str, list[dict[str, Any]]] = {
-            r["room"]: [] for r in _active_rooms(all_events)
+            r["room"]: [] for r in _active_rooms(store.rooms_present())
         }
         # The predicate's view of the room: the same rows, plus the next day's
         # when the window reaches into it. Kept apart from by_room because the
@@ -370,7 +391,7 @@ def create_app(orchestrator: Any) -> Flask:
             "truncated": len(rows) == limit,
             "added": sum(1 for r in rows if r["kind"] == "added"),
             "removed": sum(1 for r in rows if r["kind"] == "removed"),
-            "changes": rows,
+            "changes": [_public_change(r) for r in rows],
         })
 
     @app.post("/api/scrape")
@@ -424,6 +445,30 @@ def create_app(orchestrator: Any) -> Flask:
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
+# The store keeps the title exactly as LSM wrote it — it is the change feed's
+# booking identity, so rewriting it at ingest would give every stored booking
+# a new identity and flood the feed once. The code prefix
+# ("208/CIBC.1/A.MAHAJAN") is parsed out on the way *out*, at every point a
+# title reaches the UI, and the who/what after the name travels beside it as
+# `booked_by`. Nothing is lost: the raw title stays in the database and still
+# answers search, because a search for any part of it is a search over the
+# same string the display was built from.
+def _public_event(ev: dict[str, Any]) -> dict[str, Any]:
+    name, booked_by = split_title(ev.get("title") or "")
+    out = dict(ev)
+    out["title"] = name
+    out["booked_by"] = booked_by
+    return out
+
+
+def _public_change(row: dict[str, Any]) -> dict[str, Any]:
+    name, booked_by = split_title(row.get("title") or "")
+    out = dict(row)
+    out["title"] = name
+    out["booked_by"] = booked_by
+    return out
+
+
 # The most days one batch request may ask about. A month cell is 42 days at
 # worst, so this covers every view the UI has and still refuses a request that
 # would make the server do unbounded work.
@@ -431,7 +476,7 @@ MAX_DATES = 62
 
 
 def _availability_by_day(
-    all_events: list[dict[str, Any]], dates_arg: str, when: datetime, minutes: int
+    events: list[dict[str, Any]], dates_arg: str, when: datetime, minutes: int
 ) -> Any:
     """The window question asked of many days, answered per day.
 
@@ -469,7 +514,7 @@ def _availability_by_day(
     clock = when.strftime("%H:%M")
     # Seeded with every active room, for the same reason the single-day form
     # seeds it: a room with nothing booked is free, and it is the one you want.
-    active = [r["room"] for r in _active_rooms(all_events)]
+    active = [r["room"] for r in _active_rooms(store.rooms_present())]
     # The days a window opened on each asked-for date can touch — itself, and
     # the next when it runs past midnight. Same reason as the single-day form:
     # the rows were bucketed by the day the question opened on, so an 00:30
@@ -484,7 +529,7 @@ def _availability_by_day(
     rows_on: dict[str, list[dict[str, Any]]] = {
         d: [] for d in {day for span in spans.values() for day in span}
     }
-    for ev in all_events:
+    for ev in events:
         # The row's own date — the same field the single-day form buckets on,
         # so the two cannot disagree about which day a booking belongs to.
         day = ev.get("date")
@@ -522,11 +567,16 @@ def _availability_by_day(
     return jsonify({"at": clock, "minutes": minutes, "days": out})
 
 
-def _active_rooms(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Rooms that actually appear in current data, sorted by floor then name."""
+def _active_rooms(names: Iterable[str]) -> list[dict[str, Any]]:
+    """Rooms that actually appear in current data, sorted by floor then name.
+
+    Takes room names rather than events so /api/today can seed its answer
+    from store.rooms_present() — a distinct-room read — while reading only
+    the narrowed day window for the bookings themselves.
+    """
     from app.rooms import describe
 
-    seen = {e["room"] for e in events if e.get("room")}
+    seen = {r for r in names if r}
     rooms = [describe(r) for r in seen]
     rooms.sort(key=lambda r: (floor_sort_key(r["floor"]), r["room"]))
     return rooms

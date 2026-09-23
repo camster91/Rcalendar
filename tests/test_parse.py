@@ -26,7 +26,7 @@ os.environ["LSM_DATA_DIR"] = tempfile.mkdtemp(prefix="lsm-parse-")
 
 from app.parse import (  # noqa: E402
     clean_description, clean_title, normalise_room, parse_csv,
-    parse_rotman_date, parse_rotman_time,
+    parse_rotman_date, parse_rotman_time, split_title,
 )
 
 PASS, FAIL = 0, 0
@@ -178,6 +178,46 @@ def test_cleanup() -> None:
     check("ZZ prefix removed", clean_title("ZZ/208/CIBC.1/A.MAHAJAN"),
           "208/CIBC.1/A.MAHAJAN")
     check("empty title defaulted", clean_title(""), "Booking")
+
+
+def test_split_title() -> None:
+    print("\ntitle shape: code / name / booker")
+    # The report's own examples, measured off the store: 20,358 of 29,057
+    # stored titles carry the code prefix, and 18,504 of those are exactly
+    # code/name/booker.
+    check("the common shape", split_title("208/CIBC.1/A.MAHAJAN"),
+          ("CIBC.1", "A.MAHAJAN"))
+    check("service block", split_title("003/RENOVATIONS/MACPHERSON"),
+          ("RENOVATIONS", "MACPHERSON"))
+    check("XXX is a code too", split_title("XXX/ICPM CONFERENCE/MACPHERSON"),
+          ("ICPM CONFERENCE", "MACPHERSON"))
+    # 4+ segments: the middle qualifiers belong with the booker, because the
+    # report uses them for people ("007/PRE-TERM MTG/CHENG/D'ANGEL") and the
+    # two cannot be told apart by shape alone.
+    check("a second person travels with the booker",
+          split_title("007/PRE-TERM MTG/CHENG/D'ANGEL"),
+          ("PRE-TERM MTG", "CHENG · D'ANGEL"))
+    check("an empty segment does not become an empty booker half",
+          split_title("227/END OF YR1 LUNCH//CHAR"),
+          ("END OF YR1 LUNCH", "CHAR"))
+    # 36 titles in the corpus carry a second code segment.
+    check("a doubled code is not the name",
+          split_title("014/012/DEAN & HR MTG/T. YOUNG"),
+          ("DEAN & HR MTG", "T. YOUNG"))
+    # Two segments: the event name with no booker at all.
+    check("no booker", split_title("227/EY INFO SESSION"),
+          ("EY INFO SESSION", ""))
+    # Everything that is not this report's shape passes through untouched.
+    check("plain course title", split_title("RSM6307 Marketing"),
+          ("RSM6307 Marketing", ""))
+    check("system booking", split_title("Rotman System Booking"),
+          ("Rotman System Booking", ""))
+    check("empty", split_title(""), ("", ""))
+    check("a bare code with nothing after it", split_title("208/"),
+          ("Booking", ""))
+    # clean_title runs at ingest, but the split is safe on raw input too.
+    check("ZZ before the code", split_title("ZZ/208/CIBC.1/A.MAHAJAN"),
+          ("CIBC.1", "A.MAHAJAN"))
 
 
 def test_csv() -> None:
@@ -338,6 +378,7 @@ def main() -> int:
     test_twelve_hour_clock()
     test_rooms()
     test_cleanup()
+    test_split_title()
     test_csv()
     test_cancelled_spellings()
     test_a_mentioned_cancellation_does_not_drop_the_booking()

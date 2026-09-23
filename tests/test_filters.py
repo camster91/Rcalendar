@@ -388,6 +388,20 @@ def test_a_window_that_crosses_midnight() -> None:
           "200" in batch["days"][DAY]["free"], False)
     check("the batch counts the day's own bookings",
           batch["days"][DAY]["total_bookings"], 2)
+
+    # The narrowing has to widen the *read*, not just the day set: a batch
+    # whose last day is the day the window opens on still needs the day the
+    # window crosses into. The SQL upper bound is the last date plus one, and
+    # without that one day 200's 00:30 booking was never read — the batch
+    # called a taken room free, exactly the answer that sends someone to a
+    # room that is already occupied.
+    last_day = client.get(
+        f"/api/today?dates={DAY}&at=23:00&for=180"
+    ).get_json()
+    check("a batch ending on the opening day still sees the day it crosses into",
+          "200" in last_day["days"][DAY]["free"], False)
+    check("...and that day's own count stays the day's",
+          last_day["days"][DAY]["total_bookings"], 2)
     # NEXT's own rows are both outside this window — one at 00:30, one at 10:00
     # — so the day after is not dragged into the day before's answer.
     check("the next day's own answer is about the next day",

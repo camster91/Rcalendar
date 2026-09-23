@@ -199,14 +199,14 @@ function renderStats(){
 // and '—' where the calendar returned ''. Declaring any of them here as well is
 // a parse-time error, not an override.
 
-function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).catch(()=>{});}
+function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+(ev.booked_by?' — '+ev.booked_by:'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).catch(()=>{});}
 
 function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;
   // An all-day block has no meaningful clock time — its start is just midnight.
   // Without this branch it printed "12:00 a.m. → 11:00 p.m. (23h)", which reads
   // as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+'</div>'+(ev.description?'<div class="edesc">'+esc(ev.description)+'</div>':'')+'</div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy">📋</span><div class="etitle">'+titleHTML(ev)+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+'</div>'+(ev.description?'<div class="edesc">'+esc(ev.description)+'</div>':'')+'</div>';}
 
 // The same delegate as the calendar's, for the same reason: what the copy
 // button carries is data, and an onclick attribute is where data stops being
@@ -339,13 +339,35 @@ function renderTags(){
 
 function setSort(k){sortKey=k;page=0;document.querySelectorAll('.sort-btn').forEach(b=>{b.classList.remove('on');b.setAttribute('aria-pressed','false')});const on=document.getElementById('s-'+k);on.classList.add('on');on.setAttribute('aria-pressed','true');render();}
 
+// Sorted once, not per render: render() runs on every filter change, and
+// filtering preserves order, so the sorted array is reused until the sort
+// key or the fetched data (a new EVENTS array, by reference) changes. 'time'
+// is an ISO instant, so it compares as a plain string; room and title are
+// words, and the one Collator does what localeCompare did — without a fresh
+// collator being built for every one of ~29k comparisons.
+const COL=new Intl.Collator();
+let sortedByKey={src:null,key:'',evts:[]};
+function sortedEvents(){
+  if(sortedByKey.src!==EVENTS||sortedByKey.key!==sortKey){
+    const cmp=sortKey==='time'
+      ?(a,b)=>(a.start||'')<(b.start||'')?-1:(a.start||'')>(b.start||'')?1:0
+      :sortKey==='room'
+        ?(a,b)=>COL.compare(a.room||'',b.room||'')
+        :(a,b)=>COL.compare(a.title||'',b.title||'');
+    sortedByKey={src:EVENTS,key:sortKey,evts:[...EVENTS].sort(cmp)};
+  }
+  return sortedByKey.evts;
+}
+
 function render(){
   // The URL and the links out hang off render() for the same reason they do on
   // the calendar: everything that changes a filter ends here, so this is the one
   // place that sees every change.
   writeURL();
   const terms=searchQ?[searchQ]:[];
-  let evts=EVENTS.filter(e=>{
+  // The filter runs over the pre-sorted array — filter preserves order, so
+  // the result is already in the sort the headers promise.
+  let evts=sortedEvents().filter(e=>{
     // Rooms, groups and the search box are each a filter, so they AND; several
     // selected rooms or groups OR, because picking two of a thing means either.
     // Matches applyFilters on the calendar, which is what lets a link carry a
@@ -356,10 +378,9 @@ function render(){
       activeGroups.forEach(g=>{if(GROUPS[g]&&GROUPS[g].includes(e.room))ok=true;});
       if(!ok)return false;
     }
-    if(terms.length&&!terms.some(s=>((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
+    if(terms.length&&!terms.some(s=>((e.title||'')+(e.booked_by||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
     return true;
   });
-  evts.sort((a,b)=>{if(sortKey==='time')return(a.start||'').localeCompare(b.start||'');if(sortKey==='room')return(a.room||'').localeCompare(b.room||'');return(a.title||'').localeCompare(b.title||'');});
   document.getElementById('evcnt').textContent=evts.length+' events';
   const tp=Math.ceil(evts.length/PER);if(page>=tp)page=Math.max(0,tp-1);
   const pe=evts.slice(page*PER,(page+1)*PER);

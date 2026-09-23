@@ -562,6 +562,17 @@ the cursor.
   start *and* end). The `end` matters: two blocks can share a name and a
   start, and without the end the feed would pair them and report the
   difference between two bookings as nothing at all.
+- **The code prefix is parsed out of a title for display — the store keeps
+  the raw one.** LSM prefixes nearly every booking with an internal code —
+  `208/CIBC.1/A.MAHAJAN` is code / event / booker, and 20,358 of a real
+  store's 29,057 titles carry one. The code never differs within one event
+  and says nothing a reader wants, so the UI prints `CIBC.1 — A.MAHAJAN`.
+  The split happens where the server hands events to the page, not at
+  ingest: the raw title *is* the booking identity above, and rewriting it
+  would give every stored booking a new identity and flood the change feed
+  once. Searching still works on every part of the raw title, because a
+  search over the store is a search over the same string the display was
+  built from.
 - **Free Right Now treats an all-day row as occupying its whole date.** It did
   not always. A `003/RENOVATIONS` block rendered 00:00–23:00 and read as booked
   all day, but a booking whose time could not be recovered — the same all-day

@@ -733,7 +733,7 @@ function applyFilters(){
   const terms=searchTerms();
   filtered=EVENTS.filter(e=>{
     if(!roomAllowed(e.room))return false;
-    if(terms.length&&!terms.some(s=>((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
+    if(terms.length&&!terms.some(s=>((e.title||'')+(e.booked_by||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
     // FREE_DAYS === null means the fetch has not landed; showing everything
     // briefly beats showing nothing.
     if(advFreeAt&&FREE_DAYS&&!freeOn(e))return false;
@@ -748,12 +748,12 @@ function applyFilters(){
 // Tooltip payload for a month chip. Shared by the timed and all-day variants so
 // the two cannot drift apart.
 function tipAttrs(ev){return 'onclick="event.stopPropagation();showTip(event,this)" data-title="'+esc(ev.title)+'" data-start="'+esc(ev.start)+'" data-end="'+esc(ev.end||'')+'" data-rooms="'+esc(ev.rooms.join(','))+'" data-desc="'+esc(ev.description||'')+'"';}
-function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).then(()=>toast('Copied!')).catch(()=>{});}
+function copyCard(ev){const rooms=ev.rooms||[ev.room];const txt=(ev.title||'')+(ev.booked_by?' — '+ev.booked_by:'')+'\n'+fmtDay(ev.start)+', '+fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+'\n'+(rooms.length>1?'Rooms ':'Room ')+rooms.join(', ')+(ev.description?' • '+ev.description:'');navigator.clipboard.writeText(txt).then(()=>toast('Copied!')).catch(()=>{});}
 function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc=ev.rooms&&ev.rooms.length>1?'var(--og)':c;
   // An all-day block has no meaningful clock time — its start is just midnight.
   // Printing "12:00 a.m. → 11:00 p.m. (23h)" reads as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy">📋</span><div class="etitle">'+esc(ev.title||'')+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy">📋</span><div class="etitle">'+titleHTML(ev)+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
 
 // The copy button's payload is data, so it is read back as data: see evAttr
 // in /filters.js for what the old inline handler let through. One delegate
@@ -791,6 +791,13 @@ function renderMonth(){
   let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)" aria-label="Previous month">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)" aria-label="Next month">▶</button></div><h2>'+MONTHS[m]+' '+y+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>';
   h+='<div class="cgrid">';DAYS.forEach(d=>{h+='<div class="cdhead">'+d+'</div>';});
   const total=Math.ceil((so+td)/7)*7;
+  // Bucket the filtered bookings once by the day they start on, rather than
+  // scanning all of `filtered` once per cell: a month grid is up to 42 cells,
+  // so the scan was the render's whole cost, repeated with the same answer.
+  // Bookings that start before the grid still land in their own bucket, so
+  // nothing is lost — the per-cell lookup just stops being a per-cell scan.
+  const byDay=new Map();
+  filtered.forEach(e=>{const d=(e.start||'').slice(0,10);if(!d)return;let b=byDay.get(d);if(!b){b=[];byDay.set(d,b);}b.push(e);});
   for(let i=0;i<total;i++){
     const dn=i-so+1;let date,oth=false;
     if(dn<1){date=new Date(y,m,dn);oth=true;}else if(dn>td){date=new Date(y,m,dn);oth=true;}else{date=new Date(y,m,dn);}
@@ -798,7 +805,7 @@ function renderMonth(){
     // these dates are local midnight, so west of Greenwich every cell was
     // labelled with the day before. Same bug in renderWeek and renderToday.
     const tdy=date.toDateString()===now.toDateString(),ds=fmtISO(date);
-    const de=mergeEvts(filtered.filter(e=>(e.start||'').startsWith(ds)));
+    const de=mergeEvts(byDay.get(ds)||[]);
     // Focusable with a spoken label: the cell opens the day's full list, and
     // making all 150 chips individually tabbable would bury that behind a
     // hundred keypresses.
@@ -1024,7 +1031,7 @@ function chgHTML(c){
   const meta=[when,room,c.description?esc(c.description):''].filter(Boolean).join(' · ');
   return '<div class="chg '+(added?'added':'removed')+'">'
     +'<span class="chg-kind">'+(added?'+ Added':'− Removed')+'</span>'
-    +'<span class="chg-body"><span class="chg-t">'+esc(c.title||'(untitled)')+'</span>'
+    +'<span class="chg-body"><span class="chg-t">'+titleHTML(c)+'</span>'
     +(meta?'<span class="chg-m">'+meta+'</span>':'')+'</span>'
     +'<span class="chg-when">seen '+esc(fmtSeen(c.detected_at))+'</span>'
     +'</div>';

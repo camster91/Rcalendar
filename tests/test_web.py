@@ -1056,6 +1056,68 @@ def test_a_hostile_title_is_not_code(browser, base: str) -> None:
             page.close()
 
 
+def test_code_prefix_is_parsed_out_of_titles(browser, base: str) -> None:
+    """LSM prefixes a booking's title with an internal code:
+    "208/CIBC.1/A.MAHAJAN" is code / event / booker.
+
+    Measured on a real store: 20,358 of 29,057 titles carry one, and the code
+    says nothing a reader wants. The split happens at display time — the store
+    keeps LSM's raw title, because it is the change feed's booking identity and
+    rewriting it would flood the feed — so the assertion here is on what the
+    *page* prints, which is the only thing that changed. The booker stays
+    visible on the card, inline, at the user's request.
+    """
+    print("\ntitle: the 208/NAME/BOOKER shape is parsed for display")
+    store.replace_events(
+        [
+            booking("142", D, "09:00", "12:00", "208/CIBC.1/A.MAHAJAN"),
+            booking("147", D, "14:00", "16:00", "227/EY INFO SESSION"),
+            # The 4-segment shape: a second person between name and booker.
+            booking("142", D1, "10:00", "11:00",
+                    "007/PRE-TERM MTG/CHENG/D'ANGEL"),
+        ],
+        SOW, D2,
+    )
+    try:
+        page = open_page(browser, base, f"/?view=today&date={D}")
+        try:
+            titles = page.eval_on_selector_all(
+                ".evcard .etitle",
+                "els => els.map(e => e.textContent.trim())")
+            cibc = next((t for t in titles if "CIBC" in t), None)
+            check("the code is gone and the booker is inline",
+                  cibc, "CIBC.1 — A.MAHAJAN")
+            ok("the plain title keeps no empty booker annotation",
+               "EY INFO SESSION" in titles and not any(
+                   t == "EY INFO SESSION —" for t in titles))
+        finally:
+            page.close()
+
+        page = open_page(browser, base, "/list")
+        try:
+            titles = page.eval_on_selector_all(
+                ".evcard .etitle",
+                "els => els.map(e => e.textContent.trim())")
+            pre = next((t for t in titles if "PRE-TERM" in t), None)
+            check("a second person travels with the booker",
+                  pre, "PRE-TERM MTG — CHENG · D'ANGEL")
+            ok("the store's raw title never reaches the list",
+               not any("208/" in t or "227/" in t for t in titles))
+        finally:
+            page.close()
+
+        # The search box matches the booker too, because the booker is now
+        # what the screen prints.
+        page = open_page(browser, base, f"/?view=today&date={D}&q=mahajan")
+        try:
+            check("searching the booker finds the booking",
+                  events_shown(page), 1)
+        finally:
+            page.close()
+    finally:
+        seeded()
+
+
 def test_week_view_owns_all_seven_of_its_days(browser, base: str) -> None:
     """The week ran from Sunday noon to the next Sunday noon.
 
@@ -2198,6 +2260,7 @@ TESTS = [
     test_list_renders_an_all_day_block_as_all_day,
     test_list_copies_a_real_date,
     test_a_hostile_title_is_not_code,
+    test_code_prefix_is_parsed_out_of_titles,
     test_week_view_owns_all_seven_of_its_days,
     test_nav_steps_the_view_you_are_looking_at,
     test_list_reads_the_calendars_link,

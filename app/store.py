@@ -665,6 +665,54 @@ def _row_to_change(r: sqlite3.Row) -> dict[str, Any]:
 
 # ── Reads ────────────────────────────────────────────────────────────────
 
+def rooms_present() -> list[str]:
+    """Every room with at least one stored booking, distinct and sorted.
+
+    /api/today seeds its per-room answer from this rather than from the
+    rows of one day: a room with nothing booked that day is free, and it
+    is exactly the room the question is about — seeding from a narrowed
+    read would drop every empty room from the answer. One indexed scan;
+    the room list is tiny (~91) even though the table is not (~29k rows).
+    """
+    rows = _conn().execute(
+        "SELECT DISTINCT room FROM events WHERE cancelled = 0 AND room <> ''"
+        " ORDER BY room"
+    ).fetchall()
+    return [r["room"] for r in rows]
+
+
+def suggest_rooms(q: str) -> list[str]:
+    """Distinct rooms whose name contains q, in one SQL scan.
+
+    /api/autocomplete runs on every keystroke, and reading the whole table
+    into Python for each one was the cost — SQL does the same scan without
+    materialising a year of rows. q's own wildcards are defused by _like,
+    as everywhere: `_` is what a room code uses.
+    """
+    rows = _conn().execute(
+        "SELECT DISTINCT room FROM events"
+        " WHERE cancelled = 0 AND room LIKE ? ESCAPE '\\'"
+        " ORDER BY room", (_like(q),)
+    ).fetchall()
+    return [r["room"] for r in rows]
+
+
+def suggest_titles(q: str) -> list[str]:
+    """Distinct raw titles containing q, for the autocomplete to parse.
+
+    Returns the title exactly as stored; the route applies split_title —
+    the suggestion is what the screen shows, and suggesting "208/CIBC.1"
+    for a screen that prints "CIBC.1" would put text in the search box the
+    results then display without.
+    """
+    rows = _conn().execute(
+        "SELECT DISTINCT title FROM events"
+        " WHERE cancelled = 0 AND title LIKE ? ESCAPE '\\'"
+        " ORDER BY title", (_like(q),)
+    ).fetchall()
+    return [r["title"] for r in rows]
+
+
 def get_events(
     room: str | None = None,
     date: str | None = None,

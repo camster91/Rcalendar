@@ -73,12 +73,25 @@ function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace
 function evAttr(ev){return esc(encodeURIComponent(JSON.stringify(ev)));}
 function evFromAttr(raw){try{return JSON.parse(decodeURIComponent(raw||''));}catch(_){return null;}}
 
+// A booking's title as the UI prints it: the event name, with the who/what
+// that booked it (the server's `booked_by`, parsed out of LSM's
+// "208/NAME/BOOKER" title) inline and dimmed. One helper so the two pages
+// print the same thing; the inline style matches the dim-annotation idiom
+// the cards already use.
+function titleHTML(ev){
+  return esc(ev.title||'')+(ev.booked_by
+    ?' <span style="color:var(--tx3);font-size:.82rem;font-weight:normal">— '
+     +esc(ev.booked_by)+'</span>'
+    :'');
+}
+
 // One row per booking, with `rooms` listing every room it occupies. Bookings
 // that share a time, a title and a description are the same class in several
-// rooms, and the pages show them as one card.
+// rooms, and the pages show them as one card. The booker is part of the key:
+// same name and time but different bookers is two bookings, not one class.
 function mergeEvts(evts){
   const m=new Map();
-  evts.forEach(e=>{const k=(e.start||'')+'|'+(e.end||'')+'|'+(e.title||'')+'|'+(e.description||'');if(m.has(k))m.get(k).rooms.push(e.room);else m.set(k,{...e,rooms:[e.room]});});
+  evts.forEach(e=>{const k=(e.start||'')+'|'+(e.end||'')+'|'+(e.title||'')+'|'+(e.booked_by||'')+'|'+(e.description||'');if(m.has(k))m.get(k).rooms.push(e.room);else m.set(k,{...e,rooms:[e.room]});});
   return Array.from(m.values());
 }
 

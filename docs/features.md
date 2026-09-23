@@ -60,13 +60,25 @@ Applied the same way on both pages: **AND across filters, OR within one**.
 |---|---|---|
 | Rooms | Chips, OR'd | `web/calendar.html`, `web/list.html` |
 | Groups | Editable, saved to `room_groups.json` in one atomic write | `app/store.py`, `web/calendar.html` |
-| Search | Free text over title, room **and description** (substring, case-insensitive) | both pages |
+| Search | Free text over title, booker, room **and description** (substring, case-insensitive) | both pages |
 | Floor | **Strict** — a floor is a partition, so an unknown floor is not on the one you picked; a *No floor* chip makes that selectable | README → *Filters* |
 | Seats ≥ N | **Lenient** — a room with no recorded capacity passes, because a threshold is not a partition | README → *Filters* |
 | Panopto | The 13 rooms the report flags for capture (`PANOPTO_ROOMS`) | `app/config.py` |
 | Free at a time | "free from 14:00 for 60 min", answered **per day**, by `app/avail.py` | `app/avail.py`, `GET /api/today` |
 | ...and a window that runs past midnight is asked of both days it touches | `app/server.py`, README → *Filters* |
 | Free Right Now | The same predicate as free-at, so the two cannot disagree. Grouped into *free all day* and *free until HH:MM*, stamped with when it was measured, and each row a button that narrows the filter to that room | `app/avail.py`, `web/calendar.html` |
+
+## Titles
+
+LSM stores a booking as `208/EVENT/BOOKER` — an internal code, the event,
+and who booked it (sometimes with a second person or a sub-code between:
+`007/PRE-TERM MTG/CHENG/D'ANGEL`, `014/012/DEAN & HR MTG/T. YOUNG`). The
+UI prints `EVENT — BOOKER`: the code is dropped, the booker stays inline
+on the card, and everything between travels with the booker. The parse
+runs when the server hands events to the page (`_public_event` in
+`app/server.py`, `split_title` in `app/parse.py`), never at ingest — the
+raw title is the change feed's booking identity, and rewriting it would
+pair every stored booking against a new one.
 
 ## The Active filters row
 
@@ -125,6 +137,6 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 729 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 784 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The same seven suites in CI | `.github/workflows/tests.yml` |
