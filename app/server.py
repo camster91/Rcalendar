@@ -26,17 +26,15 @@ what keeps all of them out of reach of a page the user merely has open.
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 from app import avail, store
 from app.config import APP_NAME, WEB_DIR, log
 from app.icon import paint
-from app.ics import build_ics
 from app.rooms import floor_sort_key
 
 # Hosts that mean "this machine". The UI is reachable as 127.0.0.1 and, if a
@@ -430,32 +428,6 @@ def create_app(orchestrator: Any) -> Flask:
         orchestrator.request_logout()
         return jsonify({"status": "started", "message": "Signing out of LSM"})
 
-    # ── Downloads ────────────────────────────────────────────────────────
-
-    @app.get("/download/ics")
-    def download_ics() -> Any:
-        events = _download_events()
-        body = build_ics(events)
-        return Response(
-            body,
-            mimetype="text/calendar",
-            headers={"Content-Disposition": "attachment; filename=rotman_bookings.ics"},
-        )
-
-    @app.get("/download/json")
-    def download_json() -> Any:
-        events = _download_events()
-        payload = {
-            "generated_at": datetime.now().isoformat(),
-            "total_events": len(events),
-            "events": events,
-        }
-        return Response(
-            json.dumps(payload, indent=2),
-            mimetype="application/json",
-            headers={"Content-Disposition": "attachment; filename=rotman_bookings.json"},
-        )
-
     # ── Errors ───────────────────────────────────────────────────────────
 
     @app.errorhandler(404)
@@ -471,45 +443,6 @@ def create_app(orchestrator: Any) -> Flask:
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
-
-def _download_events() -> list[dict[str, Any]]:
-    """Events for a download, narrowed by whatever the caller is looking at.
-
-    Both download endpoints used to ignore the UI's filters entirely, so
-    "download .ics" always exported the whole four-month database no matter
-    what was on screen. They now accept the same room, text and date
-    narrowing the calendar applies, and no parameters still means everything.
-
-    Groups are resolved here rather than by the page. The calendar expands a
-    group into its rooms when you pick it, so its own export links carry rooms
-    and were already right. The list page keeps rooms and groups as separate
-    filters that AND — one mechanism each, which is what stopped the two
-    disagreeing — so its links carry the group *name*, and this endpoint is the
-    only thing that turns a name into rooms. Without that, "download .ics"
-    while looking at the North group returned the entire database: the one
-    filter on the page the download could not see.
-    """
-    rooms = [r for r in (request.args.get("rooms") or "").split(",") if r]
-    groups = [g for g in (request.args.get("groups") or "").split(",") if g]
-
-    if groups:
-        # Naming both a room and a group means both must hold — the same AND the
-        # page applies. With only a group named, its rooms are the answer.
-        members = {r for g in groups for r in store.load_groups().get(g, [])}
-        rooms = [r for r in rooms if r in members] if rooms else sorted(members)
-        if not rooms:
-            # An empty list is not "no filter" to get_events — that is the
-            # convention for "every room is selected", which is why the refusal
-            # is here and not there. A group name that matches no room would
-            # otherwise export the whole database, which is the bug above.
-            return []
-
-    return store.get_events(
-        rooms=rooms or None,
-        q=request.args.get("q") or None,
-        date_from=request.args.get("from") or None,
-        date_to=request.args.get("to") or None,
-    )
 
 
 # The most days one batch request may ask about. A month cell is 42 days at

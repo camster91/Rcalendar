@@ -76,7 +76,6 @@ DB_PATH = DATA_DIR / "calendar.db"
 LOG_PATH = DATA_DIR / "app.log"
 ROOMS_PATH = DATA_DIR / "rooms.json"
 GROUPS_PATH = DATA_DIR / "room_groups.json"
-ICS_PATH = DATA_DIR / "schedule.ics"
 
 for _d in (DATA_DIR, PROFILE_DIR):
     _d.mkdir(parents=True, exist_ok=True)
@@ -120,7 +119,6 @@ KEEP_DAYS = 410                 # ~13.5 months of bookings
 CHANGES_KEEP_DAYS = 410         # change-feed rows age out on the same horizon
 BACKFILL_MONTHS = 12            # how far back the one-time backfill reaches
 
-CALENDAR_NAME = "UofT Rotman Room Bookings"
 CALENDAR_TZ = "America/Toronto"
 DEFAULT_DURATION_MINUTES = 60
 

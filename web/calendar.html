@@ -1680,8 +1680,8 @@ function copyLink(){
 
 function writeURL(){
   const p=new URLSearchParams();
-  // The rooms/q/from/to vocabulary is the one the download endpoints already
-  // read, so a copied link works against them too.
+  // The rooms/q/from/to vocabulary is the one the server's /api/events reader
+  // already takes, so a copied link works against it too.
   if(activeRooms.size&&activeRooms.size<ROOMS.length)p.set('rooms',[...activeRooms].join(','));
   if(searchQ)p.set('q',searchQ);
   if(activeGroups.size)p.set('groups',[...activeGroups].join(','));
@@ -2070,10 +2070,9 @@ function fmtISO(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,
 
 // Keep the List tab pointing at what is on screen, so the list opens with
 // the filters the calendar is showing. (The toolbar once carried .ics and
-// JSON export buttons here too; they were removed at the user's request —
-// the server's /download endpoints remain, reachable by URL and covered by
-// the API tests, so the data is still gettable without the UI carrying a
-// control nobody used.)
+// JSON export buttons here too; both the buttons and the server's
+// /download endpoints were removed at the user's request — the list is
+// the read-only view now.)
 function syncListLink(){
   // No floor, capacity or free-at: only the parameters the list can read.
   const lp=[];

@@ -141,7 +141,6 @@ app/
   rooms.py       room names, floors, capacities, Panopto flags
   scheduler.py   background worker: daily scrape + heartbeat
   server.py      local Flask API
-  ics.py         .ics export
   main.py        entry point: window + tray
   dpapi.py       Windows at-rest encryption
 web/             calendar.html, list.html, filters.js
@@ -459,7 +458,7 @@ The current filters, the view and the date are written to the URL with
 
 | Param | Meaning |
 |---|---|
-| `rooms`, `q` | the same vocabulary the download endpoints already read |
+| `rooms`, `q` | the same vocabulary the server's `/api/events` reader takes |
 | `groups` | CSV of group names |
 | `floors` | CSV of floor names |
 | `seats` | minimum capacity, omitted when off |
@@ -467,11 +466,11 @@ The current filters, the view and the date are written to the URL with
 | `free`, `mins` | `HH:MM` and minutes |
 | `view`, `date` | the view and the day it was on |
 
-The toolbar's **⬇ .ics / ⬇ JSON export buttons were removed at the user's
-request** — the server's `/download/ics` and `/download/json` endpoints remain,
-so the same URL plus `from=`/`to=` still hands over exactly what is on screen,
-and the API tests keep covering them. Nothing in the UI points at them any
-more.
+The toolbar's **⬇ .ics / ⬇ JSON export buttons, and the server's
+`/download/ics` and `/download/json` endpoints behind them, were removed at
+the user's request** — `app/ics.py` is gone, and with it the two config values
+only it read (`CALENDAR_NAME`, `ICS_PATH`). Nothing in the app exports a file
+any more; the list page is the bulk view.
 
 `replaceState` rather than `pushState` is deliberate: with push, every chip
 click becomes a back-button step and leaving the page takes a dozen presses.
@@ -559,13 +558,10 @@ the cursor.
   same rule covers a 12-hour time: `2:00 PM` is read as 14:00 rather than
   as the `2` the digits spell, and a contradictory `13:00 PM` is dropped
   rather than resolved one way or the other.
-- **An exported .ics gives every stored booking its own UID**, derived from
-  the store's own event identity (title, room, start *and* end). A calendar
-  client matches on UID, so two events sharing one are one event as far as
-  the import is concerned — it keeps the first and discards the second
-  without saying so. Changing the UID scheme means an export re-imported
-  into a client that already holds the old file arrives as new events
-  rather than as updates to the existing ones.
+- **A booking's identity is the change feed's pairing key** (title, room,
+  start *and* end). The `end` matters: two blocks can share a name and a
+  start, and without the end the feed would pair them and report the
+  difference between two bookings as nothing at all.
 - **Free Right Now treats an all-day row as occupying its whole date.** It did
   not always. A `003/RENOVATIONS` block rendered 00:00–23:00 and read as booked
   all day, but a booking whose time could not be recovered — the same all-day
@@ -575,7 +571,7 @@ the cursor.
 - Room exclusions (bookable study rooms like the 134-series) are in
   `app/config.py`. They are filtered out of the calendar **and never
   written to the database** — the filter runs before storage, so an
-  excluded room is not retrievable even through the JSON export. The
+  excluded room is not retrievable even through the API. The
   patterns match the room whichever way it is written: the report's own
   names and the normalised form the events carry are different strings
   (`RT 134A` against `134A`), and the exclusion holds for both. It used to
