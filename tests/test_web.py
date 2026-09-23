@@ -285,15 +285,6 @@ def param(page, key: str):
     )
 
 
-def exports(page) -> dict:
-    """The on-screen export links, keyed by their base path."""
-    return page.evaluate(
-        "() => Object.fromEntries("
-        "[...document.querySelectorAll('[data-export]')]"
-        ".map(a => [a.dataset.export, a.getAttribute('href')]))"
-    )
-
-
 def events_shown(page) -> int:
     """"5 events" -> 5. Written by applyFilters, so it tracks the filter pass."""
     return int(page.inner_text("#evcnt").split()[0])
@@ -385,30 +376,22 @@ def test_shared_helpers_are_served(browser, base: str) -> None:
 
 # ── R1: every nav path goes through render() ─────────────────────────────
 
-def test_today_nav_keeps_url_and_exports_current(browser, base: str) -> None:
-    """Stepping a day must move the URL, both exports and the free-at answer.
+def test_today_nav_keeps_url_current(browser, base: str) -> None:
+    """Stepping a day must move the URL and the free-at answer.
 
     The on-screen arrows used to call todayNav -> renderToday() directly,
-    which skipped render() and therefore skipped writeURL, syncExportLinks
-    and maybeRefreshFree. The visible symptom was a .ics link that kept
-    exporting the day you had already navigated away from.
+    which skipped render() and therefore skipped writeURL and
+    maybeRefreshFree. The visible symptom was a URL that kept naming the
+    day you had already navigated away from.
     """
     page = open_page(browser, base, f"/?view=today&date={D}")
     try:
         check("today: opens on the date in the URL", param(page, "date"), D)
-        check("today: .ics covers the day on screen",
-              exports(page).get("/download/ics"), f"/download/ics?from={D}&to={D}")
 
         page.click(".td-nav button:last-child")
 
         check("today: arrow advances the URL by one day",
               param(page, "date"), D1)
-        check("today: .ics follows the arrow",
-              exports(page).get("/download/ics"),
-              f"/download/ics?from={D1}&to={D1}")
-        check("today: JSON export follows too",
-              exports(page).get("/download/json"),
-              f"/download/json?from={D1}&to={D1}")
         ok("today: header redraws for the new day",
            "March 11" in page.inner_text(".today-hd h2"))
     finally:
@@ -695,8 +678,8 @@ def test_list_has_a_url_and_the_links_carry_it(browser, base: str) -> None:
     """list.html had no writeURL at all.
 
     The URL never changed as you filtered, so it could not be copied or
-    bookmarked, and both export links and the tab across to the calendar were
-    fixed hrefs — a .ics download ignored every filter you had set.
+    bookmarked, and the tab across to the calendar was a fixed href — it
+    dropped every filter you had set.
     """
     page = open_page(browser, base, "/list")
     try:
@@ -704,11 +687,73 @@ def test_list_has_a_url_and_the_links_carry_it(browser, base: str) -> None:
         page.select_option("#roomFilter", "142")
         check("list: selecting a room writes it to the URL",
               param(page, "rooms"), "142")
-        check("list: the .ics link carries the filter",
-              exports(page).get("/download/ics"), "/download/ics?rooms=142")
         check("list: and so does the tab back to the calendar",
               page.eval_on_selector("#tab-cal", "el => el.getAttribute('href')"),
               "/?rooms=142")
+    finally:
+        page.close()
+
+
+def test_room_list_clicks_select_one_room_at_a_time(browser, base: str) -> None:
+    """The rooms list is a picker, not a stack of toggles.
+
+    Every room is on by default, and a click used to *toggle* — so clicking
+    a room turned it off and left the calendar one room short of everything,
+    which read exactly backwards: the one room you asked for was the one
+    that disappeared. A click now selects the room you clicked, alone; a
+    Ctrl-click is the accumulate path, one room per click, for building a
+    multi-selection; and clicking the room that *is* the selection undoes
+    it rather than blanking the calendar, because an empty selection is a
+    blank calendar with no way back (the fallback roomClear documents).
+    """
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    try:
+        def chips(room: str) -> str:
+            return f'#rchips .rc[data-room="{room}"]'
+
+        def selection() -> str:
+            return page.evaluate("() => [...activeRooms].sort().join(',')")
+
+        page.click(chips("142"))
+        check("rooms: a click selects the room you clicked",
+              selection(), "142")
+        check("rooms: ...and no other chip reads as pressed",
+              page.evaluate("() => [...document.querySelectorAll('#rchips .rc')]"
+                            ".filter(c => c.getAttribute('aria-pressed') === 'true')"
+                            ".map(c => c.dataset.room).sort()"), ["142"])
+        # 142 carries two bookings in March's grid, so "the calendar narrowed
+        # with the selection" is a count, not a feeling.
+        check("rooms: ...and the calendar narrows with it",
+              events_shown(page), 2)
+        ok("rooms: ...and the URL says it", param(page, "rooms") == "142")
+
+        page.click(chips("147"))
+        check("rooms: the next click replaces, it does not accumulate",
+              selection(), "147")
+
+        page.click(chips("157"), modifiers=["Control"])
+        check("rooms: Ctrl-click adds one room at a time",
+              selection(), "147,157")
+
+        page.click(chips("157"), modifiers=["Control"])
+        check("rooms: ...and a second Ctrl-click takes it back out",
+              selection(), "147")
+
+        page.click(chips("147"))
+        check("rooms: clicking the whole selection undoes it, back to all",
+              page.evaluate("() => activeRooms.size === ROOMS.length"), True)
+        ok("rooms: ...and the URL stops naming rooms",
+           param(page, "rooms") is None)
+
+        # Keyboard, so the accumulate path is not mouse-only: Enter selects
+        # like a click, and the modifier keys survive the delegate.
+        page.focus(chips("142"))
+        page.keyboard.press("Enter")
+        check("rooms: Enter selects, like a click", selection(), "142")
+        page.focus(chips("147"))
+        page.keyboard.press("Control+Enter")
+        check("rooms: Ctrl+Enter accumulates, like a Ctrl-click",
+              selection(), "142,147")
     finally:
         page.close()
 
@@ -805,42 +850,6 @@ def test_list_badge_reads_the_session(browser, base: str) -> None:
         ok("list: ...and does not show the live colour", "bg-gn" not in cls)
     finally:
         dead.close()
-
-
-def test_list_group_filter_reaches_the_download(browser, base: str) -> None:
-    """The one filter on the list page the download could not see.
-
-    The list page keeps rooms and groups as two separate filters — one
-    mechanism each, which is what stopped them ANDing to nothing — so unlike
-    the calendar it carries the group *name* in its links instead of expanding
-    it into rooms. Nothing turned a name into rooms, so a .ics taken while
-    filtered to a group held every booking in the database. The link and what
-    it returns are asserted together, because from the page those two look
-    identical when the parameter is right and the server ignores it.
-    """
-    page = open_page(browser, base, "/list")
-    try:
-        page.evaluate("() => toggleGroup('North')")
-        check("list: the export link names the group",
-              exports(page).get("/download/ics"), "/download/ics?groups=North")
-
-        # The set the page is showing, against the set the link returns. Counts
-        # rather than a room list, because "the download holds what is on
-        # screen" is the property, not "the download holds room 142".
-        shown = events_shown(page)
-        got = page.evaluate(
-            """async () => {
-                 const a = document.querySelector('[data-export="/download/json"]');
-                 const d = await (await fetch(a.getAttribute('href'))).json();
-                 return d.events.length;
-               }"""
-        )
-        check("list: the download holds the bookings the page is showing",
-              got, shown)
-        ok("list: ...which is the group's rooms, not every booking",
-           shown < 8)
-    finally:
-        page.close()
 
 
 def test_sign_out_is_offered_only_with_a_session(browser, base: str) -> None:
@@ -2167,7 +2176,7 @@ def test_quick_filters_drive_the_free_drawer(browser, base: str) -> None:
 
 TESTS = [
     test_shared_helpers_are_served,
-    test_today_nav_keeps_url_and_exports_current,
+    test_today_nav_keeps_url_current,
     test_today_back_arrow_is_symmetric,
     test_nav_agrees_between_arrow_and_keyboard,
     test_month_nav_still_steps_a_month,
@@ -2182,7 +2191,6 @@ TESTS = [
     test_free_at_clears_the_rooms_booked_that_day,
     test_free_at_note_describes_the_span,
     test_list_has_a_url_and_the_links_carry_it,
-    test_list_group_filter_reaches_the_download,
     test_list_badge_reads_the_session,
     test_sign_out_is_offered_only_with_a_session,
     test_list_select_and_tags_are_one_filter,
@@ -2194,6 +2202,7 @@ TESTS = [
     test_nav_steps_the_view_you_are_looking_at,
     test_list_reads_the_calendars_link,
     test_chips_do_not_outlive_the_filters_they_name,
+    test_room_list_clicks_select_one_room_at_a_time,
     test_a_renamed_group_does_not_eat_its_neighbour,
     test_history_fill_toast_reports_the_fill_not_the_edge,
     test_a_fresh_install_says_what_it_is_doing,

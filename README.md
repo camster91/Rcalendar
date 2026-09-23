@@ -11,7 +11,7 @@ cancels anything.
 
 ```
 ┌─ Rotman Room Bookings ───────────────────────────── □ ✕ ┐
-│  [Month] [Week] [Today] [Changes]  ⟳  ⬇ .ics  ⬇ JSON   │
+│  [Month] [Week] [Today] [Changes]  🟢 Free now  ⟳        │
 │ ──────────────────────────────────────────────────────── │
 │   Mon    Tue    Wed    Thu    Fri                        │
 │  ┌─────┐┌─────┐┌─────┐┌─────┐┌─────┐                     │
@@ -247,7 +247,7 @@ found by reading. The test settles it the only way that proves reachability —
 type, Tab, Enter, then remove the tag it made without a mouse — and it fails on
 a `div` at the Tab, which is how that was checked.
 
-One test covers the sidebar's **Free Right Now** panel, and it asserts the four
+One test covers the **Free Right Now** drawer, and it asserts the four
 things the redesign was for: that the answer is timestamped, that the rooms are
 grouped with each heading counting the rows beneath it, that every row is a real
 button, and that choosing one narrows the filter without discarding the rest of
@@ -347,7 +347,10 @@ fetched is deleted by the very next scrape.
 
 The sidebar carries the filters you reach for constantly — rooms, search,
 groups. Everything else lives behind **⚙ Filters**, which opens over the
-calendar: floor, capacity, equipment, and "free at a time".
+calendar: floor, capacity, equipment, and "free at a time". The **Free now**
+drawer (see below) repeats the two you reach for *while finding a room* — a
+floor, and the Classroom/Events groups — as chips beside the free-rooms list,
+wired to the same filter state rather than a copy of it.
 
 - **Floor** — one chip per floor *present in the data*, so there is no
   5th Floor chip to select nothing. A room whose floor the data does not state
@@ -380,6 +383,16 @@ calendar: floor, capacity, equipment, and "free at a time".
   is what keeps an hour from 23:00 free: it stops at midnight, and the booking
   half an hour past it is not in it.
 
+- **Rooms** — the sidebar list is a *picker*: **clicking a room selects it,
+  alone**. It used to toggle, which with every room on by default read exactly
+  backwards — the one room you clicked was the one that turned off.
+  **Ctrl-click (or Shift-click, or Ctrl+Enter from the keyboard) adds or
+  removes one room at a time** for a multi-selection, and clicking the room
+  that *is* the whole selection undoes it back to every room rather than
+  blanking the calendar — an empty selection has no way back, the same
+  fallback the `clear` link documents. **clear** next to the *Rooms* heading
+  returns to every room.
+
 **The Active filters row beside *Rooms* is derived from the filter state, not a
 history of what you added.** That is the whole point of it: `readURL` and a
 saved filter both replace the whole filter at once, and a row that had
@@ -396,13 +409,31 @@ would make every count of the chips off by one, tests included.
 
 ## Free Right Now
 
+The list lives in the **toolbar drawer** — one button, `🟢 Free now`, with the
+count of rooms it will list — and opens over the calendar with the **quick
+filters** beside it: **one chip per floor**, plus the **Classroom** and
+**Events** groups. It used to sit in the sidebar and answer for all 91 rooms at
+once, which meant no filter could reach it: "is *any* room free" is a much
+weaker question than "is a classroom free", and the second question is the one
+that actually gets asked.
+
+The chips are **the same filter state as everything else**, not a private copy:
+a floor chip writes the floor filter the ⚙ panel holds, and a kind chip toggles
+the group the sidebar's group bar holds. A chip click moves the URL, the Active
+filters row, the sidebar and the calendar together, so the drawer can never be
+the place where a filter is on that isn't on anywhere else. The list answers
+with those same filters — every row is a room the calendar would show — and the
+button's count is the number the drawer lists, so the button cannot promise
+rooms the filters then hide. `Escape` closes it, and the button says which state
+it is in (`aria-expanded`).
+
 The list is **grouped and stamped**, which is what the data asked for. Measured
 2026-09-21: of 91 rooms, 58 were free; of those 58, **49 had a booking later the
 same day** and **9 were free all day**. So *free* on its own is not the useful
-word, and the panel now splits exactly there — *Free all day* and *Free until
+word, and the list splits exactly there — *Free all day* and *Free until
 HH:MM* — each group sorted by what makes the offers different rather than by room
 number, so a room free until 17:00 is not buried behind one free until 11:15.
-The section heading carries the strong count (the all-day figure).
+The heading carries the strong count (the all-day figure).
 
 Every row is a **button**, so the list is reachable by keyboard like the rest of
 the page, and choosing one **narrows the filter to that room without discarding
@@ -411,8 +442,8 @@ clear everything and change the view, from a panel the surrounding markup calls
 read-only.
 
 The list is stamped **as of HH:MM** because `/api/today` answers for the moment
-it is called. The sidebar fetches it at boot and every 60 seconds, and the row
-above it says "Right Now" — a claim about the wrong morning after a morning in a
+it is called. The page fetches it at boot and every 60 seconds — and the heading
+says *Free right now*, a claim about the wrong morning after a morning in a
 background tab, which the timestamp is there to make visible rather than to
 hide. **refresh ↻** re-measures on demand.
 
@@ -435,6 +466,12 @@ The current filters, the view and the date are written to the URL with
 | `panopto` | `1` when on |
 | `free`, `mins` | `HH:MM` and minutes |
 | `view`, `date` | the view and the day it was on |
+
+The toolbar's **⬇ .ics / ⬇ JSON export buttons were removed at the user's
+request** — the server's `/download/ics` and `/download/json` endpoints remain,
+so the same URL plus `from=`/`to=` still hands over exactly what is on screen,
+and the API tests keep covering them. Nothing in the UI points at them any
+more.
 
 `replaceState` rather than `pushState` is deliberate: with push, every chip
 click becomes a back-button step and leaving the page takes a dozen presses.

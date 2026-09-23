@@ -336,8 +336,6 @@ a.vtab{display:inline-flex;align-items:center}
          drawer can never disagree. -->
     <button class="btn" id="freeBtn" onclick="toggleFreePanel()" aria-expanded="false" aria-controls="freeDrawer" title="Rooms free right now">🟢 Free now <span class="freen" id="freeBtnN"></span></button>
     <button class="btn btn-a" id="scrapeBtn" onclick="triggerScrape()" title="Scrape LSM now" aria-label="Scrape LSM now">⟳</button>
-    <a class="btn btn-g" data-export="/download/ics" href="/download/ics" title="Export the current view">⬇ .ics</a>
-    <a class="btn" data-export="/download/json" href="/download/json" title="Export the current view">⬇ JSON</a>
   </div>
 </div>
 
@@ -507,7 +505,8 @@ function buildChips(){
     const d=document.createElement('div');d.className='rc on';d.dataset.room=r;
     d.setAttribute('role','button');
     d.tabIndex=0;
-    d.title=(meta.display||('Room '+r))+(meta.capacity?(' · '+meta.capacity+' seats'):'')+(meta.notes?(' · '+meta.notes):'');
+    d.title=(meta.display||('Room '+r))+(meta.capacity?(' · '+meta.capacity+' seats'):'')+(meta.notes?(' · '+meta.notes):'')
+      +' · click to show only this room; Ctrl-click to add/remove';
     d.setAttribute('aria-label',(meta.display||('Room '+r))+', '+rCnt[r]+' bookings');
     // Elements, not an html string: a room number comes from the report and is
     // written into this chip in two places.
@@ -516,9 +515,23 @@ function buildChips(){
     const name=document.createElement('span');name.textContent=r;
     const cnt=document.createElement('span');cnt.className='cn';cnt.textContent=rCnt[r];
     top.append(dot,name);d.append(top,cnt);
-    d.onclick=()=>toggleRoom(r);cDiv.appendChild(d);
+    d.onclick=ev=>roomClick(r,ev);cDiv.appendChild(d);
   });
   syncChips();
+}
+// A click in the rooms list *selects* the room — the whole click is about
+// that one room, so the selection becomes it. It used to toggle, which with
+// every room on by default read backwards: clicking a room turned it *off*
+// and left the calendar one room short of everything. Ctrl/⌘/Shift-click is
+// the accumulate path, one room per click, for building a multi-selection;
+// clicking the room that is the entire selection undoes it — back to every
+// room, the same fallback roomClear documents, because an empty selection is
+// a blank calendar with no way back.
+function roomClick(r,ev){
+  if(ev&&(ev.ctrlKey||ev.metaKey||ev.shiftKey)){toggleRoom(r);return;}
+  if(activeRooms.size===1&&activeRooms.has(r)){activeRooms=new Set(ROOMS);}
+  else activeRooms=new Set([r]);
+  syncChips();applyFilters();
 }
 function toggleRoom(r){if(activeRooms.has(r))activeRooms.delete(r);else activeRooms.add(r);syncChips();applyFilters();}
 // Scoped to #rchips. The filter panel's group editor also draws room toggles,
@@ -772,17 +785,14 @@ document.addEventListener('click',e=>{
 });
 
 // ── RENDER ──
-// The export links depend on the view and the date being shown, both of which
-// change without going through applyFilters() — setView(), nav() and goToday()
-// all call render() directly, so hanging the sync off the filter pass left the
-// month view advertising today's single-day export.
-// writeURL and maybeRefreshFree hang off render() for the same reason the
-// export links do: setView(), nav() and goToday() all reach render() without
-// going through applyFilters(), and both the URL's `date`/`view` and the
-// free-at answer depend on which day is on screen. maybeRefreshFree is a no-op
-// unless the free-at filter is on, and it is keyed on date+time+length, so the
-// extra call from applyFilters' own render cannot loop.
-function render(){syncExportLinks();writeURL();maybeRefreshFree();
+// The List-tab link depends on the filters, the URL's `date`/`view` and the
+// free-at answer on the day being shown — all of which change without going
+// through applyFilters(), since setView(), nav() and goToday() all call
+// render() directly. Hanging them off the filter pass left the list opening
+// with the calendar's old filter. maybeRefreshFree is a no-op unless the
+// free-at filter is on, and it is keyed on date+time+length, so the extra
+// call from applyFilters' own render cannot loop.
+function render(){syncListLink();writeURL();maybeRefreshFree();
   // The first-run card (see .bcard above for why it exists). With no
   // bookings in the store there is no calendar to draw, and an empty grid
   // reads as broken — so the card states what the app is doing instead.
@@ -1050,7 +1060,7 @@ function fmtSeen(iso){
 
 // There is deliberately no todayNav. It used to step the date and call
 // renderToday() directly, which skipped render() — and render() is the only
-// caller of syncExportLinks, writeURL and maybeRefreshFree. So stepping a day
+// caller of syncListLink, writeURL and maybeRefreshFree. So stepping a day
 // in Today view left the URL and both export links describing the day you had
 // just navigated away from, and never re-asked the free-at question. The bug
 // was the second render path, so the fix is to have one: every arrow, key and
@@ -1766,12 +1776,16 @@ function toast(msg,ok){const t=document.getElementById('toast');t.textContent=ms
 // ── KEYBOARD ──
 // One delegate gives every [role="button"] Enter and Space. Without it the
 // month cells, room chips and free-room pills are clickable but unreachable.
+// Modifiers are forwarded rather than dropped: room chips treat Ctrl+Enter
+// as a Ctrl-click, so the accumulate path is not mouse-only.
 document.addEventListener('keydown',e=>{
   if(e.key!=='Enter'&&e.key!==' ')return;
   const t=e.target&&e.target.closest?e.target.closest('[role="button"]'):null;
   if(!t)return;
   e.preventDefault();
-  t.click();
+  if(e.ctrlKey||e.metaKey||e.shiftKey)
+    t.dispatchEvent(new MouseEvent('click',{ctrlKey:e.ctrlKey,metaKey:e.metaKey,shiftKey:e.shiftKey,bubbles:true}));
+  else t.click();
 });
 document.addEventListener('keydown',e=>{
   const a=document.activeElement;
@@ -2048,50 +2062,20 @@ function syncFilterBody(){
   if(document.getElementById('filterModal').classList.contains('show'))buildFilterBody();
 }
 
-// The date span currently on screen, as [from, to] ISO dates.
-function viewWindow(){
-  const y=curDate.getFullYear(),m=curDate.getMonth();
-  // The feed is not date-scoped, so there is no window to describe.
-  if(viewMode==='changes')return null;
-  if(viewMode==='month'){
-    const last=new Date(y,m+1,0);
-    return [fmtISO(new Date(y,m,1)),fmtISO(last)];
-  }
-  if(viewMode==='week'){
-    const sow=new Date(curDate);sow.setDate(curDate.getDate()-curDate.getDay());
-    const eow=new Date(sow);eow.setDate(sow.getDate()+6);
-    return [fmtISO(sow),fmtISO(eow)];
-  }
-  return [fmtISO(curDate),fmtISO(curDate)];
-}
+// The date span of the view on screen used to live here, as [from, to] ISO
+// dates for the export links. The links are gone (see syncListLink below);
+// maybeRefreshFree derives its own day list, so nothing needs the span any
+// more and the function left with them.
 function fmtISO(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 
-// Keep the download links pointing at what is on screen, so ".ics" means
-// "export this view" rather than "export everything, every time".
-function syncExportLinks(){
-  // Hide the export links on the feed: it has no date window, so they would
-  // otherwise advertise "export this day" and export today's bookings from a
-  // view that is not about today at all.
-  const feed=viewMode==='changes';
-  document.querySelectorAll('[data-export]').forEach(a=>{a.style.display=feed?'none':'';});
-  if(!ROOMS.length||feed)return;
-  const p=[];
-  if(activeRooms.size&&activeRooms.size<ROOMS.length)
-    p.push('rooms='+encodeURIComponent([...activeRooms].join(',')));
-  if(searchQ)p.push('q='+encodeURIComponent(searchQ));
-  const w=viewWindow();
-  p.push('from='+w[0],'to='+w[1]);
-  const qs='?'+p.join('&');
-  document.querySelectorAll('[data-export]').forEach(a=>{
-    a.href=a.dataset.export+qs;
-    a.title='Export '+(viewMode==='today'?'this day':viewMode==='week'?'this week':'this month')
-      +(activeRooms.size<ROOMS.length?' · '+activeRooms.size+' rooms':'')
-      +(searchQ?' · matching “'+searchQ+'”':'');
-  });
-  // The tab across to the list carries the same filters. It used to be a fixed
-  // href, so opening the list from a filtered calendar silently showed every
-  // booking — the one direction of the trip that did not work. Only the
-  // parameters the list can read: it has no floor, capacity or free-at control.
+// Keep the List tab pointing at what is on screen, so the list opens with
+// the filters the calendar is showing. (The toolbar once carried .ics and
+// JSON export buttons here too; they were removed at the user's request —
+// the server's /download endpoints remain, reachable by URL and covered by
+// the API tests, so the data is still gettable without the UI carrying a
+// control nobody used.)
+function syncListLink(){
+  // No floor, capacity or free-at: only the parameters the list can read.
   const lp=[];
   if(activeRooms.size&&activeRooms.size<ROOMS.length)
     lp.push('rooms='+encodeURIComponent([...activeRooms].join(',')));
