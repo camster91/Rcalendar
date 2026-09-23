@@ -24,7 +24,6 @@ the way it does:
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -131,9 +130,9 @@ def scrape(
     on_status=None,
 ) -> ScrapeResult:
     """
-    Run one full scrape. Assumes a live session — callers should have run
-    session.ensure_session() first; a dead session surfaces as
-    status='auth_required' rather than being retried here.
+    Run one full scrape. Assumes a live session — a dead one surfaces as
+    status='auth_required' rather than being retried here; the scheduler
+    probes before calling, and sign-in is a separate, interactive action.
     """
     from app.config import HEADLESS_WHEN_POSSIBLE
 

@@ -458,7 +458,7 @@ The current filters, the view and the date are written to the URL with
 
 | Param | Meaning |
 |---|---|
-| `rooms`, `q` | the same vocabulary the server's `/api/events` reader takes |
+| `rooms`, `q` | the vocabulary both pages' URL params share |
 | `groups` | CSV of group names |
 | `floors` | CSV of floor names |
 | `seats` | minimum capacity, omitted when off |

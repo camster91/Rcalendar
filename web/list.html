@@ -485,7 +485,7 @@ async function loadStatus(){
     syncRoomSelect();
     renderTags();
   }catch(e){
-    document.getElementById('list').innerHTML='<div class="empty">Could not load bookings: '+e.message+'</div>';
+    document.getElementById('list').innerHTML='<div class="empty">Could not load bookings: '+esc(e.message)+'</div>';
     return;
   }
   render();

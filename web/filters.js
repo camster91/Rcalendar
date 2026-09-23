@@ -114,7 +114,7 @@ function parseFilters(raw, ctx){
   return {
     rooms:names(src.rooms,rooms),
     groups:names(src.groups,Object.keys(groups)),
-    q:typeof src.q==='string'?src.q:'',
+    q:typeof src.q==='string'?src.q.toLowerCase():'',
     floors:names(src.floors,null),
     // +x||0 turns a non-number into 0 rather than NaN, which would poison
     // every comparison it reached.

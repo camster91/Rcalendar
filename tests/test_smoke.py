@@ -337,9 +337,6 @@ def test_web() -> None:
     ok("status has human timestamp", st.get("last_scrape_human") not in (None, ""))
     ok("status has date range", "date_range" in st)
 
-    r = client.get("/api/events?room=142")
-    check("events filter endpoint", r.get_json()["total_events"], 1)
-
     r = client.get("/api/autocomplete?q=142")
     ok("autocomplete finds room", "142" in r.get_json()["rooms"])
     r = client.get("/api/autocomplete?q=")

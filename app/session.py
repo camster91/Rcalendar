@@ -236,24 +236,6 @@ def _restore_cookies(ctx: Any) -> None:
         log.info("re-injected %d/%d cookies from snapshot", restored, len(cookies))
 
 
-def has_snapshot() -> bool:
-    return SESSION_FILE.exists()
-
-
-def snapshot_age_hours() -> float | None:
-    if not SESSION_FILE.exists():
-        return None
-    data = _load_cookies()
-    if not data:
-        return None
-    try:
-        raw = json.loads(dpapi.unprotect(SESSION_FILE.read_bytes()).decode("utf-8"))
-        saved = datetime.fromisoformat(raw["saved_at"])
-        return (datetime.now() - saved).total_seconds() / 3600
-    except Exception:
-        return None
-
-
 def clear() -> None:
     """Forget the saved cookie snapshot.
 
@@ -476,14 +458,7 @@ def interactive_login(on_status=None) -> SessionState:
     return SessionState("expired", message=message)
 
 
-def ensure_session(interactive: bool = False, on_status=None) -> SessionState:
-    """
-    Probe, and if the session is gone, optionally prompt for a fresh login.
-    This is the single entry point callers should use.
-    """
-    state = probe(headless=True)
-    if state.ok:
-        return state
-    if state.state == "expired" and interactive:
-        return interactive_login(on_status=on_status)
-    return state
+# (ensure_session used to live here: probe-then-optionally-login. Nothing
+# ever called it — the scheduler probes and signs in as separate, deliberate
+# actions, because signing in needs a human for Duo. Removed rather than
+# kept as an unused "should" the next reader has to check on.)

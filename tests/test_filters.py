@@ -510,9 +510,6 @@ def test_search_wildcards_are_literal() -> None:
           [c["title"] for c in found], ["Morning Lecture"])
 
     client = create_app(StubOrch()).test_client()
-    check("the events route passes it through",
-          [e["room"] for e in client.get("/api/events?q=_").get_json()["events"]],
-          ["L1060_A"])
     check("the changes route passes it through",
           {c["room"] for c in
            client.get("/api/changes?limit=500&q=_").get_json()["changes"]},

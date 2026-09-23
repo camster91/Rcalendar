@@ -85,17 +85,10 @@ Grouped rather than one run of rooms, because of what the data actually holds:
 of 91 rooms, 58 were free, 49 of those had a booking later the same day and 9
 were free all day — so *free* on its own is not the useful word. Each group is
 sorted by what makes the offers different (longest free first), and the section
-heading carries the strong count. The panel is stamped *as of HH:MM*, because
-`/api/today` answers for the moment it is called and a list fetched at boot is
-not still "Right Now" after a morning in a background tab.
-
-## Exports
-
-| Export | Notes |
-|---|---|
-| `.ics` | Every booking gets its own UID, derived from the store's event identity — a shared UID would make a calendar client keep one and silently drop the other |
-| JSON | The same rows the page is showing |
-| Both | Honour the filters, including a group name, which the server resolves into rooms |
+heading carries the strong count. The list lives in the **Free-now drawer**
+(stamped *as of HH:MM*), because `/api/today` answers for the moment it is
+called and a list fetched at boot is not still "Right Now" after a morning in a
+background tab.
 
 ## Saved filters
 

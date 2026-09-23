@@ -543,8 +543,7 @@ function syncChips(){document.querySelectorAll('#rchips .rc').forEach(c=>{const 
 // back. Falling back to "all rooms" is the only sane meaning of clear.
 function roomClear(){
   activeRooms.clear();
-  if(activeGroups.size){let rs=[];activeGroups.forEach(g=>rs.push(...(GROUPS[g]||[])));activeRooms=new Set(rs.filter(r=>ROOMS.includes(r)));}
-  else{activeRooms=new Set(ROOMS);}
+  activeRooms=activeGroups.size?roomsForGroups():new Set(ROOMS);
   syncChips();applyFilters();
 }
 
@@ -733,23 +732,8 @@ let filtered=EVENTS;
 function applyFilters(){
   const terms=searchTerms();
   filtered=EVENTS.filter(e=>{
-    if(!activeRooms.has(e.room))return false;
+    if(!roomAllowed(e.room))return false;
     if(terms.length&&!terms.some(s=>((e.title||'')+e.room+(e.description||'')).toLowerCase().includes(s)))return false;
-    const m=ROOM_META[e.room]||{};
-    // Strict for floor, lenient for capacity, and the difference is deliberate:
-    // a floor is a partition, so a room with no recorded floor is not on the
-    // one you selected; a capacity is a threshold, so a room with no recorded
-    // capacity still passes a minimum. The panel states both, and offers
-    // "No floor" so the strict reading is something you can select for.
-    if(advFloors.size&&!advFloors.has(floorOf(e.room)))return false;
-    // An unknown capacity PASSES a minimum. About half the rooms in the report
-    // have no recorded capacity, and silently hiding half the building from
-    // "seats >= 20" is worse than showing a room that might be too small. It
-    // must be Infinity, not 0 — 0 would hide every one of them. The panel
-    // states the count for the rooms on screen; a figure written here would
-    // only go stale, as the "49 of the 91" this comment used to carry did.
-    if(advSeats&&(m.capacity??Infinity)<advSeats)return false;
-    if(advPanopto&&!m.panopto)return false;
     // FREE_DAYS === null means the fetch has not landed; showing everything
     // briefly beats showing nothing.
     if(advFreeAt&&FREE_DAYS&&!freeOn(e))return false;
@@ -1061,7 +1045,7 @@ function fmtSeen(iso){
 // There is deliberately no todayNav. It used to step the date and call
 // renderToday() directly, which skipped render() — and render() is the only
 // caller of syncListLink, writeURL and maybeRefreshFree. So stepping a day
-// in Today view left the URL and both export links describing the day you had
+// in Today view left the URL and the List-tab link describing the day you had
 // just navigated away from, and never re-asked the free-at question. The bug
 // was the second render path, so the fix is to have one: every arrow, key and
 // view switch lands in nav() or goToday(), and both go through render().
@@ -1680,8 +1664,8 @@ function copyLink(){
 
 function writeURL(){
   const p=new URLSearchParams();
-  // The rooms/q/from/to vocabulary is the one the server's /api/events reader
-  // already takes, so a copied link works against it too.
+  // The rooms/q/from/to vocabulary is the one both pages' URL params share,
+  // so a copied link means the same thing wherever it lands.
   if(activeRooms.size&&activeRooms.size<ROOMS.length)p.set('rooms',[...activeRooms].join(','));
   if(searchQ)p.set('q',searchQ);
   if(activeGroups.size)p.set('groups',[...activeGroups].join(','));
@@ -1705,7 +1689,7 @@ function readURL(){
   // toggleGroup makes, through the same helper.
   if(f.rooms)activeRooms=new Set(f.rooms);
   else if(activeGroups.size)activeRooms=roomsForGroups();
-  if(f.q){searchQ=f.q.toLowerCase();document.getElementById('q').value=f.q;}
+  if(f.q){searchQ=f.q;document.getElementById('q').value=f.q;}
   if(f.floors)advFloors=new Set(f.floors);
   advSeats=f.seats;
   advPanopto=f.panopto;
@@ -1893,7 +1877,7 @@ async function loadStatus(){
     // sat in the tray, or the tray's "Scrape Now" — changes the store, while
     // this page's EVENTS were fetched once at boot. Without this the grid
     // sits beside a sidebar that says "last scrape: today 06:00" and can
-    // directly contradict it: the Free panel next to it is on this same
+    // directly contradict it: the Free-now drawer is on this same
     // interval, but a booking cancelled overnight stays on the grid with no
     // staleness marker. So when the scrape timestamp moves, the events do
     // too. The first reading is adopted rather than acted on: it is, or is
@@ -1990,16 +1974,25 @@ function freePick(room){pickRoom(room);loadFree();}
 
 // ── FREE-NOW DRAWER ──
 // The one rule the drawer exists for: the list answers with the same filters
-// the calendar does. This is applyFilters' *room* half, pulled out so the two
-// cannot drift — the booking-text search is deliberately not part of it,
-// because it is a question about bookings, and this is a question about rooms.
-// The strictness rules (strict floor, lenient capacity) are the panel's, and
-// the panel is where they are explained; repeating the figures here would only
-// let the two copies age at different rates.
+// the calendar does. This is the room half of a booking filter — the
+// booking-text search is deliberately not part of it, because it is a
+// question about bookings, and this is a question about rooms. applyFilters
+// calls it for every booking too, so there is exactly one copy of the rule.
 function roomAllowed(room){
   if(!activeRooms.has(room))return false;
+  // Strict for floor, lenient for capacity, and the difference is deliberate:
+  // a floor is a partition, so a room with no recorded floor is not on the
+  // one you selected; a capacity is a threshold, so a room with no recorded
+  // capacity still passes a minimum. The panel states both, and offers
+  // "No floor" so the strict reading is something you can select for.
   if(advFloors.size&&!advFloors.has(floorOf(room)))return false;
   const m=ROOM_META[room]||{};
+  // An unknown capacity PASSES a minimum. About half the rooms in the report
+  // have no recorded capacity, and silently hiding half the building from
+  // "seats >= 20" is worse than showing a room that might be too small. It
+  // must be Infinity, not 0 — 0 would hide every one of them. The panel
+  // states the count for the rooms on screen; a figure written here would
+  // only go stale, as the "49 of the 91" this comment used to carry did.
   if(advSeats&&(m.capacity??Infinity)<advSeats)return false;
   if(advPanopto&&!m.panopto)return false;
   return true;

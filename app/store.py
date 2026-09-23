@@ -20,7 +20,7 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from app.config import (
     BACKFILL_MONTHS, CHANGES_KEEP_DAYS, DB_PATH, GROUPS_PATH, KEEP_DAYS,
-    ROOM_GROUPS, ROOMS_PATH, log,
+    ROOM_GROUPS, log,
 )
 
 _local = threading.local()
@@ -133,10 +133,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         log.info("migrated: added events.all_day")
     if "location" not in have:
-        # The parser has always built a building-qualified location, but it
-        # never reached the export: without the column, the store dropped it
-        # and the ICS LOCATION fell back to the bare room number. Rows
-        # written before this keep the fallback.
+        # The parser has always built a building-qualified location, but this
+        # column is what kept it: without it, rows written before it stored
+        # the bare room number as the location. Old rows keep that fallback.
         conn.execute(
             "ALTER TABLE events ADD COLUMN location TEXT NOT NULL DEFAULT ''"
         )
@@ -560,13 +559,6 @@ def backfill_done() -> bool:
     return False
 
 
-def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
-    rows = _conn().execute(
-        "SELECT * FROM scrape_runs ORDER BY id DESC LIMIT ?", (limit,)
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
 # ── Change feed ──────────────────────────────────────────────────────────
 
 def _like(q: str) -> str:
@@ -736,22 +728,6 @@ def _row_to_event(r: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def get_rooms() -> list[dict[str, Any]]:
-    rows = _conn().execute(
-        "SELECT * FROM rooms ORDER BY room"
-    ).fetchall()
-    return [
-        {
-            "room": r["room"],
-            "display": r["display"] or r["room"],
-            "floor": r["floor"] or "",
-            "capacity": r["capacity"],
-            "panopto": bool(r["panopto"]),
-        }
-        for r in rows
-    ]
-
-
 def stats() -> dict[str, Any]:
     conn = _conn()
     total = conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
@@ -870,13 +846,6 @@ def delete_preset(name: str) -> list[dict[str, Any]]:
     presets = [p for p in load_presets() if p["name"] != name]
     set_kv(PRESETS_KEY, presets)
     return presets
-
-
-def room_display(room: str) -> str:
-    for r in get_rooms():
-        if r["room"] == room and r["display"]:
-            return r["display"]
-    return f"Room {room}"
 
 
 def _to_iso_date(ddmmyyyy: str | None) -> str | None:

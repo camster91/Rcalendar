@@ -74,7 +74,6 @@ if FROZEN:
 PROFILE_DIR = DATA_DIR / "profile"      # Chromium profile — holds the session cookie
 DB_PATH = DATA_DIR / "calendar.db"
 LOG_PATH = DATA_DIR / "app.log"
-ROOMS_PATH = DATA_DIR / "rooms.json"
 GROUPS_PATH = DATA_DIR / "room_groups.json"
 
 for _d in (DATA_DIR, PROFILE_DIR):

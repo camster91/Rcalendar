@@ -184,7 +184,6 @@ def _row_to_event(row: dict[str, str]) -> dict[str, Any] | None:
         "location": f"{building} {room}".strip(),
         "description": clean_description(comment),
         "class_code": _pick(row, "class_code"),
-        "timezone": "America/Toronto",
         "cancelled": bool(_CANCELLED_RE.search(comment)),
     }
 

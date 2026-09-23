@@ -143,27 +143,6 @@ def create_app(orchestrator: Any) -> Flask:
             "count": len(events),
         })
 
-    @app.get("/api/events")
-    def api_events() -> Any:
-        events = store.get_events(
-            room=request.args.get("room"),
-            date=request.args.get("date"),
-            q=request.args.get("q"),
-            date_from=request.args.get("from"),
-            date_to=request.args.get("to"),
-            include_cancelled=request.args.get("cancelled") == "1",
-        )
-        return jsonify({"total_events": len(events), "events": events})
-
-    @app.get("/api/rooms")
-    def api_rooms() -> Any:
-        events = store.get_events()
-        return jsonify({
-            "rooms": _active_rooms(events),
-            "all": store.get_rooms(),
-            "groups": store.load_groups(),
-        })
-
     @app.get("/api/room-groups")
     def api_get_groups() -> Any:
         return jsonify(store.load_groups())
@@ -224,8 +203,8 @@ def create_app(orchestrator: Any) -> Flask:
         """
         Per-room availability at an instant — booked vs free, with the next slot.
 
-        Answers two questions through one predicate: the sidebar's Free Right
-        Now, which passes nothing, and the filter panel's "free at a time",
+        Answers two questions through one predicate: the Free-now drawer,
+        which passes nothing, and the filter panel's "free at a time",
         which passes the viewed date, a clock time and a length. Both go through
         app.avail, so the two cannot drift apart.
 
