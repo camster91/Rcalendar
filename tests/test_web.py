@@ -103,7 +103,8 @@ class StubOrch:
     that field, and an edge needs two different answers to exist at all.
     `session` is settable for the same reason: the list page's badge is bound
     to it, and a badge that is bound to a fact has to be shown moving when the
-    fact moves.
+    fact moves. `busy`/`busy_action`/`progress` are settable for the first-run
+    card, whose whole subject is what the worker reports it is doing.
     """
 
     def __init__(self) -> None:
@@ -111,12 +112,21 @@ class StubOrch:
         self.backfill: dict | None = None
         self.session = "ok"
         self.session_message = ""
+        self.busy = False
+        self.busy_action = ""
+        self.progress = ""
+        # The worker owns the scrape message — the scheduler sets this
+        # itself when a command fails — while the run row only supplies
+        # the status. A stub that reported neither would test nothing.
+        self.last_scrape_message = ""
 
     def status(self) -> dict:
         return {
             "session": self.session, "session_message": self.session_message,
-            "busy": False, "busy_action": "", "progress": "",
-            "last_scrape": None, "last_scrape_message": "",
+            "busy": self.busy, "busy_action": self.busy_action,
+            "progress": self.progress,
+            "last_scrape": None,
+            "last_scrape_message": self.last_scrape_message,
             "backfill": self.backfill,
         }
 
@@ -1393,6 +1403,139 @@ def test_history_fill_toast_reports_the_fill_not_the_edge(browser, base: str) ->
         page.close()
 
 
+def test_a_fresh_install_says_what_it_is_doing(browser, base: str) -> None:
+    """An empty calendar must not look the same broken as it does loading.
+
+    On a fresh install the store is empty and the month grid renders as a
+    bare grid of days — indistinguishable from an app that failed to load
+    anything, which is exactly the ambiguity a first-run reader hits: is it
+    working, or is it broken? The main area now carries a card while the
+    store is empty, answering with one of the only honest answers there are
+    — still loading, fetching (with the worker's live progress line),
+    waiting for a sign-in the app cannot do for itself, or the fetch failed.
+
+    Every state is asserted on the DOM, never on computed style: the moving
+    dot is a CSS animation and headless Chromium freezes those (see the
+    frozen-transitions note), so motion is asserted by the dot's *presence*
+    and by the progress line being text. And the card must vanish the
+    moment the store holds anything — a card that outlived the data would be
+    a new way to look broken.
+    """
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    try:
+        # The fresh-install state: an empty store, by the same direct route
+        # the corpus restore uses, so the page sees what a first run sees.
+        conn = sqlite3.connect(store.DB_PATH)
+        try:
+            conn.execute("DELETE FROM events")
+            conn.commit()
+        finally:
+            conn.close()
+        page.reload(wait_until="load")
+        page.wait_for_function(
+            "() => /\\d+ events/.test("
+            "document.getElementById('evcnt').textContent)"
+        )
+        check("fresh: the store is empty on this page",
+              events_shown(page), 0)
+
+        # No session: the card says why there is nothing and offers the one
+        # action that changes it — the sidebar button exists, but a first-run
+        # reader is looking at the calendar, not the Status block.
+        ORCH.session = "expired"
+        page.evaluate("async () => { await loadStatus(); }")
+        ok("fresh: an empty store with no session shows the card, not a bare grid",
+           page.locator("#bootCard").count() == 1)
+        ok("fresh: ...it says what a sign-in gets, not just that one is needed",
+           "year of bookings" in page.inner_text("#bootCard"))
+        ok("fresh: ...and carries the sign-in button itself",
+           "Sign in to LSM" in page.inner_text("#bootCard"))
+
+        # A filter change re-renders the main area through applyFilters —
+        # the one path that could redraw the bare grid while the store is
+        # still empty. The card has to survive it: a calendar that looks
+        # empty-and-broken again the moment a first-run reader touches
+        # anything is the ambiguity this card exists to remove. Applying a
+        # preset is the direct way through applyFilters, with no chip-click
+        # behaviour to depend on.
+        open_presets(page)
+        apply_preset(page, "Ground Floor")
+        ok("fresh: the card survives a filter change on an empty store",
+           page.locator("#bootCard").count() == 1)
+
+        # Busy: the card reports the worker, with its progress where the eye
+        # lands. This is the state the complaint was about — a first run
+        # takes minutes, and nothing else on screen moves.
+        ORCH.session = "ok"
+        ORCH.busy = True
+        ORCH.busy_action = "Backfilling history (first run)"
+        ORCH.progress = "Backfill 3/11: reading 01/09/2025"
+        page.evaluate("async () => { await loadStatus(); }")
+        card_text = page.inner_text("#bootCard")
+        ok("fresh: a busy worker names its work on the card",
+           "Backfilling history (first run)" in card_text)
+        ok("fresh: ...with the live progress line, which is what moves",
+           "Backfill 3/11" in card_text)
+        ok("fresh: ...and the motion marker is a class, never a computed style",
+           page.locator("#bootCard .bdot").count() == 1)
+
+        # Failed: the last scrape's error is said on the card, not left to
+        # the small sidebar text. The status comes from the store's run
+        # row, the words from the worker that failed (see the stub), so one
+        # of each is staged — and the row removed again rather than left
+        # behind for the tests after this.
+        ORCH.busy = False
+        ORCH.last_scrape_message = "Failed: session expired during report"
+        run_id = store.start_run("scrape")
+        store.finish_run(run_id, "error", events_count=0,
+                         message="Failed: session expired during report")
+        try:
+            page.evaluate("async () => { await loadStatus(); }")
+            card_text = page.inner_text("#bootCard")
+            ok("fresh: a failed fetch is admitted, not rendered as quiet",
+               "Couldn't fetch bookings" in card_text)
+            ok("fresh: ...in the run's own words",
+               "session expired during report" in card_text)
+        finally:
+            conn = sqlite3.connect(store.DB_PATH)
+            try:
+                conn.execute("DELETE FROM scrape_runs WHERE id = ?",
+                             (run_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+        # The control, without which none of the above means anything: real
+        # data makes the card leave and the grid return. seeded() restores
+        # the corpus, so the tests after this see the eight bookings again.
+        # The navigation is a fresh goto rather than a reload, because the
+        # preset above left floors= in this page's URL — a reload would
+        # keep that filter and the eight below would never all show.
+        seeded()
+        page.goto(base + f"/?view=month&date={D}", wait_until="load")
+        page.wait_for_function(
+            "() => /\\d+ events/.test("
+            "document.getElementById('evcnt').textContent)"
+        )
+        ok("fresh: the card is gone once there are bookings",
+           page.locator("#bootCard").count() == 0)
+        check("fresh: ...and the grid is what replaced it",
+              events_shown(page), 8)
+    finally:
+        ORCH.session = "ok"
+        ORCH.busy = False
+        ORCH.busy_action = ""
+        ORCH.progress = ""
+        ORCH.last_scrape_message = ""
+        # The corpus is the eight bookings every other test counts on, and
+        # this test emptied it. Restore it even on a mid-test failure —
+        # an assertion that throws would otherwise leave every test after
+        # this one reading a store with nothing in it.
+        if not store.get_events():
+            seeded()
+        page.close()
+
+
 # ── Accessibility ────────────────────────────────────────────────────────
 #
 # Two properties, both false somewhere in this UI when they were first
@@ -1902,6 +2045,7 @@ TESTS = [
     test_chips_do_not_outlive_the_filters_they_name,
     test_a_renamed_group_does_not_eat_its_neighbour,
     test_history_fill_toast_reports_the_fill_not_the_edge,
+    test_a_fresh_install_says_what_it_is_doing,
     test_every_control_has_an_accessible_name,
     test_toggle_state_is_not_colour_alone,
     test_the_focus_ring_is_not_removed_without_replacement,

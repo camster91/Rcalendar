@@ -62,6 +62,26 @@ a.vtab{display:inline-flex;align-items:center}
 #logoutLink:hover{color:var(--tx);text-decoration:underline}
 #logoutLink[aria-busy="true"]{color:var(--tx3);text-decoration:none;cursor:default}
 
+/* ── First-run card ── */
+/* A fresh install has no bookings, and an empty month grid looks exactly like
+   a broken app — that ambiguity is the whole reason this card exists. While
+   the store is empty the main area states what the app is doing about it
+   (loading / fetching with the worker's live progress line / waiting for a
+   sign-in / admitting a failed fetch) instead of drawing an empty grid and
+   leaving the reader to guess. It is replaced by the real grid the moment
+   there is anything to show. */
+.bcard{margin:auto;max-width:480px;text-align:center;padding:52px 36px;background:var(--sf);border:1px solid var(--bd);border-radius:var(--rs);box-shadow:var(--sh2)}
+.bcard h3{font-size:1.15rem;margin:0 0 10px;color:var(--tx);font-weight:600}
+.bcard p{font-size:.92rem;color:var(--tx2);line-height:1.6;margin:0 0 20px}
+/* Motion, so "working" is told apart from "stuck" at a glance. The dot is
+   decoration; the progress line below it is what carries the information,
+   and it is text inside a role="status", so a screen reader gets the same
+   answer the eye does. */
+.bdot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--ac);margin-right:9px;vertical-align:1px;animation:bpulse 1.2s ease-in-out infinite}
+@keyframes bpulse{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.bdot{animation:none}}
+.bprog{margin-top:18px;font-size:.8rem;color:var(--tx3);font-family:'JetBrains Mono',monospace;word-break:break-word}
+
 /* Search */
 .sbox{position:relative}
 .sbox input{width:100%;padding:9px 12px 9px 34px;border-radius:var(--rs);background:var(--sf2);border:1px solid var(--bd);color:var(--tx);font-size:.92rem;outline:none}
@@ -718,7 +738,15 @@ document.addEventListener('click',e=>{
 // free-at answer depend on which day is on screen. maybeRefreshFree is a no-op
 // unless the free-at filter is on, and it is keyed on date+time+length, so the
 // extra call from applyFilters' own render cannot loop.
-function render(){syncExportLinks();writeURL();maybeRefreshFree();if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else if(viewMode==='changes')renderChanges();else renderToday();}
+function render(){syncExportLinks();writeURL();maybeRefreshFree();
+  // The first-run card (see .bcard above for why it exists). With no
+  // bookings in the store there is no calendar to draw, and an empty grid
+  // reads as broken — so the card states what the app is doing instead.
+  // The STATUS clause keeps it off a *filtered* empty view: a store with
+  // bookings and a filter that hides them all is explained by the chips,
+  // not by a card that would then lie about the app having no data.
+  if(!EVENTS.length&&(STATUS===null||!STATUS.total_events)){renderBootCard();return;}
+  if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else if(viewMode==='changes')renderChanges();else renderToday();}
 
 function renderMonth(){
   const y=curDate.getFullYear(),m=curDate.getMonth(),first=new Date(y,m,1),last=new Date(y,m+1,0),so=first.getDay(),td=last.getDate(),now=new Date();
@@ -830,6 +858,53 @@ let CHANGE_KEY='';
 // already open on an almost-empty calendar. Watch for that fill ending and
 // reload, or the year lands in the database and never appears on screen.
 let BF_WAS_RUNNING=false;
+
+// The most recent /api/status reading, kept so the first-run card speaks from
+// the same facts the sidebar does rather than from a fetch of its own.
+let STATUS=null;
+// A fast status poll, armed only while the worker is busy. The background
+// interval is 60 s, which is fine for a settled app and useless for the one
+// question a first run asks — "is it working or is it broken?" — while the
+// fill it is watching takes minutes and its progress line moves every few
+// seconds. Cleared when the worker goes quiet again.
+let FASTPOLL=null;
+function adaptPoll(){
+  const busy=STATUS&&(STATUS.busy||(STATUS.backfill||{}).running);
+  if(busy&&!FASTPOLL)FASTPOLL=setInterval(loadStatus,5000);
+  if(!busy&&FASTPOLL){clearInterval(FASTPOLL);FASTPOLL=null;}
+}
+
+// What the main area shows while the store is empty. Four states, one per
+// honest answer to "why is there nothing on this calendar": still loading,
+// the worker is fetching (with its own progress line, which moves), the app
+// is waiting for a sign-in it cannot do for itself, and the last fetch
+// failed. render() draws this instead of an empty grid; see .bcard for why
+// an empty grid is the one thing it must never show here.
+function renderBootCard(){
+  const d=STATUS;let title,body,extra='',dot='';
+  if(!d){title='Loading…';body='Reading the calendar.';}
+  else if(d.busy){
+    dot='<span class="bdot" aria-hidden="true"></span>';
+    title=(d.busy_action||'Working')+'…';
+    body='Fetching bookings from LSM. The first run takes a few minutes — this happens once.';
+    extra='<div class="bprog">'+esc(d.progress||'')+'</div>';
+  }else if(d.session!=='ok'){
+    title='No bookings yet';
+    body=(d.session==='expired'?'The LSM session has expired. ':'This app needs an LSM session. ')
+      +'Sign in once and it fetches a year of bookings on its own.';
+    extra='<button class="btn btn-w" onclick="doLogin()">Sign in to LSM</button>';
+  }else if(d.last_scrape_status==='error'){
+    title="Couldn't fetch bookings";
+    body=esc(d.last_scrape_message||'The last scrape failed.')
+      +'<br>Check the session, or try Scrape Now (the ⟳ in the toolbar).';
+  }else{
+    title='No bookings yet';
+    body='They appear here as the app scrapes LSM — try Scrape Now, or wait for the morning refresh.';
+  }
+  document.getElementById('mainArea').innerHTML=
+    '<div class="bcard" id="bootCard" role="status">'
+    +'<h3>'+dot+esc(title)+'</h3><p>'+body+'</p>'+extra+'</div>';
+}
 function renderChanges(force){
   const el=document.getElementById('mainArea');
   const terms=searchTerms();
@@ -1680,6 +1755,10 @@ document.addEventListener('keydown',e=>{
 async function loadStatus(){
   try{
     const r=await fetch('/api/status');const d=await r.json();
+    // The card and the fast poll both speak from this reading, and the BF
+    // edge below can return early, so both are handled here at the top
+    // rather than at the end.
+    STATUS=d;adaptPoll();
     const el=document.getElementById('sessInfo'),btn=document.getElementById('loginBtn'),
           out=document.getElementById('logoutLink');
     // One session, two mutually exclusive controls: you can sign out of the
@@ -1725,6 +1804,15 @@ async function loadStatus(){
       '<strong>'+(d.total_events||0).toLocaleString()+' bookings</strong>'
       +(d.date_range?'<br>'+esc(d.date_range):'')
       +(tail?'<br>'+tail:'');
+
+    // The card's own refresh: its progress line is the one thing that moves
+    // during a first run, and loadStatus is the only thing that re-renders
+    // it. Deliberately one-sided — when the store stops being empty, the
+    // reload the BF edge triggers below re-boots the page with real data,
+    // and a grid drawn here from this page's still-empty EVENTS would be a
+    // blank calendar with no explanation, which is the thing this card
+    // exists to prevent.
+    if(!d.total_events&&!EVENTS.length)renderBootCard();
 
     // bf.running is set and cleared explicitly by the worker, so unlike the
     // racy top-level `busy` it is safe to treat as a real edge. What the edge
