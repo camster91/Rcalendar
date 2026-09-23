@@ -51,7 +51,10 @@ if (Test-Path $venvPy) {
     # pythonw runs without a console window - python.exe would flash a
     # black box on every login.
     $target = if (Test-Path $pythonw) { $pythonw } else { $venvPy }
-    $arguments = "-m app.main"
+    # --tray is what makes the message below true: without it the app had
+    # no start-hidden mode, and every login opened a full window over the
+    # desktop while the shortcut's own print promised the tray.
+    $arguments = "-m app.main --tray"
     Write-Host "  Using the venv."
 } else {
     Write-Host "  No venv found at .venv\Scripts\python.exe." -ForegroundColor Red

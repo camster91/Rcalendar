@@ -605,7 +605,7 @@ def run_install_browser() -> int:
     return 0
 
 
-def run_app(show_window: bool = True) -> int:
+def run_app(show_window: bool = True, start_hidden: bool = False) -> int:
     # Before touching the database or starting a worker: a second instance would
     # otherwise open the same SQLite file, run its own scrape and heartbeat
     # against LSM, and share one Chromium profile with the first.
@@ -641,6 +641,15 @@ def run_app(show_window: bool = True) -> int:
 
     import webview
 
+    # hidden=True is the tray promise: the window exists -- the tray's
+    # Open Calendar can show it -- but it does not arrive on the desktop at
+    # login. --tray exists because before it there was no such mode: the
+    # autostart shortcut's own message promised "starts minimized to the
+    # tray" while the app had exactly one path, an unconditional window.
+    if start_hidden:
+        log.info("starting in the tray (--tray) — the window opens from "
+                 "the tray's Open Calendar")
+
     window = webview.create_window(
         WINDOW_TITLE,
         BASE_URL,
@@ -648,6 +657,7 @@ def run_app(show_window: bool = True) -> int:
         height=920,
         min_size=(900, 600),
         text_select=True,
+        hidden=start_hidden,
     )
 
     # Shared with Tray._quit, which sets it to say "this close is a quit, let
@@ -697,8 +707,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="how many months --backfill should reach back")
     parser.add_argument("--probe", action="store_true",
                         help="print session state and exit")
-    parser.add_argument("--no-window", action="store_true",
-                        help="run the web UI without the desktop window")
+    # The two window shapes are mutually exclusive: --no-window has no
+    # tray icon and no window, --tray has both but keeps the window hidden
+    # until asked for.
+    window_mode = parser.add_mutually_exclusive_group()
+    window_mode.add_argument("--no-window", action="store_true",
+                             help="run the web UI without the desktop window")
+    window_mode.add_argument("--tray", action="store_true",
+                             help="start with the window hidden in the tray "
+                                  "(what autostart passes; the tray's Open "
+                                  "Calendar shows it)")
     parser.add_argument("--selftest", action="store_true",
                         help="check that the bundle is intact, write "
                              "selftest.json, and exit (for build verification)")
@@ -726,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_scrape_once()
     if args.backfill:
         return run_backfill(months=args.months)
-    return run_app(show_window=not args.no_window)
+    return run_app(show_window=not args.no_window, start_hidden=args.tray)
 
 
 if __name__ == "__main__":

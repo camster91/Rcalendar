@@ -24,6 +24,7 @@ Two properties this file is built around rather than trusting:
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -1852,6 +1853,22 @@ def test_free_now_is_grouped_timestamped_and_filters_in_place(browser, base: str
         # fixed dates, so it is restored rather than left behind: a store that
         # differs after this test is a different corpus for whatever runs next.
         seeded()
+        # ...but seeded() cannot remove it, which is why it is also deleted
+        # here: replace_events deletes only inside its window, and no
+        # reconcile over the fixture's fixed dates ever reaches a row dated
+        # today. Left behind, the store holds nine bookings where every
+        # corpus count downstream says eight -- a trap for whichever test
+        # is appended or reordered ahead of this one.
+        late = booking("142", today, "23:58", "23:59", "Late slot")
+        conn = sqlite3.connect(store.DB_PATH)
+        try:
+            conn.execute("DELETE FROM events WHERE uid = ?",
+                         (store.event_uid(late),))
+            conn.commit()
+        finally:
+            conn.close()
+        check("free: the corpus is the eight seeded bookings again",
+              len(store.get_events()), 8)
 
 
 TESTS = [

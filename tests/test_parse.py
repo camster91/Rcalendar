@@ -76,6 +76,28 @@ def test_times() -> None:
     check("slot index with no comment -> no start", s, None)
     check("slot index with no comment -> no end", e, None)
 
+    # The recovery reads free text, so ranges that are not times match the
+    # same pattern. A count is the case that matters: "expect 300-400
+    # attendees" used to read as 03:00-04:00 — a wrong-but-plausible window,
+    # the exact failure _hhmm exists to refuse. Both ends now have to land
+    # inside the bookable day or the booking stays all-day.
+    s, e = parse_rotman_time("500", "501", ref,
+                             comment="expect 300-400 attendees")
+    check("a count range is not a window -> no start", s, None)
+    check("a count range is not a window -> no end", e, None)
+
+    s, e = parse_rotman_time("500", "501", ref, comment="0300-1400 overnight")
+    check("a window starting before the bookable day is refused", s, None)
+
+    s, e = parse_rotman_time("500", "501", ref, comment="0900-1299 typo")
+    check("a range with an unreadable end is not half-trusted", s, None)
+
+    s, e = parse_rotman_time("500", "501", ref, comment="900-1200 setup")
+    check("an unpadded three-digit start still recovers", s,
+          datetime(2026, 4, 15, 9, 0))
+    check("an unpadded three-digit start still recovers -> end", e,
+          datetime(2026, 4, 15, 12, 0))
+
     # Missing end time defaults to one hour.
     s, e = parse_rotman_time("900", "", ref)
     check("default duration", e, datetime(2026, 4, 15, 10, 0))

@@ -806,6 +806,64 @@ def test_single_instance() -> None:
         os.close(fourth)
 
 
+def test_tray_flag() -> None:
+    """--tray is how autostart keeps the window off the desktop.
+
+    The autostart shortcut promised "starts minimized to the tray" while the
+    app had no start-hidden mode at all: run_app created the window
+    unconditionally, so every login put a 1400x920 window over the desktop.
+    The flag only has to reach run_app as start_hidden=True, and to refuse
+    to combine with --no-window — the hiding itself is pywebview's hidden=
+    parameter, and the tray's Open Calendar already calls the window.show()
+    that unhides it.
+
+    run_app is stood in for, not run: the real one starts a server and a
+    worker, which no smoke test may do.
+    """
+    print("\n--tray flag")
+
+    import contextlib
+    import io
+
+    from app import main as app_main
+
+    calls = {}
+
+    def fake_run_app(show_window=True, start_hidden=False):
+        calls["show_window"] = show_window
+        calls["start_hidden"] = start_hidden
+        return 0
+
+    saved = app_main.run_app
+    app_main.run_app = fake_run_app
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = app_main.main(["--tray"])
+        check("--tray reaches run_app as start_hidden=True",
+              calls.get("start_hidden"), True)
+        check("--tray still creates the window, hidden",
+              calls.get("show_window"), True)
+        check("the app's exit code travels back", code, 0)
+
+        calls.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            app_main.main([])
+        check("no flags means start_hidden=False",
+              calls.get("start_hidden"), False)
+    finally:
+        app_main.run_app = saved
+
+    # The two window shapes are one choice, not two: a headless serve that
+    # also owns a hidden window is a contradiction, and letting it pass
+    # would leave whichever branch happened to be checked first as winner.
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            app_main.main(["--tray", "--no-window"])
+        ok("--tray and --no-window together are refused", False)
+    except SystemExit as e:
+        check("--tray and --no-window together are refused", e.code, 2)
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — smoke tests")
@@ -821,6 +879,7 @@ def main() -> int:
     test_login_detection()
     test_quit_can_actually_end_the_process()
     test_single_instance()
+    test_tray_flag()
     test_icon()
 
     print("\n" + "=" * 60)

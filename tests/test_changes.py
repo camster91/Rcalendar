@@ -341,6 +341,23 @@ def test_prune() -> None:
     check("the feed drops the change about the pruned booking",
           "Theta Ancient" in titles, False)
 
+    # The horizon is a local date on both sides now. The fixture's days come
+    # from date.today(), but the cutoff used to come from SQLite's date('now')
+    # -- UTC, so for part of every Toronto evening the two clocks disagreed
+    # and the fate of the boundary row depended on the hour the suite ran.
+    # Both edges are pinned: the row exactly on the horizon stays (the
+    # cutoff is exclusive), the row one day past it goes.
+    store.replace_events([ev("Theta Boundary", "1065", -KEEP_DAYS),
+                          ev("Theta Over", "1065", -(KEEP_DAYS + 1))],
+                         *win(-(KEEP_DAYS + 2), -(KEEP_DAYS - 1)),
+                         run_id=51, record_changes=False)
+    store.prune()
+    titles = [e["title"] for e in store.get_events(room="1065")]
+    check("a booking exactly on the horizon survives -- the cutoff is exclusive",
+          "Theta Boundary" in titles, True)
+    check("a booking one day past the horizon goes",
+          "Theta Over" not in titles, True)
+
 
 def test_backfill_windows() -> None:
     print("\nbackfill windows")

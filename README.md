@@ -73,6 +73,7 @@ Command-line modes:
 
 ```powershell
 python -m app.main                 # the app (window + tray)
+python -m app.main --tray          # tray only at startup; open the window from the tray
 python -m app.main --no-window      # web UI only, no window
 python -m app.main --scrape-once    # scrape and exit (for Task Scheduler)
 python -m app.main --backfill       # redo the one-time history fill and exit
@@ -98,10 +99,11 @@ failed at install time.
 ```
 
 This drops a shortcut in your Startup folder pointing at
-`.venv\Scripts\pythonw.exe -m app.main` — no admin rights, trivially
+`.venv\Scripts\pythonw.exe -m app.main --tray` — no admin rights, trivially
 reversible. `pythonw` rather than `python` so no console window flashes
-on every login. The app comes up in the tray, scrapes at 06:00, and
-stays out of the way.
+on every login, and `--tray` so no calendar window does either. The app
+comes up in the tray, scrapes at 06:00, and stays out of the way; the
+window opens from the tray's "Open Calendar".
 
 ## Where the data lives
 

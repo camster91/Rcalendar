@@ -82,6 +82,16 @@ _CANCELLED_RE = re.compile(
     re.IGNORECASE,
 )
 _TIME_RANGE_RE = re.compile(r"\b(\d{3,4})\s*[-–—]\s*(\d{3,4})\b")
+# The earliest hour a room is booked — the report's own day and the daily
+# scrape both start at 06:00, so nothing earlier is a booking time to be
+# recovered. A range the regex finds *below* this is not a time at all:
+# "expect 300-400 attendees" matches the pattern just as "0900-1200 setup"
+# does, and reading it as 03:00-04:00 would pin the wrong-but-plausible
+# window to the calendar — the exact failure _hhmm exists to refuse: read
+# the time or drop it, never invent one. Dropped recovery leaves the
+# booking all-day, which is visible and corrects on the next scrape,
+# where a plausible wrong window sits looking right indefinitely.
+_BOOKING_HOUR_FLOOR = 6
 # Longest alternative first — otherwise "ROTMAN" matches as "RT" and
 # leaves "MAN L1060" behind.
 _ROOM_PREFIX_RE = re.compile(r"^(?:ROTMAN|ROT|RT)\s*[- ]?\s*", re.IGNORECASE)
@@ -227,12 +237,20 @@ def parse_rotman_time(
 
     recovered = False
     if start_is_slot:
-        # Recover the real window from the comment if it is there.
+        # Recover the real window from the comment if it is there — but only
+        # when both ends read as times inside the bookable day. Anything
+        # else is prose the regex happened to match, and the booking stays
+        # all-day rather than taking a window out of it.
         m = _TIME_RANGE_RE.search(comment or "")
         if m:
             start = _hhmm(m.group(1), ref)
             end = _hhmm(m.group(2), ref)
-            recovered = True
+            if (start is not None and end is not None
+                    and start.hour >= _BOOKING_HOUR_FLOOR
+                    and end.hour >= _BOOKING_HOUR_FLOOR):
+                recovered = True
+            else:
+                start = end = None
         else:
             start = None
 

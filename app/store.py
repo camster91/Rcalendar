@@ -15,7 +15,7 @@ import os
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Iterator, Sequence
 
 from app.config import (
@@ -414,18 +414,28 @@ def prune(
     `detected_at` instead would drop feed entries for bookings still on the
     calendar.
     """
+    # The `date` column holds local Toronto days — every write into it is
+    # datetime.now()/today() — so the horizon is computed on the same clock.
+    # SQLite's date('now') is UTC, and for a stretch of every Toronto
+    # evening the two disagree about which day it is; on the wrong side of
+    # that the horizon moved a day and rows left a day early or hung on a
+    # day late. There is enough slack over the backfill reach that nothing
+    # was lost, but the slack is a cushion, not a licence to keep two
+    # clocks in one comparison.
+    cutoff = (date.today() - timedelta(days=int(keep_days_back))).isoformat()
+    change_cutoff = (
+        date.today() - timedelta(days=int(changes_keep_days))
+    ).isoformat()
     with _tx() as conn:
         events = conn.execute(
-            "DELETE FROM events WHERE date IS NOT NULL "
-            "AND date < date('now', ?)",
-            (f"-{int(keep_days_back)} days",),
+            "DELETE FROM events WHERE date IS NOT NULL AND date < ?",
+            (cutoff,),
         ).rowcount
         # `date IS NOT NULL` keeps an undated row forever rather than
         # silently dropping it.
         changes = conn.execute(
-            "DELETE FROM changes WHERE date IS NOT NULL "
-            "AND date < date('now', ?)",
-            (f"-{int(changes_keep_days)} days",),
+            "DELETE FROM changes WHERE date IS NOT NULL AND date < ?",
+            (change_cutoff,),
         ).rowcount
     if events or changes:
         log.info("pruned %d events, %d changes", events, changes)
