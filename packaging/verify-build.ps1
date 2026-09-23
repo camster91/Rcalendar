@@ -199,6 +199,19 @@ try {
     $exeStill = Test-Path $DistExe
     if ($exeStill) { Note-Pass "the exe is still there" } else { Note-Failure "the exe is gone" }
 
+    # A same-length in-place rewrite is the one tamper the size-based
+    # inventory above cannot see, and the hash from section 1 exists for
+    # exactly this comparison. Without it, a remediated binary passed as
+    # "unchanged" on the strength of a byte count alone.
+    if ($exeStill) {
+        $exeHashAfter = (Get-FileHash $DistExe -Algorithm SHA256).Hash
+        if ($exeHashAfter -eq $exeHash) {
+            Note-Pass "the exe is byte-for-byte what was inventoried (sha256 unchanged)"
+        } else {
+            Note-Failure "the exe changed in place (sha256 differs from the start-of-run hash) - the bundle measured is not the bundle built"
+        }
+    }
+
     if (Test-Path $StaleOnefile) {
         Note-Failure "a stale single-file dist\RotmanLSMCalendar.exe is present"
     }

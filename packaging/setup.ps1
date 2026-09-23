@@ -112,11 +112,16 @@ Write-Host "  Upgrading pip..."
 & $VenvPy -m pip install --upgrade pip --quiet
 
 Write-Host "  Installing dependencies (this takes a minute)..."
-& $VenvPy -m pip install --quiet playwright flask pywebview pystray pillow icalendar
+# From requirements.txt, not from a list typed here: a floor bumped in the
+# file would silently miss this path while CI (which installs -r) stays
+# green, and two lists maintained by hand are a drift trap the moment
+# either one changes.
+& $VenvPy -m pip install --quiet -r (Join-Path $Root "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "dependency install failed" }
 
 Write-Host "  Downloading Chromium for Playwright..."
 & $VenvPy -m playwright install chromium
+if ($LASTEXITCODE -ne 0) { throw "playwright install chromium failed - run .\packaging\setup.ps1 again once the network allows it" }
 
 Write-Host ""
 Write-Host "  Setup complete." -ForegroundColor Green

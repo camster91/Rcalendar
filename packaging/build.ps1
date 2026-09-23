@@ -66,9 +66,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # The frozen app does not embed the browser; it relies on the per-user
-# Playwright cache, so make sure that is populated before shipping.
+# Playwright cache, so make sure that is populated before shipping. Guarded
+# like every other native call here: this used to be the one without a
+# $LASTEXITCODE check, so an offline build reported green and shipped a
+# bundle whose browser-cache step had silently failed.
 Write-Host "  Ensuring Chromium is present..."
 & $VenvPy -m playwright install chromium
+if ($LASTEXITCODE -ne 0) { throw "playwright install chromium failed (offline? proxy?) - the frozen app relies on this per-user browser cache" }
 
 # A single-file build from before the onedir change leaves
 # dist\RotmanLSMCalendar.exe behind. Nothing else removes it -- COLLECT only
@@ -140,7 +144,16 @@ if (-not $Iscc) {
 
 # The app's own version, so Add/Remove Programs cannot claim something the app
 # does not. Read out of config.py rather than kept as a second copy here.
-$AppVersion = (& $VenvPy -c "import app.config as c; print(c.APP_VERSION)").Trim()
+# Python puts the *current* directory on sys.path for -c, so the import only
+# resolves from the repo root; run from packaging\ or anywhere else it found
+# nothing and the script reported a config.py failure after a build that
+# actually succeeded.
+Push-Location $Root
+try {
+    $AppVersion = (& $VenvPy -c "import app.config as c; print(c.APP_VERSION)").Trim()
+} finally {
+    Pop-Location
+}
 if (-not $AppVersion) { throw "could not read APP_VERSION from app\config.py" }
 
 Write-Host "  Compiling the installer (version $AppVersion)..."
