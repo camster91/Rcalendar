@@ -237,15 +237,26 @@ class ReportPage:
 
     `has_download` decides which path: with the Download link present scrape()
     takes the downloaded file, and with it absent it reads the rendered table.
+
+    `render` models what the Generate click does to the page's per-render
+    token (`p_page_submission_id`): "fresh" is a real submit — the token
+    changes, as measured on the live page 2026-09-23; "stale" is a click
+    that missed — no submit, no render, the token stays what the page
+    loaded with; "no-token" is a page with no such item to read.
     """
 
     def __init__(self, csv_text: str, has_download: bool,
                  readback: list | None = None,
-                 download_path: Path | None = None) -> None:
+                 download_path: Path | None = None,
+                 render: str = "fresh",
+                 body_text: str = "") -> None:
         self._csv = csv_text
         self._has_download = has_download
         self._readback = readback if readback is not None else [None, None]
         self._download_path = download_path
+        self._render = render
+        self._token = "token-loaded"
+        self._body = body_text
 
     @property
     def url(self) -> str:
@@ -283,8 +294,9 @@ class ReportPage:
     def locator(self, selector: str):
         # Only the Download link matters here; when it is present the fake
         # returns a locator that finds it, and when it is not, nothing.
-        return _FoundLink() if (self._has_download and "Download" in selector) \
-            else _CountNothing()
+        if self._has_download and "Download" in selector:
+            return _FoundLink()
+        return _CountNothing(self._body if "body" in selector else "")
 
     def evaluate(self, script: str, arg=None):
         if "P51_FR_DATE" in script:
@@ -294,19 +306,30 @@ class ReportPage:
             return None if isinstance(arg, list) else list(self._readback)
         if "P51_ROOM" in script:
             return [] if isinstance(arg, str) else None
+        if "apex.page.submit" in script:
+            # The click. A real submit re-renders the page and a fresh
+            # token comes with it; a click that missed changes nothing.
+            if self._render == "fresh":
+                self._token = "token-rendered"
+            return None
+        if "p_page_submission_id" in script:
+            return None if self._render == "no-token" else self._token
         if "querySelectorAll('table')" in script:
             return self._csv
         return []
 
 
 class _CountNothing:
+    def __init__(self, body_text: str = "") -> None:
+        # The "no data found" probe reads body text; by default this page
+        # always has data, and a test that wants an empty report says so.
+        self._body_text = body_text
+
     def count(self) -> int:
         return 0
 
     def inner_text(self) -> str:
-        # The "no data found" probe reads body text; an empty report is a
-        # different test's subject, so this page always has data.
-        return ""
+        return self._body_text
 
 
 class _FoundLink:
@@ -390,6 +413,97 @@ def test_an_export_outside_the_window_is_refused() -> None:
     check("an unreadable window has no opinion",
           scrape._outside_window([{"start": "2026-04-01T09:00:00"}],
                                  "garbage", "31/03/2026"), [])
+
+
+def test_a_generate_that_produced_no_render_is_not_trusted() -> None:
+    """A Generate click has to prove the click, not just survive it.
+
+    A stale render *narrower than but inside* the requested window is the
+    one shape `_outside_window` cannot refuse: APEX session state persists
+    the previous scrape's window, so a click that missed leaves the page
+    holding last window's report, and every date on it looks like a date
+    this window could legitimately hold. Reconciling that as this
+    window's deletes the window's real bookings and files them as
+    cancellations — the same loss the readback and the export check exist
+    to prevent, reached around both.
+
+    Content comparison cannot close it: a fresh re-render of the same
+    window with no booking changes is *identical* content, so a
+    content-hash check would go on refusing forever and cancellations
+    would never process. The page's per-render token
+    (`p_page_submission_id`, measured on the live page 2026-09-23: it
+    changes on every render, including the content-identical one) is what
+    can — the token changes iff the page re-rendered.
+
+    Asserted at both levels: the click's own verdict, and the `complete`
+    flag it feeds through scrape().
+    """
+    print("\nrender evidence")
+
+    asked = ("01/03/2026", "31/03/2026")
+    readback = list(asked)
+    csv_text = CSV_HEAD + _csv_row("142", "Alpha", "1-Mar-2026")
+
+    # The click's verdict, on a page that needs nothing else.
+    fresh_page = ReportPage(csv_text, has_download=False, readback=readback,
+                           render="fresh")
+    check("a genuine submit's token changed -> render proven",
+          scrape._generate_report(fresh_page), True)
+    stale_page = ReportPage(csv_text, has_download=False, readback=readback,
+                           render="stale")
+    check("a click that missed changed nothing -> no render",
+          scrape._generate_report(stale_page), False)
+    no_token_page = ReportPage(csv_text, has_download=False,
+                              readback=readback, render="no-token")
+    check("a page with no token abstains (no opinion, not a refusal)",
+          scrape._generate_report(no_token_page), True)
+
+    # Through scrape(): same report, same window, only the render
+    # differing — the exact shape the window checks cannot tell apart.
+    def scrape_with(render: str, on_status=None):
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(csv_text)
+            path = Path(fh.name)
+        try:
+            return with_fake_browser(
+                ReportPage(csv_text, has_download=True, readback=readback,
+                           download_path=path, render=render),
+                lambda: scrape.scrape(date_from=asked[0], date_to=asked[1],
+                                      on_status=on_status),
+            )
+        finally:
+            path.unlink(missing_ok=True)
+
+    fresh = scrape_with("fresh")
+    check("a render that proves itself is complete", fresh.complete, True)
+    check("...and its bookings are reported", len(fresh.events), 1)
+
+    said: list[str] = []
+    stale = scrape_with("stale", on_status=said.append)
+    ok("a stale scrape still reads the bookings it can see",
+       stale.status == "ok" and len(stale.events) == 1)
+    check("...but it is not trusted to delete", stale.complete, False)
+    ok("...and the run says so",
+       any("nothing will be deleted" in m for m in said))
+    ok("...naming the render as the reason",
+       any("render" in m for m in said))
+
+    # The empty-report path carries the verdict too: "no data found" from a
+    # page that never re-rendered is last window's emptiness, not this
+    # window's.
+    empty_stale = with_fake_browser(
+        ReportPage("", has_download=False, readback=readback,
+                   render="stale", body_text="no data found"),
+        lambda: scrape.scrape(date_from=asked[0], date_to=asked[1]),
+    )
+    check("an empty report from a stale render is not complete either",
+          empty_stale.complete, False)
+    check("...and its status is empty", empty_stale.status, "empty")
+
+    no_token = scrape_with("no-token")
+    check("a page with no token abstains through scrape() too",
+          no_token.complete, True)
 
 
 # ── The daily scrape's retry guard ───────────────────────────────────────
@@ -935,6 +1049,7 @@ def main() -> int:
     test_window_guard()
     test_no_retry_storm()
     test_an_export_outside_the_window_is_refused()
+    test_a_generate_that_produced_no_render_is_not_trusted()
     test_logout_reports_what_the_probe_found()
     test_a_failed_command_does_not_kill_the_worker()
     test_a_report_read_off_the_page_is_marked_incomplete()

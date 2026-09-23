@@ -203,34 +203,49 @@ def scrape(
             say(f"Selected {len(rooms)} rooms")
 
             # ── Run ──
-            _generate_report(page)
+            # The click itself is checked, not assumed: a Generate that
+            # never landed leaves the page holding the render it loaded
+            # with — the previous scrape's window, persisted in APEX
+            # session state — and every date on it can sit inside this
+            # one. Only the page's per-render token can tell that shape
+            # from a fresh render (see _generate_report).
+            fresh = _generate_report(page)
 
             body = page.locator("body").inner_text()
             if "no data found" in body.lower():
                 say("Report returned no data for this window")
                 return ScrapeResult("empty", date_from=date_from,
-                                    date_to=date_to, rooms=rooms)
+                                    date_to=date_to, rooms=rooms,
+                                    complete=fresh)
 
             # ── Export ──
-            # Which of the two paths this takes decides whether the result may
-            # be reconciled. The Download link hands over the report itself,
-            # so what it returns is the whole window and its silence about a
-            # booking is evidence the booking is gone. The rendered table is
-            # one page of an interactive report, so its silence means nothing
-            # and the result is marked incomplete.
+            # `reasons` is the list of things the reconcile delete is
+            # allowed to trust, each with the failure it guards against:
+            # the export (the Download link hands over the report itself,
+            # so its silence about a booking is evidence the booking is
+            # gone; the rendered table is one page of an interactive
+            # report, so its silence means nothing), the render (a click
+            # that produced no render is no report at all, whatever its
+            # dates look like), and the room selection (a report that ran
+            # with only some rooms selected is not the calendar — its
+            # silence about an unselected room would otherwise file that
+            # room's bookings as cancellations). Any reason present means
+            # the result is adds-only: adds land, deletes do not.
+            reasons: list[str] = []
             csv_text = _download_csv(page, downloads)
-            complete = True
             if not csv_text:
                 say("CSV download unavailable — falling back to HTML table")
                 csv_text = _html_table_to_csv(page)
-                complete = False
+                reasons.append("read from the rendered page, which is not "
+                               "the whole report")
+            if not fresh:
+                reasons.append("no evidence the Generate click produced a "
+                               "new render, so the page may still hold the "
+                               "previous window")
             if not selection_ok:
-                # The third thing the reconcile delete is allowed to trust,
-                # alongside the window and the export. A report that ran with
-                # only some rooms selected is not the calendar, whatever its
-                # dates say — its silence about an unselected room would
-                # otherwise file that room's bookings as cancellations.
-                complete = False
+                reasons.append("the room selection was incomplete, so the "
+                               "export may cover only part of the calendar")
+            complete = not reasons
 
             if not csv_text.strip():
                 return ScrapeResult(
@@ -260,12 +275,10 @@ def scrape(
                              f"the reconcile delete."),
                 )
 
-            if not selection_ok:
-                say("Room selection was incomplete — the export may cover "
-                    "only part of the calendar, so nothing will be deleted")
-            elif not complete:
-                say(f"Read {len(events)} bookings from the page — the page is "
-                    f"not the whole report, so nothing will be deleted")
+            if reasons:
+                say(f"Parsed {len(events)} bookings, but the result is not "
+                    f"trusted to delete ({'; '.join(reasons)}), so nothing "
+                    f"will be deleted")
             say(f"Parsed {len(events)} bookings")
             return ScrapeResult(
                 "ok" if events else "empty",
@@ -473,7 +486,53 @@ def _shuttle_values(page: Any, element_id: str) -> list[str]:
         return []
 
 
-def _generate_report(page: Any) -> None:
+def _page_submission_id(page: Any) -> str | None:
+    """
+    APEX's per-render page token, or None when it cannot be read.
+
+    Every full page render carries a fresh `p_page_submission_id` — APEX
+    22.1's submit-protection item. It is what turns "the Generate click
+    produced a new render" from a guess into a comparison: a real submit
+    re-renders the page and the token changes; a click that missed, or a
+    page whose JS failed, leaves the token — and the report — exactly as
+    the page loaded with them. Measured on the live page 2026-09-23
+    (APEX 22.1.9): the token changed on a same-window re-generate whose
+    content was identical, which is the one case a content hash cannot
+    speak to, and the reason this token is the signal.
+    """
+    try:
+        return page.evaluate(
+            """() => {
+                const el =
+                    document.querySelector('input[name="p_page_submission_id"]');
+                return el ? el.value : null;
+            }"""
+        )
+    except Exception:
+        return None
+
+
+def _generate_report(page: Any) -> bool:
+    """
+    Click Generate, then report whether the click produced a render.
+
+    True is positive evidence — the page's per-render token changed, so a
+    submit genuinely re-rendered the page, and the report showing now is
+    the one these items ran. False means no such evidence, and the page
+    may still be holding the report it loaded with: APEX session state
+    persists the previous scrape's window, so that stale report's rows sit
+    inside the new window exactly when _outside_window cannot see them —
+    narrower-but-inside is the shape the window checks cannot refuse, and
+    only the render token can. The caller must treat False as "this
+    report's silence is not evidence about anything".
+
+    A token that cannot be read on either side is no opinion rather than a
+    refusal: an APEX without the item, or a read that failed, would
+    otherwise stop every scrape trusting nothing, the worse mistake of the
+    two — the same asymmetry _item_date gives a date it cannot read.
+    """
+    before = _page_submission_id(page)
+
     button = page.locator('button:has-text("Generate Report")')
     if button.count() > 0:
         try:
@@ -488,6 +547,14 @@ def _generate_report(page: Any) -> None:
     except Exception:
         pass
     page.wait_for_timeout(2500)
+
+    after = _page_submission_id(page)
+    if before is None or after is None:
+        log.warning("could not read p_page_submission_id (%r → %r); cannot "
+                    "verify that Generate rendered — trusting the click",
+                    before, after)
+        return True
+    return before != after
 
 
 def _download_csv(page: Any, downloads: list[Any]) -> str | None:
@@ -521,10 +588,11 @@ def _outside_window(events: list[dict[str, Any]],
     `_set_dates` already reads the dates back and refuses a confident
     disagreement, and that check is about what the page will *run* — "the
     model took it" against "the model kept it". It is not evidence that the
-    report ran again. `_generate_report` clicks Generate and waits, with no
-    way to tell a render from a click that missed, and a page that was never
-    regenerated is still showing the report it loaded with: the *default*
-    window, which is not the one that was just set on the items.
+    report ran again. `_generate_report` clicks Generate and then proves the
+    click with the page's per-render token, but before that check existed a
+    page that was never regenerated went undetected, still showing the
+    report it loaded with: the *default* window, which is not the one that
+    was just set on the items.
 
     That is the same class of danger the readback exists for, because the
     window's bounds are the bounds of the reconcile delete. A stale report
@@ -540,9 +608,13 @@ def _outside_window(events: list[dict[str, Any]],
 
     What this catches is a stale report whose bounds *differ* — the untouched
     default, the previous window, a window a clamped date produced. What it
-    cannot catch is a stale report that happens to hold exactly the requested
-    window, which is the same content a fresh render would have produced and
-    so loses nothing.
+    cannot catch is a stale report whose bounds sit *inside* the requested
+    one: every row is then a date this window could legitimately hold, and
+    narrower-but-inside is exactly the shape APEX session state produces
+    when a Generate click misses and the page keeps last scrape's render.
+    That shape is the render token's to catch, not the dates': a Generate
+    with no evidence of a re-render is refused by _generate_report, and a
+    refused report is not reconciled whatever its dates say.
     """
     lo, hi = _item_date(date_from), _item_date(date_to)
     if lo is None or hi is None:
