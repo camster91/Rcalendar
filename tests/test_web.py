@@ -42,6 +42,7 @@ _tmp = tempfile.mkdtemp(prefix="lsm-web-")
 os.environ["LSM_DATA_DIR"] = _tmp
 
 from app import store  # noqa: E402
+from app.rooms import floor_for  # noqa: E402
 from app.server import create_app  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -1895,12 +1896,12 @@ def test_returning_to_changes_rebuilds_the_panel(browser, base: str) -> None:
 
 
 def test_free_now_is_grouped_timestamped_and_filters_in_place(browser, base: str) -> None:
-    """The sidebar's Free Right Now: what it measured, and when.
+    """The Free-right-now drawer: what it measured, and when.
 
     Measured against the running app rather than guessed: 58 of 91 rooms free,
     49 of them with a booking later that day, 9 free all day. The panel
     rendered all of that as one unlabelled line of text -- "127 11:15" in a 62px
-    box -- with nothing saying which number was the room and which was the
+    box -- with nothing saying which number was the room and which the
     clock, nothing saying when the answer had been measured, and 58 rooms
     arriving as one undifferentiated run.
 
@@ -1928,6 +1929,11 @@ def test_free_now_is_grouped_timestamped_and_filters_in_place(browser, base: str
     try:
         page = open_page(browser, base, f"/?view=month&date={D}")
         try:
+            # The list answers from the drawer now, not the sidebar, and a
+            # closed drawer's contents are written but not visible -- so the
+            # toolbar button comes first.
+            page.click("#freeBtn")
+            page.wait_for_selector("#freeDrawer.open")
             page.wait_for_selector("#freeList .fr")
 
             as_of = (page.inner_text("#freeAs") or "").strip()
@@ -2014,6 +2020,151 @@ def test_free_now_is_grouped_timestamped_and_filters_in_place(browser, base: str
               len(store.get_events()), 8)
 
 
+def test_quick_filters_drive_the_free_drawer(browser, base: str) -> None:
+    """The toolbar's Free-now drawer: quick filters, and a list that obeys them.
+
+    The free list used to sit in the sidebar and answer for all 91 rooms at
+    once, so no filter could reach it -- "is a classroom free right now" was
+    not a question it could answer, and a list that ignored the chips two
+    sections above it was answering a question nobody asked. The drawer that
+    replaces it carries one chip per floor plus the Classroom and Events
+    groups, and both the chips and the list hold the *same* filter state the
+    calendar does -- not a private copy, which is how a second control surface
+    drifts from the first.
+
+    Measured properties, each of which a chip-less or unfiltered drawer would
+    fail:
+
+      * one toolbar button, and no free list left in the sidebar: two lists
+        with different answers is the clutter;
+      * the chips are advFloors and the groups themselves -- the URL, the
+        Active filters row and the sidebar's group button all move with a
+        chip click;
+      * the list answers with those filters: every row is a room the
+        calendar would show;
+      * the button's count is the number the drawer lists, so the button
+        cannot promise rooms the filters then hide;
+      * Escape closes it, and the button says which state it is in.
+    """
+    # Classroom and Events are not in the seeded group set (it is North and
+    # Dean's Suite), and the kind chips are built from the groups the data
+    # knows -- so they are exercised against groups really named Classroom
+    # and Events, and the seeded set is restored for the same reason every
+    # other fixture change here is. Room 127 is the Classroom member: it is on
+    # the ground floor, its two corpus bookings are both on other days, and
+    # so nothing below depends on the clock.
+    store.save_groups({
+        "Classroom": ["127"], "Events": ["100", "2057"],
+        "North": ["142"], "Dean's Suite": ["157"],
+    })
+    try:
+        page = open_page(browser, base, f"/?view=month&date={D}")
+        try:
+            ok("drawer: closed on load, and the sidebar carries no free list "
+               "of its own",
+               page.evaluate("() => !document.getElementById('freeDrawer')"
+                             ".classList.contains('open')"
+                             " && !document.querySelector('.side .freelist')"))
+
+            page.click("#freeBtn")
+            page.wait_for_selector("#freeDrawer.open")
+            check("drawer: the button says it is open",
+                  page.eval_on_selector("#freeBtn",
+                                       "el => el.getAttribute('aria-expanded')"),
+                  "true")
+
+            # The chips are read as rendered and compared with the page's own
+            # floor list rather than a hardcoded expectation: the chip set
+            # must follow the data, and a copy of the floors in this test
+            # would agree with a stale chip set in the page.
+            check("drawer: one chip per floor the data knows",
+                  page.evaluate("() => [...document.querySelectorAll('#qfloor .gb')]"
+                                ".map(b => b.textContent)"),
+                  page.evaluate("() => floorsPresent()"
+                                ".map(f => f === NO_FLOOR ? 'No floor' : f)"))
+            check("drawer: the kind chips are the classroom and event groups",
+                  page.evaluate("() => [...document.querySelectorAll('#qgroup .gb')]"
+                                ".map(b => b.textContent)"),
+                  ["Classroom", "Events"])
+            ok("drawer: every chip's pressed state is said out loud",
+               page.evaluate("() => [...document.querySelectorAll('#qfloor .gb, #qgroup .gb')]"
+                             ".every(b => b.hasAttribute('aria-pressed'))"))
+
+            # A floor chip, for the ground floor.
+            ground = floor_for("127")
+            page.click(f'#qfloor .gb:text-is("{ground}")')
+            check("drawer: the floor chip reads as pressed",
+                  page.eval_on_selector(f'#qfloor .gb:text-is("{ground}")',
+                                       "el => el.getAttribute('aria-pressed')"),
+                  "true")
+            check("drawer: ...and is the same filter the page holds",
+                  page.evaluate("f => advFloors.size === 1 && advFloors.has(f)",
+                                ground),
+                  True)
+            ok("drawer: ...and the URL says it too",
+               param(page, "floors") is not None)
+            ok("drawer: ...and the sidebar's Active filters row agrees",
+               ground in chip_labels(page))
+
+            # The list, compared against the page's state recomputed from
+            # first principles (floorOf over ROOMS) rather than through
+            # roomAllowed -- so a drawer that silently dropped the filter
+            # fails here instead of agreeing with itself. The wait is because
+            # loadFree is a fetch: the rows cannot be read the instant the
+            # chip goes down.
+            page.wait_for_function(
+                "() => [...document.querySelectorAll('#freeList .fr')]"
+                ".every(e => floorOf(e.dataset.room) === [...advFloors][0])")
+            check("drawer: the list answers with the current filters",
+                  page.evaluate("() => [...document.querySelectorAll('#freeList .fr')]"
+                                ".map(e => e.dataset.room).sort()"),
+                  page.evaluate("() => ROOMS.filter(r => floorOf(r) === [...advFloors][0])"
+                                ".sort()"))
+
+            # A kind chip, on top of the floor.
+            page.click('#qgroup .gb:text-is("Classroom")')
+            page.wait_for_function(
+                "() => [...document.querySelectorAll('#freeList .fr')]"
+                ".every(e => GROUPS.Classroom.includes(e.dataset.room))")
+            ok("drawer: the Classroom chip and the sidebar's group button "
+               "are one state",
+               page.evaluate("() => activeGroups.has('Classroom')"
+                             " && document.querySelector('#gbar [data-g=\"Classroom\"]')"
+                             ".classList.contains('on')"))
+            want = page.evaluate(
+                "() => ROOMS.filter(r => GROUPS.Classroom.includes(r)"
+                " && floorOf(r) === [...advFloors][0]).sort()")
+            check("drawer: floor and kind narrow the list together",
+                  page.evaluate("() => [...document.querySelectorAll('#freeList .fr')]"
+                                ".map(e => e.dataset.room).sort()"),
+                  want)
+            check("drawer: the toolbar button's count is what the drawer lists",
+                  int(page.eval_on_selector("#freeBtnN", "el => el.textContent")),
+                  len(want))
+
+            page.keyboard.press("Escape")
+            ok("drawer: Escape closes it",
+               page.evaluate("() => !document.getElementById('freeDrawer')"
+                             ".classList.contains('open')"))
+            check("drawer: ...and the button says so",
+                  page.eval_on_selector("#freeBtn",
+                                       "el => el.getAttribute('aria-expanded')"),
+                  "false")
+
+            # Reopening rebuilds the chips from the live state, so a filter
+            # changed somewhere else cannot leave the drawer showing the
+            # filters as they were.
+            page.click("#freeBtn")
+            check("drawer: reopening shows the filters as they are",
+                  page.eval_on_selector('#qgroup .gb:text-is("Classroom")',
+                                       "el => el.getAttribute('aria-pressed')"),
+                  "true")
+        finally:
+            page.close()
+    finally:
+        seeded_groups()
+
+
 TESTS = [
     test_shared_helpers_are_served,
     test_today_nav_keeps_url_and_exports_current,
@@ -2052,6 +2203,7 @@ TESTS = [
     test_search_suggestions_are_reachable_by_keyboard,
     test_returning_to_changes_rebuilds_the_panel,
     test_free_now_is_grouped_timestamped_and_filters_in_place,
+    test_quick_filters_drive_the_free_drawer,
 ]
 
 

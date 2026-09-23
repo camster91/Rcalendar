@@ -151,6 +151,27 @@ a.vtab{display:inline-flex;align-items:center}
 .gb{padding:5px 12px;border-radius:5px;font-size:.82rem;font-weight:500;cursor:pointer;border:1px solid var(--bd);background:var(--sf);color:var(--tx2);transition:.12s;user-select:none}
 .gb:hover{color:var(--tx);background:var(--sf2)}.gb.on{background:var(--ac);border-color:var(--ac);color:#fff}
 
+/* ── FREE-NOW DRAWER ──
+   One toolbar button, one slide-out: the quick chips (a floor each, plus the
+   Classroom and Events groups) and the free-rooms list, all answering with
+   the *current* filters. The list used to sit in the sidebar, where it spoke
+   for every room at once and so could not honour a filter — and "is any room
+   free" is a much weaker question than "is a classroom free".
+
+   visibility as well as transform, because a drawer hidden only by
+   translateX(105%) is still there for Tab: a keyboard user would land in a
+   list they cannot see. The 0s delay on the way out lets the slide finish
+   before the contents disappear. */
+.drawer{position:fixed;top:0;right:0;bottom:0;width:360px;max-width:94vw;background:var(--sf);border-left:1px solid var(--bd2);box-shadow:var(--sh2);z-index:150;transform:translateX(105%);visibility:hidden;transition:transform .25s ease,visibility 0s linear .25s;display:flex;flex-direction:column;gap:10px;padding:18px 16px;overflow-y:auto}
+.drawer.open{transform:none;visibility:visible;transition:transform .25s ease}
+/* .mcl floats right inside the modals, but a float is ignored in a flex
+   column — without this the ✕ would be a row of its own above the title. */
+.drawer .mcl{align-self:flex-end;float:none;padding:0 0 0 8px}
+.drawer h2{font-size:1.05rem;margin:0 0 4px}
+/* The sidebar gave this list 196px; the drawer has the rest of the column. */
+.drawer .freelist{max-height:none;flex:1}
+@media (prefers-reduced-motion:reduce){.drawer{transition:visibility 0s}}
+
 /* ── CALENDAR ── */
 .chead{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px}
 .chead h2{font-size:1.5rem;font-weight:700}
@@ -308,6 +329,12 @@ a.vtab{display:inline-flex;align-items:center}
       <button class="vtab" id="v-changes" onclick="setView('changes')">🔀 Changes</button>
       <a class="vtab" id="tab-list" href="/list">☰ List</a>
     </div>
+    <!-- The drawer's entry point, and the only new thing on this bar — the
+         quick floor/group filters live inside the drawer rather than adding
+         a second row of chips to a toolbar that is already full. The count is
+         the same filtered number the drawer will list, so the button and the
+         drawer can never disagree. -->
+    <button class="btn" id="freeBtn" onclick="toggleFreePanel()" aria-expanded="false" aria-controls="freeDrawer" title="Rooms free right now">🟢 Free now <span class="freen" id="freeBtnN"></span></button>
     <button class="btn btn-a" id="scrapeBtn" onclick="triggerScrape()" title="Scrape LSM now" aria-label="Scrape LSM now">⟳</button>
     <a class="btn btn-g" data-export="/download/ics" href="/download/ics" title="Export the current view">⬇ .ics</a>
     <a class="btn" data-export="/download/json" href="/download/json" title="Export the current view">⬇ JSON</a>
@@ -350,14 +377,10 @@ a.vtab{display:inline-flex;align-items:center}
     <div class="stit">Active filters <span class="freen" id="advN"></span></div>
     <div class="tags" id="active"></div>
   </div>
-  <div>
-    <div class="stit">Free Right Now <span class="freen" id="freeN"></span></div>
-    <div class="fmeta">
-      <span id="freeAs">checking…</span>
-      <button class="fref" onclick="loadFree()" aria-label="Refresh the free-rooms list">refresh ↻</button>
-    </div>
-    <div class="freelist" id="freeList"></div>
-  </div>
+  <!-- Free Right Now used to be a sixth section here. It moved to the
+       toolbar drawer (see #freeDrawer below): the sidebar version answered
+       for every room at once and so could not honour the filters, and a list
+       that ignores the chips two sections above it is the clutter. -->
   <div>
     <div class="stit">Status</div>
     <div id="sessInfo" class="sess"></div>
@@ -394,6 +417,27 @@ a.vtab{display:inline-flex;align-items:center}
     <h2 id="filterTitle">Filters</h2>
     <div id="filterBody"></div>
   </div>
+</div>
+
+<!-- The free-now drawer. Not a .mover: it slides over the calendar rather
+     than covering it, so the effect of a chip click on the view behind is
+     visible — the chips drive the same filter state the sidebar and the ⚙
+     panel do, which is the point: one answer everywhere. -->
+<div class="drawer" id="freeDrawer" role="dialog" aria-label="Rooms free right now">
+  <button class="mcl" onclick="toggleFreePanel(false)" aria-label="Close">✕</button>
+  <h2>Free right now <span class="freen" id="freeN"></span></h2>
+  <!-- Built by buildQuickChips(), for the same reason the sidebar's group
+       buttons are: a floor or group the data no longer knows must not get a
+       chip, and a new one must appear without a code change. -->
+  <div class="stit">By floor</div>
+  <div class="gbar" id="qfloor"></div>
+  <div class="stit">By kind</div>
+  <div class="gbar" id="qgroup"></div>
+  <div class="fmeta">
+    <span id="freeAs">checking…</span>
+    <button class="fref" onclick="loadFree()" aria-label="Refresh the free-rooms list">refresh ↻</button>
+  </div>
+  <div class="freelist" id="freeList"></div>
 </div>
 
 <script src="/filters.js"></script>
@@ -1738,7 +1782,7 @@ document.addEventListener('keydown',e=>{
   // from everywhere: the arrows and "/" sit below the typing check on purpose,
   // because an arrow key belongs to the text cursor while you are in a field.
   const onControl=a&&(a.tagName==='BUTTON'||a.tagName==='A'||(a.getAttribute&&a.getAttribute('role')==='button'));
-  if(e.key==='Escape'){closeModal();return;}
+  if(e.key==='Escape'){closeModal();toggleFreePanel(false);return;}
   if(typing)return;
   if(e.key==='/'){e.preventDefault();document.getElementById('q').focus();return;}
   if(e.key==='ArrowLeft'){nav(-1);return;}
@@ -1855,11 +1899,17 @@ async function loadFree(){
   try{
     const d=await (await fetch('/api/today')).json();
     const rooms=d.rooms||[];
-    const free=rooms.filter(r=>r.status==='free');
-    // When the answer is about, said out loud. The panel is fetched once at
-    // boot and the row above it says "Right Now", which after a morning in a
-    // background tab is a claim about the wrong morning. /api/today answers for
-    // the moment it is called, so this is the moment it was called.
+    const allFree=rooms.filter(r=>r.status==='free');
+    // The drawer's one rule: the list answers with the same filters the
+    // calendar does (roomAllowed is applyFilters' room half). "Free" on its
+    // own speaks for every room at once; the question that gets asked is
+    // "is a classroom free", and that is a filter question.
+    const free=allFree.filter(r=>roomAllowed(r.room));
+    // When the answer is about, said out loud. The list is fetched at boot
+    // and the heading above it says "Free right now", which after a morning
+    // in a background tab is a claim about the wrong morning. /api/today
+    // answers for the moment it is called, so this is the moment it was
+    // called.
     const now=new Date();
     if(as)as.textContent='as of '+now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
     // The split the list exists for: 58 rooms were free and only 9 of them were
@@ -1869,8 +1919,15 @@ async function loadFree(){
     const until=free.filter(r=>r.next_at);
     const n=document.getElementById('freeN');
     if(n)n.textContent=free.length?allDay.length+' free all day':'';
+    // The toolbar button's count is the same number, so the button cannot
+    // promise a list the drawer then narrows — or hide a filter's effect
+    // while the drawer is closed.
+    const bn=document.getElementById('freeBtnN');
+    if(bn)bn.textContent=free.length;
     if(!free.length){
-      box.innerHTML='<span class="freenone">Every room is booked right now.</span>';
+      box.innerHTML=allFree.length
+        ?'<span class="freenone">No free rooms match the current filters.</span>'
+        :'<span class="freenone">Every room is booked right now.</span>';
       return;
     }
     // Longest free first, inside each group: a room free until 17:00 and one
@@ -1912,8 +1969,84 @@ async function loadFree(){
 // Picking a room here filters to it and leaves you where you are. It used to
 // wipe the room filter, select this one room and switch to today's view, from a
 // panel the markup described as read-only — the jump in particular was a side
-// effect of a click that looked like a lookup.
-function freePick(room){pickRoom(room);}
+// effect of a click that looked like a lookup. The reload is because the pick
+// changes the filter the list itself is now subject to: without it the row
+// the user just chose stays on a list that has stopped being true.
+function freePick(room){pickRoom(room);loadFree();}
+
+// ── FREE-NOW DRAWER ──
+// The one rule the drawer exists for: the list answers with the same filters
+// the calendar does. This is applyFilters' *room* half, pulled out so the two
+// cannot drift — the booking-text search is deliberately not part of it,
+// because it is a question about bookings, and this is a question about rooms.
+// The strictness rules (strict floor, lenient capacity) are the panel's, and
+// the panel is where they are explained; repeating the figures here would only
+// let the two copies age at different rates.
+function roomAllowed(room){
+  if(!activeRooms.has(room))return false;
+  if(advFloors.size&&!advFloors.has(floorOf(room)))return false;
+  const m=ROOM_META[room]||{};
+  if(advSeats&&(m.capacity??Infinity)<advSeats)return false;
+  if(advPanopto&&!m.panopto)return false;
+  return true;
+}
+
+// open/close. force is what the ✕ and Escape paths pass; the toolbar button
+// passes nothing and toggles. Chips are rebuilt on every open rather than
+// kept alive in the DOM, for the same reason the ⚙ panel's body is: a state
+// change that happened elsewhere in the app (a preset, a URL, the panel)
+// must not leave the drawer showing the filters as they were.
+function toggleFreePanel(force){
+  const d=document.getElementById('freeDrawer');
+  const open=force===undefined?!d.classList.contains('open'):force;
+  if(open){buildQuickChips();loadFree();}
+  d.classList.toggle('open',open);
+  document.getElementById('freeBtn').setAttribute('aria-expanded',open?'true':'false');
+}
+
+// The two groups the quick set names: the classroom list and the event halls.
+// Read out of GROUPS rather than hardcoded, so a group deleted in the editor
+// loses its chip instead of filtering nothing, and one the data no longer
+// names never appears as a chip that selects nothing.
+function quickGroups(){return ['Classroom','Events'].filter(g=>GROUPS[g]);}
+
+// The chips themselves. Floor chips write advFloors and group chips go through
+// toggleGroup — the same state the ⚙ panel and the sidebar's group bar hold,
+// so a preset, a URL and a drawer chip are one filter, not three views of it.
+// That is also why the sidebar's Active filters section fills in as the chips
+// are used: what the drawer does is a filter like any other, and the tags are
+// where every other filter is already shown.
+function buildQuickChips(){
+  const fb=document.getElementById('qfloor');
+  if(!fb)return;
+  fb.innerHTML='';
+  floorsPresent().forEach(f=>{
+    const b=el('button','gb'+(advFloors.has(f)?' on':''),f===NO_FLOOR?'No floor':f);
+    b.setAttribute('aria-pressed',advFloors.has(f)?'true':'false');
+    b.setAttribute('aria-label','Filter by floor: '+(f===NO_FLOOR?'no floor stated':f));
+    b.onclick=()=>{
+      if(advFloors.has(f))advFloors.delete(f);else advFloors.add(f);
+      buildQuickChips();syncFilterBody();writeURL();applyFilters();loadFree();
+    };
+    fb.appendChild(b);
+  });
+  const gb=document.getElementById('qgroup');
+  gb.innerHTML='';
+  quickGroups().forEach(g=>{
+    const b=el('button','gb'+(activeGroups.has(g)?' on':''),g);
+    b.setAttribute('aria-pressed',activeGroups.has(g)?'true':'false');
+    b.setAttribute('aria-label','Filter by group: '+g);
+    b.onclick=()=>{toggleGroup(g);buildQuickChips();loadFree();};
+    gb.appendChild(b);
+  });
+}
+
+// The ⚙ panel holds its own copy of these controls, and both can be on
+// screen at once. A chip click that left the panel's floor buttons where they
+// were would be two controls disagreeing about one state.
+function syncFilterBody(){
+  if(document.getElementById('filterModal').classList.contains('show'))buildFilterBody();
+}
 
 // The date span currently on screen, as [from, to] ISO dates.
 function viewWindow(){
