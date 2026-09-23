@@ -574,14 +574,19 @@ reports are one string. The log line at the top of every run names it,
 whichever mode the run takes — the point of that is a log from a machine nobody
 can look at, which should say which build produced it without being asked.
 
-Releases are tagged `v<APP_VERSION>` on GitHub, and a release carries the
-**source** — GitHub's own archives of that tag — and no built exe. That is
-deliberate rather than unfinished. The exe is unsigned, and this machine's
-endpoint agents log a fresh unsigned binary the moment it is *written* (see
-[Not the supported path](#not-the-supported-path-building-an-exe)), so attaching
-one to a release would ship the console noise along with the file. The
-supported way to run from a checkout is the venv, and the appendix says what an
-exe would need before it could be handed to anyone.
+Releases are tagged `v<APP_VERSION>` on GitHub. Since v1.1.0 a release
+also carries the **installer** (`RotmanLSMCalendar-Setup-<version>.exe`)
+with its **sha256** in the notes, so an office machine can fetch it
+without a checkout — that is the deployment this release exists for. The
+exe is still unsigned, and everything in [Not the supported
+path](#not-the-supported-path-building-an-exe) about what that means on
+a managed machine still applies to wherever the installer is *run*:
+download-and-run may be flagged exactly as build-and-run is. If a machine
+quarantines it, the fix is the allow-list request in
+`packaging/allow-list-request.md`, keyed on path or publisher, never on
+hash. Building on this machine is still not routine work: the detections
+land when the exe is *written*, so the less often the build runs, the
+fewer console lines name this account.
 
 ## Not the supported path: building an .exe
 
