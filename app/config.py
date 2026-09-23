@@ -24,7 +24,7 @@ APP_NAME = "Rotman LSM Calendar"
 # in the selftest report, and packaging\build.ps1 reads it out of this file and
 # hands it to the installer, so Add/Remove Programs and the app cannot end up
 # claiming different versions. Bump it when you ship a build.
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_SLUG = "RotmanLSMCalendar"
 
 # ── Paths ────────────────────────────────────────────────────────────────
