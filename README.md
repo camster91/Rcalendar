@@ -503,16 +503,20 @@ the cursor.
   date format is not evidence of a wrong window, and treating it as one would
   stop every scrape.
 - **And the export is made to prove its own window.** Reading the dates back
-  is a claim about the *items*, not about the render: the Generate click is
-  followed by a wait, and a click that missed leaves the page holding the
-  report it loaded with — the default window, not the one that was just set.
-  So every row's date is checked against the window asked for, and a row
-  outside it fails the run. A row cannot legitimately be outside: the report
-  is filtered to that window. This catches the stale report whose bounds
-  differ — the untouched default, the previous window, a clamped date. It
-  cannot catch a stale report that happens to hold exactly the requested
-  window, which is the content a fresh render would have produced and so
-  loses nothing.
+  is a claim about the *items*, not about the render: a Generate click that
+  missed leaves the page holding the report it loaded with — the previous
+  scrape's window, persisted in APEX session state, not the one that was
+  just set. Two things close that. The click is proven by the page's
+  **per-render token** (`p_page_submission_id`, measured on the live page
+  2026-09-23): it changes on every render, even a content-identical one,
+  so an unchanged token means Generate produced no render and the result
+  is adds-only — nothing is deleted off it. And every row's date is
+  checked against the window asked for, and a row outside it fails the
+  run; a row cannot legitimately be outside: the report is filtered to
+  that window. Together the two cover the case neither could alone: the
+  date check catches a stale report whose bounds differ, and the token
+  catches the stale report whose bounds sit inside the requested window,
+  where every row is a date the window could legitimately hold.
 - Some bookings carry a slot index with no recoverable real time; those
   show as all-day rather than a wrong hour. Guessing would be worse. The
   same rule covers a 12-hour time: `2:00 PM` is read as 14:00 rather than
