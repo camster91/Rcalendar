@@ -496,9 +496,14 @@ browser; it is seeded in `app/config.py` and the server is the single source.
 `web/list.html` reads **and writes** `rooms`, `q` and `groups`, so a copied link
 lands correctly there and the URL stays shareable as you filter. It has no panel
 of its own — giving it one would mean a second implementation of every filter,
-for the secondary page — but the two pages apply the same three filters the same
+for the secondary page — and the two pages apply the same three filters the same
 way (ANDed across, OR'd within), so a link means the same thing whichever opens
-it.
+it. The one case the pages model differently — a group is shorthand for a room
+selection on the calendar, a filter in its own right on the list — has one
+precedence rule: when a link names both `rooms` and `groups`, `rooms` is the
+more specific statement on either page, and the list writes the AND of its own
+two filters into `rooms=` rather than emit a pair that could disagree. A
+`groups`-only link still means the group on both pages.
 
 ## Keyboard
 

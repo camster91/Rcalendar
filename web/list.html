@@ -219,9 +219,12 @@ document.addEventListener('click',e=>{
 });
 
 // ── SELECTION ──
-// Multi-select groups. A group is its own filter, ANDed with rooms and the
-// search text, and OR'd with the other selected groups — the same rule the
-// calendar applies, so a link carrying groups lands on the same bookings.
+// Multi-select groups. On this page a group is a filter in its own right,
+// ANDed with the rooms and the search text, and OR'd with the other selected
+// groups — a different rule from the calendar's, where a group is shorthand
+// for a room selection and rooms= wins a link that names both. The two rules
+// still meet in the URL: writeURL resolves this page's AND into rooms=
+// before the link is written, so it lands the same way either way.
 function toggleGroup(g){
   if(!g)activeGroups.clear();
   else{if(activeGroups.has(g))activeGroups.delete(g);else activeGroups.add(g);}
@@ -370,8 +373,10 @@ function render(){
   let evts=sortedEvents().filter(e=>{
     // Rooms, groups and the search box are each a filter, so they AND; several
     // selected rooms or groups OR, because picking two of a thing means either.
-    // Matches applyFilters on the calendar, which is what lets a link carry a
-    // filter between the two pages and land on the same bookings.
+    // This is not the calendar's rule — its groups expand into rooms — but the
+    // two agree on what a link means, because writeURL writes this AND's
+    // result into rooms= rather than a pair of params each page would read
+    // its own way.
     if(activeRooms.size&&!activeRooms.has(e.room))return false;
     if(activeGroups.size){
       let ok=false;
@@ -422,12 +427,29 @@ document.addEventListener('keydown',e=>{if(document.activeElement.tagName==='INP
 // free-at controls, and the filter panel is deliberately not duplicated here —
 // that would be a second implementation of everything, for the secondary page.
 function readURL(){
+  // ctx.groups is the groups *object*, keyed by parseFilters itself — the
+  // calendar passes GROUPS, and this page used to pass Object.keys(GROUPS),
+  // which parseFilters keyed a second time into ["0","1"]. Every group a URL
+  // carried was validated against indices, dropped, and the link that said
+  // groups=North listed the whole building here while the calendar showed
+  // North's rooms.
   const f=parseFilters(
     Object.fromEntries(new URLSearchParams(location.search)),
-    {rooms:ROOMS, groups:Object.keys(GROUPS)}
+    {rooms:ROOMS, groups:GROUPS}
   );
+  // rooms= is authoritative when a link names both params — the calendar's
+  // own precedence, and it needs to be this page's too: the calendar's
+  // groups are selection shorthand, so it can select North and then add a
+  // room outside it, and that tab link must show the same bookings here as
+  // it does there. The group still comes back, but only where it cannot
+  // change the answer: rooms inside the group AND idempotently, so the
+  // common tab trip lands with its group still lit as a live filter, and
+  // only a room set the group would narrow is read as rooms= alone.
+  const inside=f.rooms&&f.groups
+    ?f.rooms.every(r=>f.groups.some(g=>(GROUPS[g]||[]).includes(r)))
+    :false;
   activeRooms=new Set(f.rooms||[]);
-  activeGroups=new Set(f.groups||[]);
+  activeGroups=new Set(f.rooms&&!inside?[]:(f.groups||[]));
   searchQ=f.q;
   document.getElementById('search').value=f.q;
 }
@@ -435,7 +457,26 @@ function readURL(){
 // step and leaving the page takes a dozen presses. Same rule as the calendar.
 function writeURL(){
   const p=new URLSearchParams();
-  if(activeRooms.size&&activeRooms.size<ROOMS.length)p.set('rooms',[...activeRooms].join(','));
+  // rooms= names the rooms this screen shows, which is not always the picked
+  // set: a live group filter ANDs with the room selection here, and the URL
+  // cannot say "these rooms AND this group" — parseFilters reads an empty
+  // rooms= as "no opinion", and a link carrying both params meant something
+  // different on each page anyway (the calendar takes rooms= as the more
+  // specific statement and shows it; this page ANDed the two, sometimes down
+  // to nothing). So the AND's result is what gets written: both pages then
+  // land on the same bookings, and this page's group filter is idempotent
+  // against a room set drawn from inside it.
+  //
+  // The one state no URL can carry: picked rooms the group excludes
+  // outright. The intersection is empty, "no rooms" is not sayable, so the
+  // link falls back to the group alone — the nearest state the shared
+  // vocabulary has.
+  let rooms=[...activeRooms];
+  if(activeRooms.size&&activeGroups.size){
+    const inG=new Set();activeGroups.forEach(g=>(GROUPS[g]||[]).forEach(r=>inG.add(r)));
+    rooms=rooms.filter(r=>inG.has(r));
+  }
+  if(rooms.length&&rooms.length<ROOMS.length)p.set('rooms',rooms.join(','));
   if(activeGroups.size)p.set('groups',[...activeGroups].join(','));
   if(searchQ)p.set('q',searchQ);
   const qs=p.toString();

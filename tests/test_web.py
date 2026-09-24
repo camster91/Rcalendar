@@ -1248,6 +1248,125 @@ def test_list_reads_the_calendars_link(browser, base: str) -> None:
         page.close()
 
 
+def test_a_link_with_rooms_and_groups_means_one_thing(browser, base: str) -> None:
+    """rooms= and groups= together used to mean something different per page.
+
+    The list ANDs a group with the room selection; the calendar takes rooms=
+    as the more specific statement and shows it, group or no group. A link
+    this page wrote -- 157 picked with North (142 only) active -- showed
+    nothing here and 157's booking on the calendar, and a link the calendar
+    wrote -- North, then a room outside it added -- showed 142's two
+    bookings here and three there. Both directions now agree: writeURL
+    materializes this page's AND into rooms=, and readURL gives rooms= the
+    same precedence the calendar does, restoring the group wherever that
+    cannot change the answer.
+
+    The reload legs also caught an older bug on the way past: this page
+    passed Object.keys(GROUPS) where parseFilters expects the groups object
+    and keys it itself, so every group a URL carried was validated against
+    array indices, dropped, and groups= had never worked here at all.
+    """
+    # The shape the URL cannot carry: a picked room the live group excludes.
+    # The intersection is empty, and an empty rooms= is "no opinion", not
+    # "no rooms" -- so the link falls back to the group, the nearest state
+    # the shared vocabulary can say.
+    page = open_page(browser, base, "/list")
+    try:
+        page.evaluate(
+            """() => [...document.querySelectorAll('#gbar .gb')]
+                 .find(b => b.textContent === 'North').click()"""
+        )
+        page.select_option("#roomFilter", "157")
+        check("list: a room the group excludes is filtered out",
+              events_shown(page), 0)
+        query = page.evaluate(
+            "() => Object.fromEntries(new URLSearchParams(location.search))")
+        check("list: the link names the group", query.get("groups"), "North")
+        check("list: the link does not name the excluded room",
+              query.get("rooms"), None)
+        check("list: the calendar tab carries that same query",
+              page.eval_on_selector("#tab-cal", "el => el.getAttribute('href')"),
+              "/?groups=North")
+    finally:
+        page.close()
+
+    # That link, read back by both pages: one answer -- 142's two bookings.
+    for path in ("/?groups=North", "/list?groups=North"):
+        page = open_page(browser, base, path)
+        try:
+            check(f"the group link means the same thing on {path}",
+                  events_shown(page), 2)
+        finally:
+            page.close()
+
+    # A room inside the group materializes to itself, so both params stay --
+    # and still cannot disagree, because the group filter is idempotent
+    # against a room set drawn from inside it.
+    page = open_page(browser, base, "/list")
+    try:
+        page.evaluate(
+            """() => [...document.querySelectorAll('#gbar .gb')]
+                 .find(b => b.textContent === "Dean's Suite").click()"""
+        )
+        page.select_option("#roomFilter", "157")
+        check("list: a room inside the group still shows",
+              events_shown(page), 1)
+        query = page.evaluate(
+            "() => Object.fromEntries(new URLSearchParams(location.search))")
+        check("list: the intersection is what rooms= carries",
+              query.get("rooms"), "157")
+        check("list: the group stays named, for the chips",
+              query.get("groups"), "Dean's Suite")
+    finally:
+        page.close()
+
+    # And that both-params link lands the same way on both pages. (The group
+    # name is percent-encoded by hand -- goto is not a form serializer, and
+    # a raw space in a URL is not this suite's idea of a fixture.)
+    for path in ("/?rooms=157&groups=Dean%27s%20Suite",
+                 "/list?rooms=157&groups=Dean%27s%20Suite"):
+        page = open_page(browser, base, path)
+        try:
+            check(f"the materialized link means the same thing on {path}",
+                  events_shown(page), 1)
+        finally:
+            page.close()
+
+    # The chips follow the same rule. Inside the group the AND cannot change
+    # the answer, so the filter the user was looking at comes back live;
+    # outside it, rooms= speaks for itself and the group stays off.
+    def group_pressed(path: str, name: str) -> str:
+        page = open_page(browser, base, path)
+        try:
+            return page.evaluate(
+                """(name) => {
+                     const b = [...document.querySelectorAll('#gbar .gb')]
+                       .find(el => el.textContent === name);
+                     return b ? b.getAttribute('aria-pressed') : null;
+                   }""", name)
+        finally:
+            page.close()
+
+    check("list: a group its rooms lie inside comes back live",
+          group_pressed("/list?rooms=157&groups=Dean%27s%20Suite",
+                        "Dean's Suite"), "true")
+    check("list: a group its rooms leave comes back off",
+          group_pressed("/list?rooms=142,157&groups=North", "North"), "false")
+
+    # The shape the calendar itself writes when its rooms go outside its
+    # group -- North selected, then a room outside North added, which its
+    # shorthand model allows. rooms= is the more specific statement there,
+    # and the same link must not be ANDed down to 142's bookings here.
+    for path in ("/?rooms=142,157&groups=North",
+                 "/list?rooms=142,157&groups=North"):
+        page = open_page(browser, base, path)
+        try:
+            check(f"rooms outside the group win on {path}",
+                  events_shown(page), 3)
+        finally:
+            page.close()
+
+
 # ── Runner ───────────────────────────────────────────────────────────────
 
 # Listed rather than called one by one so the run can report a crash as a
@@ -2264,6 +2383,7 @@ TESTS = [
     test_week_view_owns_all_seven_of_its_days,
     test_nav_steps_the_view_you_are_looking_at,
     test_list_reads_the_calendars_link,
+    test_a_link_with_rooms_and_groups_means_one_thing,
     test_chips_do_not_outlive_the_filters_they_name,
     test_room_list_clicks_select_one_room_at_a_time,
     test_a_renamed_group_does_not_eat_its_neighbour,
