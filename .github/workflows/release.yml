@@ -1,0 +1,169 @@
+# The release build, run where compiling an unsigned exe costs nothing.
+#
+# packaging/build.ps1 is deliberately "not the supported path" for *running*
+# the app, but the installer still has to exist somewhere: an office machine
+# with no checkout needs a Setup exe and a sha256. Until v1.1.1 that build ran
+# on the developer's machine, where every build writes two SentinelOne
+# console entries (the flag lands when the unsigned exe is *written*, not
+# when it runs). A GitHub runner writes it on a machine no console watches.
+#
+# On tag push (v<APP_VERSION>), one job:
+#   1. the seven suites, because a tag push does not run tests.yml (its
+#      `branches: [master]` filter matches pushes, not tags) and a release
+#      must not be built from code the suites have not passed;
+#   2. packaging/build.ps1, which compiles the onedir bundle and then the
+#      Inno Setup installer from it -- the same script as the local path,
+#      no second build process to drift;
+#   3. the packaged exe's own --selftest (the "does the bundle work" half of
+#      verify-build.ps1; the "does it survive this machine's agents" half
+#      has no meaning on a runner with no agents -- the survival question
+#      lives on whatever machine the installer is eventually run on);
+#   4. the GitHub release: the Setup exe, a sha256 sidecar, and the notes
+#      from packaging/release-notes.md with the hash substituted in.
+#      That file is the *whole* release body -- anything in it ships, so the
+#      guidance about maintaining it lives here and not there. It is the
+#      current release's notes, not a template history: update it as part
+#      of the change being released, the same as APP_VERSION.
+#
+# A version mismatch fails the job rather than the release: the tag has to
+# name the APP_VERSION that built the exe, or Add/Remove Programs on an
+# installed machine claims something the tag never shipped.
+#
+# Note the loud-failure guarantee in build.ps1: if ISCC is not found the
+# script exits 0 *without an installer*, and this workflow then throws in
+# the release step for the missing Setup exe -- so an Inno Setup upgrade on
+# the runner that changes the install path cannot publish a release with no
+# artifact in it.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # build.ps1 hard-requires .venv\Scripts\python.exe -- that is the
+      # layout it drives PyInstaller with -- so CI creates the same venv
+      # rather than a second, divergent build environment. The packer is
+      # installed here for the same reason requirements.txt leaves it out
+      # everywhere else: this job is the one place that builds.
+      - name: Create the venv and install dependencies
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+
+      # Before the suites, not only before the build: test_web drives a real
+      # browser and fails loudly when Chromium is absent rather than skipping,
+      # and build.ps1's own install step runs after them.
+      - name: Install Chromium for Playwright
+        run: .venv\Scripts\python.exe -m playwright install chromium
+
+      # The compiler end of build.ps1. choco installs Inno Setup 6 into
+      # Program Files (x86), which is one of the paths build.ps1 searches.
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: The tag must name the version being built
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $app = (& .venv\Scripts\python.exe -c "import app.config as c; print(c.APP_VERSION)").Trim()
+          if ($tag -ne $app) {
+            throw "tag ${{ github.ref_name }} names version $tag but APP_VERSION is $app"
+          }
+          Write-Host "tag matches APP_VERSION: $app"
+
+      # One step per suite, as in tests.yml, so a red run names the suite.
+      # The venv python, not the system one: these are the checks the very
+      # interpreter that gets frozen is about to pass.
+      - name: test_parse
+        run: .venv\Scripts\python.exe tests\test_parse.py
+
+      - name: test_smoke
+        run: .venv\Scripts\python.exe tests\test_smoke.py
+
+      - name: test_changes
+        run: .venv\Scripts\python.exe tests\test_changes.py
+
+      - name: test_filters
+        run: .venv\Scripts\python.exe tests\test_filters.py
+
+      - name: test_session
+        run: .venv\Scripts\python.exe tests\test_session.py
+
+      - name: test_worker
+        run: .venv\Scripts\python.exe tests\test_worker.py
+
+      - name: test_web
+        run: .venv\Scripts\python.exe tests\test_web.py
+
+      - name: Build the bundle and the installer
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build.ps1
+
+      # The selftest half of verify-build.ps1, minus the dwell and the
+      # FileSystemWatcher: those watch for a managed machine deleting the
+      # bundle, and this runner is not one. Start-Process because the exe is
+      # windowed and `& exe` does not wait for a WinExe to finish.
+      - name: The packaged build's own --selftest
+        env:
+          LSM_DATA_DIR: ${{ runner.temp }}\lsm-release-selftest
+          LSM_PORT: "8799"
+        run: |
+          $dist = "dist\RotmanLSMCalendar"
+          New-Item -ItemType Directory -Force -Path $env:LSM_DATA_DIR | Out-Null
+          $proc = Start-Process -FilePath "$dist\RotmanLSMCalendar.exe" `
+            -ArgumentList "--selftest" -WorkingDirectory $dist -PassThru
+          $deadline = (Get-Date).AddSeconds(120)
+          while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not $proc.HasExited) { throw "selftest did not exit within 120s" }
+          if ($proc.ExitCode -ne 0) { throw "selftest exited $($proc.ExitCode)" }
+          $st = Get-Content (Join-Path $env:LSM_DATA_DIR "selftest.json") -Raw |
+            ConvertFrom-Json
+          $bad = @($st.checks.PSObject.Properties | Where-Object { -not $_.Value.ok })
+          if ($bad.Count -gt 0) {
+            $bad | ForEach-Object {
+              Write-Host "FAIL $($_.Name): $($_.Value.detail)"
+            }
+            throw "$($bad.Count) selftest check(s) failed"
+          }
+          Write-Host "selftest: all $($st.checks.PSObject.Properties.Name.Count) checks ok (version $($st.version), frozen=$($st.frozen))"
+
+      - name: Release notes with the installer's sha256
+        run: |
+          $setup = Get-ChildItem "dist\RotmanLSMCalendar-Setup-*.exe" |
+            Sort-Object LastWriteTime | Select-Object -Last 1
+          if (-not $setup) {
+            throw "no Setup exe in dist\ -- build.ps1 exited without building an installer"
+          }
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash
+          $body = (Get-Content "packaging\release-notes.md" -Raw).Replace(
+            "SHA256_PLACEHOLDER", $hash)
+          Set-Content "release_body.md" -Value $body -NoNewline -Encoding utf8
+          "$hash  $($setup.Name)" | Set-Content "dist\sha256.txt" -Encoding ascii
+          Write-Host "$($setup.Name)"
+          Write-Host "sha256 $hash"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist\RotmanLSMCalendar-Setup-*.exe
+            dist\sha256.txt
+          body_path: release_body.md
+          fail_on_unmatched_files: true

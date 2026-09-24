@@ -126,10 +126,18 @@ if (Test-Path $StaleOnefile) {
 # the one failure this ordering rules out. If Inno Setup is absent the folder
 # build is still complete and is still usable on its own, so this is a warning
 # with the fix in it rather than a failure.
+# The search covers 6 and 7: installer.iss is written to compile under both
+# (see its ArchitecturesAllowed note), and which one a machine or a CI
+# runner has is not something to assume. A missing ISCC is a warning in this
+# script and a hard failure in .github/workflows/release.yml, which throws
+# when the installer the release ships is not there.
 $Iscc = @(
     "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 7\ISCC.exe"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not $Iscc) {

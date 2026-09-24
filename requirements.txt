@@ -3,7 +3,6 @@ flask>=3.0
 pywebview>=5.0
 pystray>=0.19
 pillow>=10.0
-icalendar>=5.0.10
 
 # No packer here on purpose. The app runs from the venv; building the exe is
 # not the supported path (see README.md). Install pyinstaller yourself if you

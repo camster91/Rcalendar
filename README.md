@@ -628,9 +628,19 @@ a managed machine still applies to wherever the installer is *run*:
 download-and-run may be flagged exactly as build-and-run is. If a machine
 quarantines it, the fix is the allow-list request in
 `packaging/allow-list-request.md`, keyed on path or publisher, never on
-hash. Building on this machine is still not routine work: the detections
-land when the exe is *written*, so the less often the build runs, the
-fewer console lines name this account.
+hash.
+
+Since v1.1.1 the release is **built by GitHub Actions, not here**:
+pushing the tag runs `.github/workflows/release.yml`, which runs the
+seven suites, runs `packaging/build.ps1` on the runner, runs the packaged
+exe's own `--selftest`, and publishes the release with the installer, a
+sha256 sidecar and the notes from `packaging/release-notes.md`. The
+console-line cost below is what made that move: a runner writes no
+unsigned exe on any managed machine, so a release no longer spends this
+account's good name in someone else's console. `build.ps1` remains for a
+local hand-off when you specifically need a folder build on a machine
+you control — the less often it runs here, the fewer console lines name
+this account.
 
 ## Not the supported path: building an .exe
 
