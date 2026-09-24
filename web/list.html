@@ -235,9 +235,9 @@ function syncGroupBtns(){
     const g=b.dataset.g;
     const on=!g?activeGroups.size===0:activeGroups.has(g);
     b.classList.toggle('on',on);
-    // The calendar's chips carry this; without it the selected group is
-    // signalled by colour alone, which is the one thing .on cannot say to
-    // anything that is not looking at the colour.
+    // Both pages' group buttons carry this; a selected group signalled by
+    // colour alone is the one thing .on cannot say to anything that is not
+    // looking at the colour.
     b.setAttribute('aria-pressed',on?'true':'false');
   });
 }

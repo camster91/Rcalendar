@@ -533,7 +533,15 @@ function roomClick(r,ev){
   else activeRooms=new Set([r]);
   syncChips();applyFilters();
 }
-function toggleRoom(r){if(activeRooms.has(r))activeRooms.delete(r);else activeRooms.add(r);syncChips();applyFilters();}
+// The accumulate path can delete its way to nothing — Ctrl-clicking the last
+// selected room out — and an empty selection is the blank calendar with no way
+// back, so it falls back to every room, the same undo the click path above it
+// lands on.
+function toggleRoom(r){
+  if(activeRooms.has(r)){activeRooms.delete(r);if(!activeRooms.size)activeRooms=new Set(ROOMS);}
+  else activeRooms.add(r);
+  syncChips();applyFilters();
+}
 // Scoped to #rchips. The filter panel's group editor also draws room toggles,
 // and a global .rc selector would repaint those from the room filter — which is
 // a different question from group membership. Same for the group buttons.
@@ -577,14 +585,24 @@ function toggleGroup(g){
   if(!g){activeGroups.clear();activeRooms=new Set(ROOMS);}
   else{
     if(activeGroups.has(g))activeGroups.delete(g);else activeGroups.add(g);
-    activeRooms=roomsForGroups();
+    // Removing the last group used to recompute the rooms from the now-empty
+    // group set: an empty selection, the blank calendar with no way back that
+    // roomClear falls back from, reached by clicking a chip off. No groups
+    // left means every room — the All button lit beside the blank was the
+    // screen saying so the whole time.
+    activeRooms=activeGroups.size?roomsForGroups():new Set(ROOMS);
   }
   syncGroupBtns();syncChips();applyFilters();
 }
 function syncGroupBtns(){
   document.querySelectorAll('#gbar .gb').forEach(b=>{
     const g=b.dataset.g;
-    b.classList.toggle('on',!g?activeGroups.size===0:activeGroups.has(g));
+    const on=!g?activeGroups.size===0:activeGroups.has(g);
+    b.classList.toggle('on',on);
+    // The same state .on shows, said to a screen reader: colour alone cannot
+    // say "this group is on". The room chips already carried this (syncChips);
+    // the group buttons are the ones a URL can light, so they say it too.
+    b.setAttribute('aria-pressed',on?'true':'false');
   });
 }
 
@@ -1409,6 +1427,13 @@ function groupEditorRow(name){
     const v=inp.value.trim();
     if(v===name)return;
     if(!v){toast('⚠️ A group needs a name');inp.value=name;return;}
+    // The comma is the shared-link vocabulary's join *and* its split: every
+    // writer comma-joins group names into groups=, and parseFilters splits
+    // on the same character, so a name with one drops out of the link on
+    // read-back as though the filter never existed. Refused here because the
+    // server has to reject the whole map, and one bad name should not cost
+    // the user every other group's edits.
+    if(v.includes(',')){toast('⚠️ Commas are not allowed in a group name');inp.value=name;return;}
     if(GEDIT[v]){toast('⚠️ A group called “'+v+'” already exists');inp.value=name;return;}
     GEDIT[v]=GEDIT[name];delete GEDIT[name];name=v;
   };
@@ -1606,10 +1631,16 @@ function renderPresets(){
 // announced Applied "undefined".
 function applyPreset(p){
   const f=parseFilters((p&&p.filters)||{},{rooms:ROOMS,groups:GROUPS});
-  // No room list means every room, not none. An empty set here is what blanked
-  // the calendar for a preset that simply had not recorded any rooms.
-  activeRooms=new Set(f.rooms||ROOMS);
   activeGroups=new Set(f.groups||[]);
+  // No room list means the group selection implies its rooms — the same
+  // inference readURL makes, through the same helper. Without it, a preset
+  // naming a group and no rooms lit the group over every room, a state the
+  // page's own writer cannot express: writeURL drops rooms= when every room
+  // is on but still writes groups=, so the link said "North alone" while the
+  // screen showed the building, and it narrowed on reload. With neither
+  // named, every room — an empty set here is what blanked the calendar for
+  // a preset that simply had not recorded any rooms.
+  activeRooms=f.rooms?new Set(f.rooms):(activeGroups.size?roomsForGroups():new Set(ROOMS));
   searchQ=f.q;
   document.getElementById('q').value=f.q;
   advFloors=new Set(f.floors||[]);

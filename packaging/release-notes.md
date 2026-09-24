@@ -29,7 +29,39 @@ shared `?groups=North` link listed the whole building there while the
 calendar showed North's rooms. Group links now mean the group on both
 pages.
 
-The test suite now stands at 799 assertions across seven suites; each fix
+### The calendar cannot be blanked by a chip any more
+
+Two paths could leave zero rooms selected — a state the calendar itself
+treats as unsayable, and the one roomClear's fallback exists to prevent.
+Turning the last selected group off recomputed the room selection from
+the now-empty group set and blanked the calendar while the All button
+lit beside it; Ctrl-clicking the last selected room out did the same
+through the accumulate path. Both now fall back to every room, and a
+restored group link (rooms win, the group chip lit but inert) unclicks
+without taking the rooms with it.
+
+### Group buttons speak their pressed state, on both pages
+
+The calendar's sidebar group buttons showed the selection with colour
+alone. They carry `aria-pressed` now, like the room chips always did and
+the list page's group buttons already did.
+
+### A preset that names only a group selects that group's rooms
+
+Applying a preset that named a group but no rooms lit the group over the
+whole building — a state the page's own link writer cannot express, so
+the URL the screen rewrote itself to narrowed to the group on reload,
+and the List tab opened on a different calendar than the one behind it.
+Presets now make the same rooms-from-group inference a link does.
+
+### Commas are refused in group names
+
+The comma is the shared-link vocabulary's join *and* its split, so a
+group name containing one was silently dropped out of every link it
+landed in — the group worked in-session and vanished from the URL.
+Refused at the editor and at the API, with the reason named.
+
+The test suite now stands at 821 assertions across seven suites; each fix
 was verified by breaking it on purpose first.
 
 ## Install (per-user, no UAC)

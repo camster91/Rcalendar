@@ -850,6 +850,13 @@ def valid_groups(groups: Any) -> bool:
     for name, rooms in groups.items():
         if not isinstance(name, str) or not name.strip():
             return False
+        # A comma cannot survive the shared-link vocabulary: the writers
+        # comma-join group names into groups= and parseFilters splits on the
+        # same character, so a name with one is silently dropped on read-back
+        # — the whole map is rejected because one bad name must not slip in
+        # beside a save the user cannot see the reason for.
+        if "," in name:
+            return False
         if not isinstance(rooms, list):
             return False
         if not all(isinstance(r, str) and r.strip() for r in rooms):

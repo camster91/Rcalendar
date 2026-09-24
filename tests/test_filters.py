@@ -536,8 +536,13 @@ def test_groups() -> None:
     print("\ngroups — validation, atomicity, and the fallback copy")
     client = create_app(StubOrch()).test_client()
 
+    # The last one is the shared-link vocabulary: the writers comma-join
+    # group names into groups= and parseFilters splits on the same
+    # character, so a name with a comma drops out of every link it lands in
+    # as though the filter never existed.
     for bad in ({}, [], "Classroom", {"": ["142"]}, {"North": "142"},
-                {"North": [""]}, {"North": [7]}):
+                {"North": [""]}, {"North": [7]},
+                {"Study, quiet": ["142"]}):
         check(f"rejected: {bad!r}"[:60],
               client.post("/api/room-groups", json=bad).status_code, 400)
 

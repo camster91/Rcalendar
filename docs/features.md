@@ -137,7 +137,7 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 799 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Seven suites, 821 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The seven suites in CI | `.github/workflows/tests.yml` |
 | The release build: suites → `build.ps1` → the exe's `--selftest` → the GitHub release, on the tag push, off the managed machine | `.github/workflows/release.yml` |

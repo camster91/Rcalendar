@@ -390,7 +390,15 @@ wired to the same filter state rather than a copy of it.
   that *is* the whole selection undoes it back to every room rather than
   blanking the calendar — an empty selection has no way back, the same
   fallback the `clear` link documents. **clear** next to the *Rooms* heading
-  returns to every room.
+  returns to every room. Ctrl-clicking the last selected room *out* falls
+  back the same way: both remove paths land on every room, never on nothing.
+- **Groups** — one button per group, plus All: **clicking a group selects its
+  rooms** — a group is shorthand for a room selection on this page — and
+  clicking it again takes the filter off. Turning the last group off used to
+  recompute the selection from the now-empty group set and blank the
+  calendar with no way back; it lands on every room now, the same fallback
+  the room picker's paths use. The buttons carry `aria-pressed`, so a lit
+  group is announced rather than colour alone.
 
 **The Active filters row beside *Rooms* is derived from the filter state, not a
 history of what you added.** That is the whole point of it: `readURL` and a
@@ -485,13 +493,19 @@ follow the app rather than one browser profile. Two limits come with that: at
 most **20** are kept — saving a 21st drops the oldest — and a name must be
 **1–60 characters**, checked on the server as well as in the panel. Saving
 under a name that already exists overwrites that one rather than adding a
-second.
+second. Applying one makes the same inference a link does: a filter that names
+a group but no rooms selects that group's rooms, so what lands on the calendar
+is what its URL and the List tab both say it is.
 
 The groups are editable in the panel and saved to `room_groups.json` in one
 atomic write, so an interrupted save cannot leave truncated JSON behind and
 take every group with it. Saving replaces the whole set — the file is the
 source of truth — so the calendar no longer synthesizes `Classroom` in the
 browser; it is seeded in `app/config.py` and the server is the single source.
+A group name cannot contain a **comma**: the shared-link vocabulary joins and
+splits group names on that one character, so a name with it would drop out of
+every link it landed in. Refused in the panel, at the field, and again on the
+server — the whole map is checked in one place.
 
 `web/list.html` reads **and writes** `rooms`, `q` and `groups`, so a copied link
 lands correctly there and the URL stays shareable as you filter. It has no panel

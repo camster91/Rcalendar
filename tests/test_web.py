@@ -219,6 +219,11 @@ def seeded_presets() -> None:
     store.save_preset("Two rooms", {"rooms": "142,147"})
     store.save_preset("Junk", {"seats": "abc", "mins": "nonsense",
                                "free": "afternoon", "panopto": "yes"})
+    # A group and no rooms at all — the one shape applyPreset and readURL
+    # could disagree about. A preset saved from the UI always carries the
+    # rooms its group selection implied; only a hand edit produces this, and
+    # a hand edit is exactly what load_presets passes through untouched.
+    store.save_preset("Group only", {"groups": ["North"]})
 
 
 def seeded_groups() -> None:
@@ -754,6 +759,23 @@ def test_room_list_clicks_select_one_room_at_a_time(browser, base: str) -> None:
         page.keyboard.press("Control+Enter")
         check("rooms: Ctrl+Enter accumulates, like a Ctrl-click",
               selection(), "142,147")
+
+        # The accumulate path can delete its way to nothing: Ctrl-clicking
+        # the last selected room out used to leave the set empty and the
+        # calendar blank, because only the plain-click undo had the fallback.
+        page.click(chips("142"), modifiers=["Control"])
+        check("rooms: Ctrl-clicking a room out of a pair keeps the other",
+              selection(), "147")
+        page.click(chips("147"), modifiers=["Control"])
+        check("rooms: Ctrl-clicking the last room out falls back to all",
+              page.evaluate("() => activeRooms.size === ROOMS.length"), True)
+        # From the all-rooms state a Ctrl-click toggles the room it names out,
+        # exactly as it does from any other — the fallback did not wedge the
+        # path into a special case.
+        page.click(chips("142"), modifiers=["Control"])
+        check("rooms: ...and the fallback state toggles like any other",
+              page.evaluate("() => activeRooms.size === ROOMS.length - 1"
+                            " && !activeRooms.has('142')"), True)
     finally:
         page.close()
 
@@ -1367,6 +1389,106 @@ def test_a_link_with_rooms_and_groups_means_one_thing(browser, base: str) -> Non
             page.close()
 
 
+def test_removing_the_last_group_keeps_the_calendar_visible(browser, base: str) -> None:
+    """toggleGroup's deselect used to recompute the rooms from an empty group set.
+
+    The group set implies the room set on this page, so removing the last
+    selected group recomputed roomsForGroups() from nothing — the empty
+    selection this page treats as unsayable everywhere else — and the chip
+    that was meant to turn a filter off blanked the calendar instead, with the
+    All button lit beside it claiming the screen showed everything. The same
+    blank was reachable through a restored link: rooms=142,157&groups=North
+    lights North inert, and clicking it took the two rooms away rather than
+    unlatching the group. No groups left now means every room — the same
+    fallback roomClear documents — and the buttons say their pressed state,
+    which the sidebar's group buttons never did.
+    """
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    try:
+        full = events_shown(page)
+        page.click('#gbar .gb[data-g="North"]')
+        check("groups: North selects its own rooms",
+              page.evaluate("() => [...activeRooms].join(',')"), "142")
+        check("groups: ...and the calendar narrows with it",
+              events_shown(page), 2)
+        check("groups: the chip reads as pressed",
+              page.eval_on_selector('#gbar .gb[data-g="North"]',
+                                    "el => el.getAttribute('aria-pressed')"),
+              "true")
+
+        page.click('#gbar .gb[data-g="North"]')
+        check("groups: removing the last group falls back to every room",
+              page.evaluate("() => activeRooms.size === ROOMS.length"), True)
+        check("groups: ...and the calendar is what it was",
+              events_shown(page), full)
+        check("groups: the chip reads as released",
+              page.eval_on_selector('#gbar .gb[data-g="North"]',
+                                    "el => el.getAttribute('aria-pressed')"),
+              "false")
+        check("groups: and All reads as pressed when no group is on",
+              page.eval_on_selector('#gbar .gb[data-g=""]',
+                                    "el => el.getAttribute('aria-pressed')"),
+              "true")
+    finally:
+        page.close()
+
+    # The restored link lights North inert (rooms win), so clicking it must
+    # unlatch the group and leave the rooms alone — not take them away.
+    page = open_page(browser, base, "/?rooms=142,157&groups=North")
+    try:
+        page.click('#gbar .gb[data-g="North"]')
+        check("groups: a restored group unclicks without taking the rooms",
+              page.evaluate("() => activeRooms.size === ROOMS.length"), True)
+        check("groups: ...and the chip it left reads as released",
+              page.eval_on_selector('#gbar .gb[data-g="North"]',
+                                    "el => el.getAttribute('aria-pressed')"),
+              "false")
+    finally:
+        page.close()
+
+
+def test_a_preset_that_names_only_a_group_selects_its_rooms(browser, base: str) -> None:
+    """applyPreset used to restore the group without readURL's inference.
+
+    A preset naming a group and no rooms left every room active with the group
+    lit — a state this page's own writer cannot express: writeURL drops
+    rooms= when every room is on but still writes groups=, so the URL the
+    screen rewrote itself to meant North alone on reload, and the List tab
+    opened on North's bookings while the calendar behind it showed the whole
+    building. That is the cross-page disagreement the link fixes exist to
+    prevent, reached from a saved filter. readURL already infers the rooms
+    from the group; applyPreset now makes the same inference, through the
+    same helper.
+    """
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    try:
+        open_presets(page)
+        toast = apply_preset(page, "Group only")
+        ok("preset: it is applied by name", "Group only" in (toast or ""))
+        check("preset: the group's rooms are the selection",
+              page.evaluate("() => [...activeRooms].sort().join(',')"), "142")
+        check("preset: ...and its bookings are shown",
+              events_shown(page), 2)
+        check("preset: the group chip is lit",
+              page.eval_on_selector('#gbar .gb[data-g="North"]',
+                                    "el => el.classList.contains('on')"), True)
+        check("preset: the URL names the rooms too",
+              param(page, "rooms"), "142")
+        check("preset: the List tab agrees with the screen",
+              page.eval_on_selector("#tab-list", "el => el.getAttribute('href')"),
+              "/list?rooms=142&groups=North")
+    finally:
+        page.close()
+
+    # The same state read back from the URL it wrote means the same thing.
+    page = open_page(browser, base, "/?rooms=142&groups=North")
+    try:
+        check("preset: the link it wrote means the same thing on reload",
+              events_shown(page), 2)
+    finally:
+        page.close()
+
+
 # ── Runner ───────────────────────────────────────────────────────────────
 
 # Listed rather than called one by one so the run can report a crash as a
@@ -1492,6 +1614,16 @@ def test_a_renamed_group_does_not_eat_its_neighbour(browser, base: str) -> None:
         check("rename: ...and the rooms move with it",
               page.evaluate("() => (GEDIT['North Wing'] || []).join(',')"),
               "142")
+
+        # The comma is the shared link's join *and* its split: a name with one
+        # is dropped out of groups= on read-back, silently, as though the
+        # filter never existed. Refused at commit rather than at save, so one
+        # bad name cannot cost the other groups their edits.
+        text = rename_group(page, "North Wing", "Study, quiet")
+        ok("rename: a comma in the name is refused",
+           "not allowed" in (text or ""))
+        check("rename: ...and the group keeps the name it had",
+              group_names(page), "Dean's Suite|North Wing")
     finally:
         page.close()
 
@@ -2384,6 +2516,8 @@ TESTS = [
     test_nav_steps_the_view_you_are_looking_at,
     test_list_reads_the_calendars_link,
     test_a_link_with_rooms_and_groups_means_one_thing,
+    test_removing_the_last_group_keeps_the_calendar_visible,
+    test_a_preset_that_names_only_a_group_selects_its_rooms,
     test_chips_do_not_outlive_the_filters_they_name,
     test_room_list_clicks_select_one_room_at_a_time,
     test_a_renamed_group_does_not_eat_its_neighbour,
