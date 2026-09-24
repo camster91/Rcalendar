@@ -1,50 +1,52 @@
-# Rotman LSM Calendar v1.1.1
+# Rotman LSM Calendar v1.1.2
 
-A read-only viewer for Rotman LSM room bookings. This release cleans the
-interface, sharpens what a booking is called, and makes the app measurably
-faster on its hottest paths.
+A read-only viewer for Rotman LSM room bookings. This release fixes what a
+shared link means when it names both rooms and groups — and, on the way, a
+link's `groups=` parameter that had never worked on the list page at all.
 
 ## What's new
 
-### Titles, cleaned
-LSM stores a booking as `208/CIBC.1/A.MAHAJAN` — an internal code, the event
-name, and who booked it. Cards and list rows now print **CIBC.1 — A.MAHAJAN**:
-the code is dropped, the booker stays inline on the card, and extra segments
-travel with the booker (`007/PRE-TERM MTG/CHENG/D'ANGEL` → "PRE-TERM MTG —
-CHENG · D'ANGEL"). The parse runs on the way out, not at ingest — the raw
-title is what the change feed pairs bookings by — and search still matches
-the full stored title, so searching for any part of it works as before.
+### One meaning for a link, on both pages
 
-### Exports, removed
-The `.ics` and JSON downloads are gone, along with the code behind them. The
-list view's shareable URLs cover the sharing cases the downloads did; the
-`/download` endpoints no longer exist.
+The calendar and the list page model a room group differently — the
+calendar treats a group as shorthand for a room selection, the list treats
+it as a filter of its own. A link carrying both `rooms=` and `groups=`
+therefore meant different things depending on which page opened it: the
+same URL could show a room's bookings on the calendar and nothing at all
+on the list, or three bookings there and two here.
 
-### Faster under the hood
-- **Free-now drawer / free-at filter** no longer reads a rolling year of
-  bookings every 60-second poll — it reads only the day (or days) the answer
-  is about.
-- **Search suggestions** no longer read the whole table on every keystroke;
-  they're answered in SQL, and a suggestion now finds exactly what search
-  finds.
-- **The month grid** buckets bookings by day once per render instead of
-  scanning the full list once per cell.
-- **The list view** sorts with one collation, cached per sort key, instead of
-  re-sorting every filtered render.
+Both directions now agree. The list writes the combined result into
+`rooms=` instead of a pair of parameters each page would read its own way,
+and a link naming both is read the same way by both pages: the room list
+is the more specific statement, and the group returns as a live filter
+wherever it cannot change the answer.
+
+### `groups=` links, fixed on the list page
+
+Every link that named a group silently lost it on the list page — the
+group was validated against the wrong list of names and dropped, so a
+shared `?groups=North` link listed the whole building there while the
+calendar showed North's rooms. Group links now mean the group on both
+pages.
+
+The test suite now stands at 799 assertions across seven suites; each fix
+was verified by breaking it on purpose first.
 
 ## Install (per-user, no UAC)
 
-1. Download `RotmanLSMCalendar-Setup-1.1.1.exe` and run it. Windows may warn
-   that the publisher is unknown — the installer is unsigned. "More info →
-   Run anyway" is the way past it.
-2. First launch: use the tray item **Sign in to LSM** for the UofT SSO + Duo
-   sign-in. The app never stores a password; the browser profile holds the
-   session.
+1. Download `RotmanLSMCalendar-Setup-1.1.2.exe` and run it. Windows may
+   warn that the publisher is unknown — the installer is unsigned. "More
+   info → Run anyway" is the way past it.
+2. First launch: use the tray item **Sign in to LSM** for the UofT SSO +
+   Duo sign-in. The app never stores a password; the browser profile holds
+   the session.
 
-Your data folder (bookings database, groups, saved filters) carries over from
-1.1.0 untouched — the installer does not touch it.
+Your data folder (bookings database, groups, saved filters) carries over
+from 1.1.1 untouched — the installer does not touch it.
 
-This release was built and self-tested by GitHub Actions from tag v1.1.1;
-`sha256.txt` beside the installer carries the hash below.
+This release was built and self-tested locally — GitHub Actions ran out of
+included minutes, and the Actions release path remains the supported one;
+it will be used again once billing is restored. `sha256.txt` beside the
+installer carries the hash below.
 
 SHA-256: `SHA256_PLACEHOLDER`
