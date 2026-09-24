@@ -10,18 +10,16 @@
 # stacks as well, and app/dpapi.py guards them with sys.platform rather than
 # pretending to work elsewhere.
 #
-# Not yet verified, and the reason is now known rather than assumed. GitHub
-# registered this file as an active workflow (gh workflow list shows "tests
-# active"), so the YAML is accepted -- but the push that added it created no
-# run, because Actions is disabled at the repository level: the API reports
-# {"enabled": false}. Enable it and the next push runs the job:
+# Enabled 2026-09-24. The repo shipped with Actions disabled at the
+# repository level (the API reported {"enabled": false}), so the pushes
+# that added this file created no runs and the suites had been run on one
+# machine, by hand. The enable was:
 #
 #   gh api -X PUT repos/camster91/rotman-lsm-calendar/actions/permissions \
-#     -f enabled=true
+#     -F enabled=true
 #
-# Until that is done this is a configuration, not a check. Do not read a green
-# tick here as evidence the suites pass anywhere: they have been run on one
-# machine, by hand, 729 assertions and no failures.
+# (-F, not -f: the field is a boolean, and -f sends a string, which the
+# API rejects with a 422.)
 #
 # Every suite ends in `return 1 if FAIL else 0` and sys.exit(main()), so a
 # failure fails the step. That is the whole basis for trusting this: a suite
