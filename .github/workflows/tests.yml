@@ -1,4 +1,4 @@
-# The seven suites, run where the app actually runs.
+# The eight suites, run where the app actually runs.
 #
 # windows-latest, and not as a preference. app/main.py guards its
 # single-instance lock with msvcrt and returns -1 on a platform without file
@@ -73,6 +73,9 @@ jobs:
 
       - name: test_session
         run: python tests/test_session.py
+
+      - name: test_update
+        run: python tests/test_update.py
 
       - name: test_worker
         run: python tests/test_worker.py

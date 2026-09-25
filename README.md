@@ -22,7 +22,7 @@ cancels anything.
   tray ▸ Open Calendar · List View
          ● Connected to LSM   (a live label, not a button)
          Scrape Now · Sign in to LSM · Check Session
-         Open Data Folder · Open in Browser · Quit
+         Check for updates · Open Data Folder · Open in Browser · Quit
 ```
 
 ## How the session works
@@ -105,6 +105,31 @@ on every login, and `--tray` so no calendar window does either. The app
 comes up in the tray, scrapes at 06:00, and stays out of the way; the
 window opens from the tray's "Open Calendar".
 
+## Staying up to date
+
+The app checks the project's GitHub releases at startup and once a day after
+that, plus any time you ask it to — the tray's **Check for updates** item, or
+the *Updates* section in the Calendar sidebar. When a newer release is
+published, an amber banner appears in the toolbar and the sidebar offers
+**Install update**: the app downloads the release's installer, checks it
+against the `sha256.txt` the release itself published, and only then runs
+it — a download that does not match is never run. The installer asks the app
+to close when it is ready to copy files; your data folder is untouched
+throughout. *Skip this version* hides a release you declined until something
+strictly newer ships.
+
+Because the repository is private, the check needs a read-only GitHub token.
+Paste it once into the sidebar's *GitHub token…* row and it is stored the way
+`session.bin` is: DPAPI-encrypted, readable only by your Windows account on
+this machine, never displayed again, and — same refusal, same reason —
+**never written at all** when DPAPI is unavailable. Without a token the check
+fails softly with one honest sentence rather than pretending to work.
+
+The token travels as an `Authorization: Bearer` header on requests to
+`api.github.com` **only**. The installer download goes through the API's asset
+endpoint rather than the browser-facing redirect precisely so the header
+never has to survive one.
+
 ## Where the data lives
 
 Everything writable is under **`.\data`**, beside the checkout. Override it with
@@ -143,6 +168,7 @@ app/
   server.py      local Flask API
   main.py        entry point: window + tray
   dpapi.py       Windows at-rest encryption
+  updater.py     GitHub release check, verified download, installer launch
 web/             calendar.html, list.html, filters.js
 tests/           parser + end-to-end tests
 packaging/       setup, autostart, and the unsupported build
@@ -151,7 +177,10 @@ packaging/       setup, autostart, and the unsupported build
 `packaging/` holds `setup.ps1` and `install-autostart.ps1` — the two scripts
 this README tells you to run — plus `build.ps1`, `RotmanLSMCalendar.spec` and
 `verify-build.ps1`, which are the unsupported exe path and are marked as such in
-their own headers. `packaging/allow-list-request.md` is the draft AV request
+their own headers. It also holds `sign.ps1` (the self-signed code-signing step
+`build.ps1` calls), `release-local.ps1` (the local release pipeline — see
+[Versions and releases](#versions-and-releases)) and `release-notes.md` (the
+release body). `packaging/allow-list-request.md` is the draft AV request
 described in that appendix.
 
 `web/filters.js` holds the helpers both pages need — time and date formatting,
@@ -173,6 +202,7 @@ its static surface stays exactly as wide as it needs to be.
 .\.venv\Scripts\python.exe tests\test_changes.py
 .\.venv\Scripts\python.exe tests\test_filters.py
 .\.venv\Scripts\python.exe tests\test_session.py
+.\.venv\Scripts\python.exe tests\test_update.py
 .\.venv\Scripts\python.exe tests\test_worker.py
 .\.venv\Scripts\python.exe tests\test_web.py
 ```
@@ -203,6 +233,18 @@ nothing at all. The export path is asserted from both ends: that `scrape()`
 sets the flag, and that the flag reaches the store through `_do_scrape`.
 Verified by removal in all three places — dropping the store's guard, the
 scrape-side flag, or the scheduler's pass-through each turns the suite red.
+
+`test_update.py` covers the updater, and it holds the same line the worker
+suite does: **no suite may talk to GitHub**, so every network call in it goes
+through one injectable `_fetch` that the tests replace — the real one is
+exercised too, against a fake `urlopen`, to pin the headers. The suite pins
+the version compare (`1.1.10` is newer than `1.1.9`, a prerelease tag is
+ignored), the checksum being the thing that gates the installer (a download
+that does not match is never run), the `Bearer` header travelling only when a
+token is set, the 24-hour check clock surviving a restart, the endpoints'
+busy guards, and the token's DPAPI round trip — including the sentinel that a
+machine without DPAPI writes **no** token file at all rather than a cleartext
+one, which is the same refusal `session.bin` makes and for the same reason.
 
 `test_web.py` is the only suite that drives a **real browser** against a real
 server, because the defects it exists for lived in the pages and nothing else
@@ -640,26 +682,41 @@ can look at, which should say which build produced it without being asked.
 Releases are tagged `v<APP_VERSION>` on GitHub. Since v1.1.0 a release
 also carries the **installer** (`RotmanLSMCalendar-Setup-<version>.exe`)
 with its **sha256** in the notes, so an office machine can fetch it
-without a checkout — that is the deployment this release exists for. The
-exe is still unsigned, and everything in [Not the supported
-path](#not-the-supported-path-building-an-exe) about what that means on
-a managed machine still applies to wherever the installer is *run*:
-download-and-run may be flagged exactly as build-and-run is. If a machine
-quarantines it, the fix is the allow-list request in
-`packaging/allow-list-request.md`, keyed on path or publisher, never on
-hash.
+without a checkout — that is the deployment this release exists for, and
+since v1.1.2 the in-app updater does that fetch itself (see [Staying up
+to date](#staying-up-to-date)).
 
-Since v1.1.1 the release is **built by GitHub Actions, not here**:
-pushing the tag runs `.github/workflows/release.yml`, which runs the
-seven suites, runs `packaging/build.ps1` on the runner, runs the packaged
-exe's own `--selftest`, and publishes the release with the installer, a
-sha256 sidecar and the notes from `packaging/release-notes.md`. The
-console-line cost below is what made that move: a runner writes no
-unsigned exe on any managed machine, so a release no longer spends this
-account's good name in someone else's console. `build.ps1` remains for a
-local hand-off when you specifically need a folder build on a machine
-you control — the less often it runs here, the fewer console lines name
-this account.
+Since v1.1.2 **both shipped binaries are Authenticode-signed** with the
+project's self-signed code-signing certificate. `packaging/sign.ps1` —
+called twice from `build.ps1`, on the inner exe before the installer is
+compiled and on the Setup exe after — finds the certificate by its fixed
+subject or creates it once, and reuses it for every build after that:
+every machine that imported the shipped `.cer` trusts that certificate and
+no other, so regenerating it per build would strand each of them back at
+"unknown publisher" with no way to notice. What a self-signed certificate
+buys is a **stable publisher identity** — an endpoint agent can be told to
+trust it by certificate rather than by path — and local trust; it does
+not buy the reputation a CA-issued certificate carries, so a managed
+machine may still flag a first-sight binary. If one does, the fix is the
+allow-list request in `packaging/allow-list-request.md`, keyed on path or
+publisher, never on hash.
+
+Releases are currently **built locally, not by Actions**. GitHub's included
+minutes ran out account-wide in September 2026 and every queued job sits
+unassigned, so `.github/workflows/release.yml` cannot run;
+`packaging/release-local.ps1 -Version <APP_VERSION>` is the local
+replacement, and it follows the Actions workflow's order: all eight
+suites, `build.ps1` (which signs both binaries), `verify-build.ps1` —
+whose signature checks read the signing back from the files, because an
+unreachable timestamp server degrades `Set-AuthenticodeSignature` to a
+warning and an unsigned release would otherwise ship green — then a hash
+of the **signed** installer written to `dist\sha256.txt`. The hash is
+taken after signing on purpose: that sidecar is what the updater verifies
+a download against. The script publishes with `gh release create
+--target master`, which creates the tag through the API rather than
+pushing it, so the wedged `release.yml` never fires. The Actions path
+remains the supported one and will be used again once billing is
+restored.
 
 ## Not the supported path: building an .exe
 
@@ -685,8 +742,12 @@ PyInstaller bootloader, the embedded Python runtime, a bundled `node.exe`
 spawning headless Chromium — are what the app is. That is the whole reason this
 section is an appendix rather than a second way to run it.
 
-If the exe does have to exist as a shipped artefact, the fix is allow-listing or
-signing — see [On this machine](#on-this-machine) for what each costs.
+If the exe does have to exist as a shipped artefact, it ships **signed** —
+`packaging/sign.ps1`, called from `build.ps1`, signs both the inner exe and
+the installer with a self-signed code-signing certificate created once and
+reused (see [Versions and releases](#versions-and-releases)). What signing
+does not buy is reputation, and [On this
+machine](#on-this-machine) is the honest account of what remains.
 
 ```powershell
 .\packaging\build.ps1
@@ -791,8 +852,10 @@ the default button is there to give.
 Setup exes were still on disk at their full size after one of them had run. That
 is a measurement of file survival, not a clean bill of health: the detection
 console was not read, and `build.ps1`'s warning about the detections a build
-produces still applies — the compiler writes an unsigned binary, and that is
-what gets scored. Note that an installer is a self-extracting shape by nature,
+produces still applies — signing the Setup exe is the build's *last* step, so
+the unsigned binary the compiler writes is briefly on disk, and it is file
+*writes* that get scored. Note that an installer is a self-extracting shape by
+nature,
 which is the shape that was removed when it was a PyInstaller one-file build.
 It was not removed here. Whether that holds on another machine is the same open
 question as for the folder build, with the same three answers under
@@ -836,7 +899,7 @@ The detections already in the console stay there. They are a record of past
 builds, not a live problem, and nothing here can or should remove them.
 
 **What would still close the residual risk**, if the exe ever has to exist as a
-shipped artefact. Detection here is reputation-driven, so an unsigned build with
+shipped artefact. Detection here is reputation-driven, so a fresh binary with
 a handful of users can be reported on first sight whatever it does. The folder
 shape rules out the *dropper* pattern, not the first impression:
 
@@ -844,9 +907,15 @@ shape rules out the *dropper* pattern, not the first impression:
    hash** — every rebuild changes the hash, so a hash-keyed exclusion expires
    with the next build. This is the cheap one, and it needs a request rather
    than a config change.
-2. **Code-sign it.** The durable fix, and the only one that travels if the app
-   ever moves machines. Note that since 2023 an OV certificate needs a hardware
-   token or HSM, so this has a purchase and a physical object in it.
+2. **Code-sign it.** Done since v1.1.2 with a self-signed certificate
+   (`packaging/sign.ps1`): that buys a stable publisher identity — an agent
+   can be told to trust it by certificate rather than by path — and local
+   trust on machines that import the shipped `.cer`. It does **not** buy the
+   reputation a CA-issued certificate carries, so whether the signed build
+   still collects console lines is re-measured, not assumed. The CA-issued
+   route remains the durable fix if the app ever moves beyond this account,
+   and since 2023 an OV certificate needs a hardware token or HSM — a
+   purchase and a physical object.
 3. **Unpack it on one AV machine and read the quarantine count.** Not a fix,
    just the cheapest honest check that the build survives somewhere other than
    here.
@@ -854,8 +923,11 @@ shape rules out the *dropper* pattern, not the first impression:
 None of the three is testable from this box, so none of them should be
 promised. Worth naming in an allow-list request is the network surface, which
 for this app is small and entirely one-directional: it binds **`127.0.0.1:8765`
-only** (loopback, no authentication, no host override), and its only outbound
-traffic is HTTPS to `lsm.utoronto.ca` in a Playwright-driven Chromium. There is
+only** (loopback, no authentication, no host override), and its outbound
+traffic is HTTPS to `lsm.utoronto.ca` in a Playwright-driven Chromium, plus —
+since v1.1.2 — HTTPS to `api.github.com` for the update check and, when an
+update is accepted, the release's installer download (`app/updater.py`; the
+Bearer token, when one is set, travels only on those requests). There is
 no OAuth loopback listener here — that belongs to a different tool of mine, and
 naming the wrong port in a security request is worse than naming none. AV teams
 approve far faster when told what the binary talks to and why.

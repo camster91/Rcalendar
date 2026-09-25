@@ -21,13 +21,23 @@ nothing, and it triggers no detection. Saying so in the request is deliberate �
 it gives the reviewer an easy answer and makes the ask smaller, which is what
 gets it approved.
 
-Two artefacts are listed below, because there are two unsigned binaries now. If
+Two artefacts are listed below, because there are two binaries now. If
 only one of them is ever going to leave this machine, delete the other's section
 rather than leaving the reviewer to work out which one you mean.
 
+Since v1.1.2 both binaries are Authenticode-signed with the project's
+self-signed code-signing certificate, so the reviewer can key an exclusion on
+**publisher** — the stable thing across rebuilds — rather than on a path or a
+hash: subject `CN=Rotman LSM Calendar (self-signed code signing)`, thumbprint
+`E3806812DB2DD17AAE80283E6353C5ACEA157124`. The certificate is created once
+and reused for every build, so the thumbprint does not change from release to
+release. The size and SHA-256 below are of the 2026-09-21 build the detection
+record describes; they change with every rebuild, which is the whole reason the
+request is not keyed on them.
+
 ---
 
-**Subject:** Allow-list request — Rotman LSM Calendar, unsigned internal tool (reputation-based detection)
+**Subject:** Allow-list request — Rotman LSM Calendar, self-signed internal tool (reputation-based detection)
 
 Hello,
 
@@ -61,20 +71,33 @@ shipped folder.
   It is not reachable from the network and has no authentication because it has
   no network surface. There is deliberately no host override in its config.
 - **Outbound:** HTTPS to `lsm.utoronto.ca`, in a real Chromium window driven by
-  Playwright, signed in by me with Duo. No other endpoints.
+  Playwright, signed in by me with Duo. Since v1.1.2 it also checks the
+  project's own GitHub releases for updates — HTTPS to `api.github.com`, and
+  the release's installer download through the same API when an update is
+  accepted. No other endpoints.
 - **Credentials:** the sign-in happens in a normal browser window with my own
   credentials. The application never sees or stores my password. It keeps the
   resulting session cookie locally so it does not have to re-authenticate daily.
-- **No telemetry, no update check, no analytics, no third-party services.**
+  The optional GitHub token the update check uses (the repository is private) is
+  stored encrypted with Windows DPAPI and sent only to `api.github.com`.
+- **No telemetry, no analytics, no third-party services.** The update check is
+  the one thing the app fetches beyond LSM, and it fetches it from the
+  project's own release page.
 - **Installs nothing.** No admin rights, no service, no driver, no scheduled
   task. Login startup is a shortcut in my own Startup folder.
 
 **Why it is reported**
 
-Unsigned, freshly compiled, low prevalence — the detection is reputation-based,
-not behavioural. The console's own label is "Suspicious Activity · Detected
-suspicious file", which is what an unknown unsigned binary looks like on first
-sight.
+Self-signed, freshly compiled, low prevalence — the detection is
+reputation-based, not behavioural, and a self-signed publisher is not a
+CA-backed one, so the binaries score much like unknown ones on first sight.
+The console's own label is "Suspicious Activity · Detected suspicious file",
+which is what a low-prevalence binary looks like before it has any history.
+
+The detections recorded below predate signing — those builds were unsigned.
+Signing with a stable self-signed certificate is what makes a publisher-keyed
+exclusion possible at all; whether it also reduces first-sight detection is
+re-measured, not assumed.
 
 The detection also fires when the file is **written**, not when it runs: the two
 entries are timestamped 08:52:21 and 08:52:22, and the exe was written at
@@ -89,13 +112,13 @@ entries are timestamped 08:52:21 and 08:52:22, and the exe was written at
 | Size | 7,952,049 bytes |
 | SHA-256 | `5B2237E7847B97F19F5DD0F9559947EFA7EED402F83DACA1C5CED7543BE42870` |
 | Built | 2026-09-21 08:52:17 |
-| Signature | Not signed |
+| Signature | Self-signed (Authenticode) since v1.1.2 — subject `CN=Rotman LSM Calendar (self-signed code signing)`, thumbprint `E3806812DB2DD17AAE80283E6353C5ACEA157124`; the 2026-09-21 build this row's size and hash describe was unsigned |
 | Packaging | PyInstaller `--onedir`: a folder of 916 files (~145 MB), **not** a single-file self-extracting build |
 
 **A second, newer artefact: the installer**
 
 Since the report above, the tool has been given an installer, so there are now
-two unsigned binaries rather than one — and a request that names only the exe
+two binaries rather than one — and a request that names only the exe
 would be answered on the wrong file. This one was **not** flagged on this
 machine. That is one observation and not a verdict, but it is the observation
 that matters to a reputation scanner, because it survived being executed: the
@@ -106,7 +129,7 @@ not.
 |---|---|
 | Name | `[SETUP NAME]` (for 1.0.0: `RotmanLSMCalendar-Setup-1.0.0.exe`) |
 | Size | `[SETUP SIZE]` (for 1.0.0: 42.3 MB) |
-| Signature | Not signed |
+| Signature | Self-signed (Authenticode) since v1.1.2 — same subject and thumbprint as the exe above |
 | Packaging | Inno Setup 6.7.3, `PrivilegesRequired=lowest` — installs per-user under `%LOCALAPPDATA%\Programs`, so it raises no UAC prompt |
 
 What it installs is a per-user copy of the app plus a Desktop shortcut and one
@@ -128,10 +151,12 @@ run.
 
 **What I am asking for**
 
-1. Review the binaries and, if you are satisfied, allow-list them keyed on path
-   or publisher so they survive a rebuild; **or**
-2. tell me signing is required, and whether a certificate from UofT's own PKI
-   would be acceptable rather than a commercial one; **or**
+1. Review the binaries and, if you are satisfied, allow-list them keyed on
+   publisher (or path) so they survive a rebuild; the signing certificate's
+   thumbprint above is the stable key for that; **or**
+2. tell me a CA-issued certificate is required — the current self-signed one is
+   deliberately not that, and I would like to know whether a certificate from
+   UofT's own PKI is acceptable rather than a commercial one; **or**
 3. tell me the exe is not needed and I will drop it — the venv path is what I
    use day to day and it triggers nothing.
 

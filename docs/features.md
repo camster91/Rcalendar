@@ -118,13 +118,30 @@ link** hands over the exact screen. `replaceState` rather than `pushState` is
 deliberate — see README → *Filters* for what it costs and what `Clear all` is
 for.
 
+## Updating
+
+The app checks its own GitHub releases — that is the one outbound surface
+beyond LSM, and every row here is covered by `tests/test_update.py` offline.
+
+| Feature | Where |
+|---|---|
+| Update check at startup, then every 24 h (`UPDATE_CHECK_HOURS`), and on demand from the tray's *Check for updates* | `app/updater.py`, `app/scheduler.py` |
+| The 24-hour clock is persisted, so a restart does not reset it into a retry storm | `app/store.py` |
+| One-click install: download via the API's asset endpoint, verify against the release's `sha256.txt`, launch the installer detached, quit | `app/updater.py` |
+| A download that does not match its hash is never run | `app/updater.py` |
+| *Skip this version* — hidden until something strictly newer ships | `app/scheduler.py` |
+| Optional read-only GitHub token, stored the way `session.bin` is — and with no DPAPI, **no** token file is written, never a cleartext one | `app/updater.py`, `app/dpapi.py` |
+| The `Bearer` header travels only on requests to `api.github.com` — including the download, which is why it goes through the asset endpoint | `app/updater.py` |
+| Sidebar *Updates* section + amber toolbar banner when an update is offered; the list page gets a text line only, no buttons | `web/calendar.html`, `web/list.html` |
+| `POST /api/update/check` · `install` · `skip` · `token` (never echoes the value) | `app/server.py` |
+
 ## Window and tray
 
 | Feature | Where |
 |---|---|
 | Closing the window hides it; the app keeps scraping | `app/main.py` |
 | Tray **Quit** really ends the process — a quit is told apart from a close, or the hide-to-tray handler cancels it | `app/main.py` |
-| Tray menu: Open Calendar, List View, a live session label, Scrape Now, Sign in to LSM, Check Session, Open Data Folder, Open in Browser, Quit | `app/main.py` |
+| Tray menu: Open Calendar, List View, a live session label, Scrape Now, Sign in to LSM, Check Session, Check for updates, Open Data Folder, Open in Browser, Quit | `app/main.py` |
 | Startup shortcut — points at the venv, and there is no exe fallback | `packaging/install-autostart.ps1` |
 | Nine keyboard shortcuts, with two gating rules | README → *Keyboard* |
 
@@ -137,7 +154,8 @@ for.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Seven suites, 821 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Eight suites, 1003 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
-| The seven suites in CI | `.github/workflows/tests.yml` |
-| The release build: suites → `build.ps1` → the exe's `--selftest` → the GitHub release, on the tag push, off the managed machine | `.github/workflows/release.yml` |
+| The eight suites in CI | `.github/workflows/tests.yml` |
+| Both shipped binaries Authenticode-signed with a self-signed certificate created once and reused, so imported trust survives rebuilds | `packaging/sign.ps1` |
+| The release build: suites → `build.ps1` (signs) → `verify-build.ps1` → hash-after-signing → `gh release create` — locally via `release-local.ps1` while Actions minutes are exhausted; `release.yml` remains the supported path once billing returns | `packaging/release-local.ps1`, `.github/workflows/release.yml` |

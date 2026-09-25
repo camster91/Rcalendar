@@ -27,6 +27,11 @@ APP_NAME = "Rotman LSM Calendar"
 APP_VERSION = "1.1.2"
 APP_SLUG = "RotmanLSMCalendar"
 
+# Where releases live. The updater polls this repo's GitHub releases (and
+# downloads its assets) and packaging/release-notes.md links here, so the
+# repo is named in one place the same way the version is.
+GITHUB_REPO = "camster91/rotman-lsm-calendar"
+
 # ── Paths ────────────────────────────────────────────────────────────────
 FROZEN = getattr(sys, "frozen", False)
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -105,6 +110,7 @@ SCRAPE_MONTHS_BACK = 1
 SCRAPE_MONTHS_AHEAD = 2
 SCRAPE_TIME = "06:00"           # local time, daily
 HEARTBEAT_HOURS = 4             # how often to re-ping LSM to keep the session warm
+UPDATE_CHECK_HOURS = 24         # how often to poll GitHub for a newer release
 SCRAPE_ON_START = True          # scrape at launch if the last one is stale
 
 # ── History ──────────────────────────────────────────────────────────────

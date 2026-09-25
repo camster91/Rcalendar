@@ -61,24 +61,71 @@ group name containing one was silently dropped out of every link it
 landed in — the group worked in-session and vanished from the URL.
 Refused at the editor and at the API, with the reason named.
 
-The test suite now stands at 821 assertions across seven suites; each fix
-was verified by breaking it on purpose first.
+### Checks for updates, and installs them
+
+The app now looks at the project's GitHub releases on startup and once
+a day after that, plus any time you ask it to — the tray's **Check for
+updates** item, or the Calendar sidebar's *Updates* section. When a
+newer release is published, an amber banner appears in the toolbar and
+the sidebar offers **Install update**: the app downloads the release's
+installer, checks it against the checksum the release itself published,
+and only then runs it — a download that does not match is never run.
+The installer asks the app to close when it is ready to copy files, and
+your data folder is untouched throughout.
+
+Skipped a release on purpose? *Skip this version* hides it until
+something strictly newer ships.
+
+Because the repository is private, the check needs a read-only GitHub
+token — paste it once into the sidebar's *GitHub token…* row and it is
+stored encrypted (Windows DPAPI, unreadable outside this Windows
+account), and never displayed again. Without a token the check fails
+softly with one honest sentence instead of pretending to work.
+
+### The binaries are signed
+
+Both the installer and the app inside it are now Authenticode-signed
+with the project's code-signing certificate. It is self-signed, so
+"unknown publisher" prompts persist on machines that have not imported
+the certificate — see Install below; one paste closes that for good.
+
+The test suite now stands at 1003 assertions across eight suites; each
+fix was verified by breaking it on purpose first.
 
 ## Install (per-user, no UAC)
 
-1. Download `RotmanLSMCalendar-Setup-1.1.2.exe` and run it. Windows may
-   warn that the publisher is unknown — the installer is unsigned. "More
-   info → Run anyway" is the way past it.
+1. Download `RotmanLSMCalendar-Setup-1.1.2.exe` and run it. The binaries
+   are Authenticode-signed with the project's self-signed code-signing
+   certificate, so a machine that has never seen it still says "unknown
+   publisher" — "More info → Run anyway" is the way past it, and the
+   prompt stops for good once you import the shipped certificate (step
+   3, optional, per-user, no admin).
 2. First launch: use the tray item **Sign in to LSM** for the UofT SSO +
    Duo sign-in. The app never stores a password; the browser profile holds
    the session.
+3. Optional, to stop the "unknown publisher" prompt: download
+   `RotmanLSMCalendar-CodeSigning.cer` from the same release and run, in
+   PowerShell:
+
+       Import-Certificate -FilePath .\RotmanLSMCalendar-CodeSigning.cer `
+         -CertStoreLocation Cert:\CurrentUser\TrustedPeople
 
 Your data folder (bookings database, groups, saved filters) carries over
 from 1.1.1 untouched — the installer does not touch it.
 
-This release was built and self-tested locally — GitHub Actions ran out of
-included minutes, and the Actions release path remains the supported one;
-it will be used again once billing is restored. `sha256.txt` beside the
-installer carries the hash below.
+This release was built, signed and self-tested locally — GitHub Actions
+ran out of included minutes, and the Actions release path remains the
+supported one; it will be used again once billing is restored.
+`sha256.txt` beside the installer carries the hash below, and it is the
+hash of the *signed* installer: the app verifies what it downloads
+against this file, which is why it is taken after signing.
+
+Note for managed machines: signing with a self-signed certificate gives
+the binaries a stable publisher identity — one an endpoint agent can be
+told to trust by certificate rather than by file path — but it is not
+the reputation a CA-issued certificate carries. Whether this build
+avoids the endpoint detections the unsigned builds collected is
+re-measured, not assumed; check the quarantine count, not the threat
+history.
 
 SHA-256: `SHA256_PLACEHOLDER`

@@ -903,6 +903,34 @@ def delete_preset(name: str) -> list[dict[str, Any]]:
     return presets
 
 
+# ── Update-check state ────────────────────────────────────────────────────
+
+UPDATE_KEY = "update_state"
+
+
+def load_update_state() -> dict[str, Any]:
+    """When the updater last looked, and which version it was told to skip.
+
+    In the database rather than the orchestrator's memory because the 24 h
+    cadence is a fact about the *machine*, not the process: a restart must
+    not reset the clock, or an app left on overnight would check on every
+    relaunch instead of once a day. Never raises — a bad blob reads empty
+    and the next check simply happens sooner.
+    """
+    raw = get_kv(UPDATE_KEY, {})
+    if not isinstance(raw, dict):
+        log.warning("update_state: expected a dict, got %s — ignoring", type(raw))
+        return {"last_check": None, "skipped": None}
+    return {
+        "last_check": raw.get("last_check") if isinstance(raw.get("last_check"), str) else None,
+        "skipped": raw.get("skipped") if isinstance(raw.get("skipped"), str) else None,
+    }
+
+
+def save_update_state(state: dict[str, Any]) -> None:
+    set_kv(UPDATE_KEY, state)
+
+
 def _to_iso_date(ddmmyyyy: str | None) -> str | None:
     """'01/04/2026' → '2026-04-01'."""
     if not ddmmyyyy:

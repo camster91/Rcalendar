@@ -553,6 +553,7 @@ def test_no_retry_storm() -> None:
     # scrape, so a scrape that fails — a dead session, a bad render — does not
     # re-arm. Marking it only on success is the retry storm: every tick would
     # launch another browser against LSM, twenty seconds apart, forever.
+    scheduler.store.init_db()
     real_datetime = scheduler.datetime
     scheduler.datetime = FrozenDatetime
     try:
@@ -567,6 +568,11 @@ def test_no_retry_storm() -> None:
 
         orch._do_scrape = failing_scrape          # type: ignore[method-assign]
         orch._do_heartbeat = lambda: None         # type: ignore[method-assign]
+        # The tick has gained a second tenant — the automatic update check —
+        # stubbed here for the same reason _do_heartbeat is: this test's
+        # subject is the scrape storm, and the real check talks to GitHub,
+        # which no suite may. Its own clock is test_update's to drive.
+        orch._do_check_update = lambda **kwargs: None  # type: ignore[method-assign]
 
         for _ in range(20):
             orch._tick()

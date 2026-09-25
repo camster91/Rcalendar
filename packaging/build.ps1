@@ -119,6 +119,16 @@ if (Test-Path $StaleOnefile) {
     throw "dist\RotmanLSMCalendar.exe reappeared during the build"
 }
 
+# ── Signing ──────────────────────────────────────────────────────────────
+#
+# The exe is signed before it is packaged because the installer copies this
+# folder as-is: after ISCC runs there is no second chance to sign what the
+# installed app will actually execute. Unconditional, and a hard failure - a
+# release that claims to be signed must be signed, and one that fails here
+# must not reach verify-build, whose signature checks would only rediscover
+# the same missing signature further from its cause.
+& (Join-Path $PSScriptRoot "sign.ps1") -Path $DistExe
+
 # ── The installer ────────────────────────────────────────────────────────
 #
 # Compiling the installer is part of building, not a separate errand: the .iss
@@ -178,6 +188,16 @@ if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 $Setup = Get-ChildItem (Join-Path $Root "dist\RotmanLSMCalendar-Setup-*.exe") |
     Sort-Object LastWriteTime | Select-Object -Last 1
 if (-not $Setup) { throw "ISCC exited 0 but produced no setup exe in dist\" }
+
+# Sign the installer too, and export the certificate beside it. The cert is
+# the thing another machine imports to stop seeing "unknown publisher", so
+# it ships with the release (release-local.ps1 attaches it). Signed here
+# rather than later so the hash the release publishes is the hash of the
+# signed binary - an unsigned-then-hashed release would describe a file
+# nobody can download, because downloading replaces nothing and the
+# published installer would be the unsigned one.
+& (Join-Path $PSScriptRoot "sign.ps1") -Path $Setup.FullName `
+    -ExportTo (Join-Path $Root "dist\RotmanLSMCalendar-CodeSigning.cer")
 
 Write-Host ""
 Write-Host "  Installer: $($Setup.FullName)" -ForegroundColor Green

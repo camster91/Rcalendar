@@ -28,8 +28,8 @@ import os  # noqa: E402
 _tmp = tempfile.mkdtemp(prefix="lsm-test-")
 os.environ["LSM_DATA_DIR"] = _tmp
 
-from app import store  # noqa: E402
-from app.config import DATA_DIR, DB_PATH  # noqa: E402
+from app import store, updater  # noqa: E402
+from app.config import APP_VERSION, DATA_DIR, DB_PATH  # noqa: E402
 from app.server import create_app  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -61,6 +61,10 @@ class StubOrch:
             "busy_action": "", "progress": "",
             "last_scrape": datetime.now().isoformat(),
             "last_scrape_message": "42 bookings",
+            "update": {"state": "idle", "current_version": "1.1.2",
+                       "latest_version": "", "notes_url": "", "message": "",
+                       "last_check": None, "progress": "", "token_set": False,
+                       "staged": ""},
         }
 
     def is_busy(self) -> bool:
@@ -77,6 +81,12 @@ class StubOrch:
 
     def request_probe(self) -> None:
         self.calls.append("probe")
+
+    def request_update_check(self) -> None:
+        self.calls.append("update_check")
+
+    def request_update_install(self) -> None:
+        self.calls.append("update_install")
 
 
 def sample_events() -> list[dict]:
@@ -366,6 +376,32 @@ def test_web() -> None:
     check("...and it does not claim the session is already cleared",
           r.get_json().get("status"), "started")
 
+    # The update commands queue like the rest of the control plane: the
+    # reply says "started", and the worker is the one that talks to GitHub.
+    r = client.post("/api/update/check")
+    check("update check accepted", r.status_code, 200)
+    check("...and enqueued", orch.calls, ["scrape", "login", "logout",
+                                          "update_check"])
+    r = client.post("/api/update/install")
+    check("update install accepted", r.status_code, 200)
+    check("...and enqueued", orch.calls, ["scrape", "login", "logout",
+                                          "update_check", "update_install"])
+
+    # Skip is refused when nothing is available: the point of the state is
+    # that a skipped version was *offered* to this person.
+    r = client.post("/api/update/skip")
+    check("skip refused when idle", r.status_code, 400)
+
+    # The status feed carries the update block, whose token field is a
+    # boolean and never the value - the token must not exist anywhere a
+    # page script can read it.
+    st = client.get("/api/status").get_json()
+    ok("status has an update block", isinstance(st.get("update"), dict))
+    check("update block carries the current version",
+          st["update"].get("current_version"), APP_VERSION)
+    ok("update block's token field is a bool",
+       isinstance(st["update"].get("token_set"), bool))
+
     r = client.get("/api/nope")
     check("unknown route 404", r.status_code, 404)
 
@@ -395,6 +431,30 @@ def test_cross_site_writes() -> None:
           client.post("/api/login", headers=evil).status_code, 403)
     check("foreign origin refused on logout",
           client.post("/api/logout", headers=evil).status_code, 403)
+
+    # The update endpoints belong in that list too, for three different
+    # reasons: check/install would offer the app a real installer and end
+    # its process, skip would rewrite the update state, and the token write
+    # would swap the credential the app authenticates to GitHub with.
+    orch.calls.clear()
+    check("foreign origin refused on update check",
+          client.post("/api/update/check", headers=evil).status_code, 403)
+    check("foreign origin refused on update install",
+          client.post("/api/update/install", headers=evil).status_code, 403)
+    check("...and neither landed", orch.calls, [])
+
+    before_state = store.load_update_state()
+    check("foreign origin refused on update skip",
+          client.post("/api/update/skip", headers=evil,
+                      json={"version": "v99.99.99"}).status_code, 403)
+    check("...and the skip state is untouched",
+          store.load_update_state(), before_state)
+
+    check("foreign origin refused on the token write",
+          client.post("/api/update/token", headers=evil,
+                      json={"token": "ghp_evil"}).status_code, 403)
+    ok("...and no token was written",
+       not updater.TOKEN_FILE.exists())
 
     # The destructive-to-config case, checked for its effect and not just its
     # status: this endpoint replaces the whole group set.
@@ -613,6 +673,75 @@ def test_quit_can_actually_end_the_process() -> None:
     check("...and it did not merely hide again", window.hidden, 0)
 
 
+def test_tray_update_item() -> None:
+    """The tray offers a manual update check, guarded like the scrape.
+
+    The menu is asserted through a stubbed pystray rather than a real icon:
+    building the Menu is offline and instant, while Icon.run() would block
+    the suite on a tray that does not exist on a headless run. The stub is
+    swapped in for the duration of start() only, and removed after.
+    """
+    print("\ntray -- Check for updates")
+
+    from app.main import Tray
+
+    class GuardOrch:
+        def __init__(self, busy: bool) -> None:
+            self.busy = busy
+            self.requested = False
+
+        def is_busy(self) -> bool:
+            return self.busy
+
+        def request_update_check(self) -> None:
+            self.requested = True
+
+    # Busy-guards exactly like Scrape Now: a check issued during a download
+    # would queue behind the download's busy window and arrive as a surprise.
+    busy = GuardOrch(True)
+    Tray(busy, window=None)._check_update()
+    check("a busy worker means no check is requested", busy.requested, False)
+
+    free = GuardOrch(False)
+    Tray(free, window=None)._check_update()
+    check("an idle worker gets the check", free.requested, True)
+
+    # And the menu the user actually sees names the thing.
+    import sys
+    import types
+
+    class FakeMenuItem:
+        def __init__(self, label, *args, **kwargs) -> None:
+            self.label = label if isinstance(label, str) else ""
+
+    class FakeMenu:
+        SEPARATOR = None
+
+        def __init__(self, *items) -> None:
+            self.items = items
+
+    captured: dict = {}
+
+    class FakeIcon:
+        def __init__(self, name, icon, title, menu) -> None:
+            captured["menu"] = menu
+
+        def run(self) -> None:
+            pass
+
+    stub = types.SimpleNamespace(
+        Menu=FakeMenu, MenuItem=FakeMenuItem, Icon=FakeIcon)
+    sys.modules["pystray"] = stub
+    try:
+        Tray(GuardOrch(False), window=None).start()
+    finally:
+        sys.modules.pop("pystray", None)
+
+    labels = [getattr(i, "label", "") for i in captured["menu"].items]
+    ok("the built menu contains 'Check for updates'",
+       "Check for updates" in labels)
+
+
 def test_single_instance() -> None:
     """A second instance must not share the data directory.
 
@@ -756,6 +885,7 @@ def main() -> int:
     test_cross_site_writes()
     test_login_detection()
     test_quit_can_actually_end_the_process()
+    test_tray_update_item()
     test_single_instance()
     test_tray_flag()
     test_icon()

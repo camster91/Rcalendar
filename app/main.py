@@ -100,6 +100,7 @@ class Tray:
             pystray.MenuItem("Scrape Now", self._scrape),
             pystray.MenuItem("Sign in to LSM", self._login),
             pystray.MenuItem("Check Session", self._probe),
+            pystray.MenuItem("Check for updates", self._check_update),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Open Data Folder", self._open_data),
             pystray.MenuItem("Open in Browser", self._open_browser),
@@ -165,6 +166,17 @@ class Tray:
         self.orch.request_probe()
         self._notify("Checking session", "Asking LSM whether we are signed in…")
 
+    def _check_update(self) -> None:
+        # Guarded like the scrape: a check during a download would otherwise
+        # queue behind the download's own busy window and surprise the user
+        # with a result arriving minutes later.
+        if self.orch.is_busy():
+            self._notify("Busy", "Something else is running right now.")
+            return
+        self.orch.request_update_check()
+        self._notify("Checking for updates", "Asking GitHub for the latest "
+                                             "release…")
+
     def _quit(self) -> None:
         log.info("quit requested")
         # Set *before* destroy(), and the ordering is the whole point.
@@ -176,6 +188,13 @@ class Tray:
         # icon, and nothing left that could end the process. Measured against
         # pywebview 6.2.1 -- destroy() returned in 0.01s, the handler ran,
         # webview.start() never returned.
+        #
+        # This has a second caller: the updater's quit hook, invoked from the
+        # worker thread once a verified installer is running. Everything here
+        # is already thread-safe from that direction -- pystray's own menu
+        # items call _quit on the icon's thread, orch.stop() is guarded
+        # against the worker joining itself, and quitting.set() is the
+        # ordering this comment exists for.
         self.quitting.set()
         self.orch.stop()
         if self._icon:
@@ -680,6 +699,18 @@ def run_app(show_window: bool = True, start_hidden: bool = False) -> int:
     window.events.closing += on_closing
 
     tray = Tray(orch, window, quitting)
+
+    # The updater's two ways of reaching the outside world: a found update
+    # announces itself through the tray, and a staged-and-verified installer
+    # ends the process through the same quit path the tray's own Quit item
+    # takes. Wired here rather than inside the scheduler so the worker never
+    # imports the window; a check that fires before this line (none can — the
+    # worker's first tick is 20 s away and the tray exists at webview.start)
+    # would simply skip the toast.
+    orch.set_update_hooks(
+        notify=lambda title, message: tray._notify(title, message),
+        quit=lambda: tray._quit(),
+    )
 
     def after_start() -> None:
         try:

@@ -36,6 +36,12 @@ a.vtab{display:inline-flex;align-items:center}
 .bg-bl{background:var(--acg);color:var(--ac)}.bg-gr{background:var(--sf2);color:var(--tx2)}
 .btn{padding:7px 14px;border-radius:var(--rs);font-size:.88rem;font-weight:500;cursor:pointer;border:1px solid var(--bd);background:var(--sf);color:var(--tx2);display:inline-flex;align-items:center;gap:5px;transition:.15s;text-decoration:none}
 .btn:hover{background:var(--sf2);color:var(--tx)}
+/* The toolbar's update offer. The sidebar carries the detail; this is the
+   same offer where the sidebar cannot be seen — the toolbar never scrolls.
+   Amber is this UI's "worth your attention" colour (a warning session uses
+   it too), filled rather than outlined so the offer reads as an action. */
+.updbtn{background:var(--og);border-color:#8a5a06;color:#fff;font-weight:600}
+.updbtn:hover{background:#8a5a06;color:#fff}
 .btn-a{background:var(--ac);border-color:var(--ac);color:#fff}.btn-a:hover{background:var(--ac2)}
 .btn-g{background:var(--gn2);border-color:var(--gn2);color:#fff}
 
@@ -334,6 +340,12 @@ a.vtab{display:inline-flex;align-items:center}
          a second row of chips to a toolbar that is already full. The count is
          the same filtered number the drawer will list, so the button and the
          drawer can never disagree. -->
+    <!-- The update offer, where the sidebar cannot be seen — the toolbar never
+         scrolls and the sidebar does. One click installs: the offer's whole
+         point is that it is one click, and Skip lives in the sidebar beside
+         the detail it declines. renderUpdate keeps its label and the
+         sidebar's version line speaking from the same /api/status read. -->
+    <button class="btn updbtn" id="updBanner" onclick="doInstallUpdate()" style="display:none" title="Download and install the new release">⬆ Update available</button>
     <button class="btn" id="freeBtn" onclick="toggleFreePanel()" aria-expanded="false" aria-controls="freeDrawer" title="Rooms free right now">🟢 Free now <span class="freen" id="freeBtnN"></span></button>
     <button class="btn btn-a" id="scrapeBtn" onclick="triggerScrape()" title="Scrape LSM now" aria-label="Scrape LSM now">⟳</button>
   </div>
@@ -391,6 +403,27 @@ a.vtab{display:inline-flex;align-items:center}
          second full-width button, so it cannot be mistaken at a glance for the
          sign-in button it sits under. -->
     <a href="#" id="logoutLink" onclick="doLogout();return false" style="display:none">Sign out of LSM</a>
+  </div>
+  <!-- The updater's half of the sidebar: one state line that is always
+       telling the truth (renderUpdate), the one action that applies to it,
+       and the two controls for a check that could not be made. The token
+       row is hidden until asked for: it is the fix a specific failure
+       message names, not a form the reader owes an answer to, and the
+       repo's releases only need it while the repository is private. -->
+  <div>
+    <div class="stit">Updates</div>
+    <div class="sval" id="updInfo"><strong>loading…</strong></div>
+    <button class="btn btn-w" id="updBtn" onclick="doInstallUpdate()" style="display:none;width:100%;margin-top:8px">Install update</button>
+    <a href="#" id="updSkip" onclick="doSkipUpdate();return false" style="display:none">Skip this version</a>
+    <a href="#" id="updCheck" onclick="doCheckUpdate();return false" style="display:none">Check for updates</a>
+    <a href="#" id="updTokenTog" onclick="toggleTokenRow();return false" style="display:none">GitHub token…</a>
+    <div id="tokenRow" style="display:none;margin-top:6px">
+      <input type="password" id="ghToken" placeholder="read-only GitHub token"
+             aria-label="GitHub token for update checks" autocomplete="off"
+             style="width:100%;margin-bottom:6px">
+      <button class="btn" onclick="doSaveToken()" style="width:47%">Save</button>
+      <button class="btn" onclick="doClearToken()" style="width:47%;float:right">Clear</button>
+    </div>
   </div>
 </div>
 <div class="main" id="mainArea"></div>
@@ -1795,6 +1828,127 @@ async function triggerScrape(){
 
 function toast(msg,ok){const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';if(ok)t.classList.add('ok');setTimeout(()=>{t.style.display='none';t.classList.remove('ok');},ok?2000:3000);}
 
+// ── UPDATES ──
+// One rendering from one source: loadStatus hands every /api/status read to
+// renderUpdate, so the sidebar line and the toolbar offer can never disagree
+// — they are two views of the same dict, drawn by the same call. Nothing in
+// this section fetches on its own except the action handlers, which POST
+// and then let the poll (fast while busy, via adaptPoll) bring the answer.
+function renderUpdate(d){
+  const u=d.update||{},st=u.state||'idle';
+  const info=document.getElementById('updInfo'),btn=document.getElementById('updBtn'),
+        ban=document.getElementById('updBanner'),skip=document.getElementById('updSkip'),
+        chk=document.getElementById('updCheck'),tog=document.getElementById('updTokenTog');
+  let line='<strong>v'+esc(u.current_version||'?')+'</strong>';
+  if(u.last_check)line+='<br>checked '+new Date(u.last_check)
+    .toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+  // The amber offer — and the only state that shows the Install controls.
+  // Everything else is a report: downloading shows progress, failed shows
+  // its one honest sentence (with the token row below as the fix it names),
+  // installing tells the reader why the page is about to die.
+  const offer=st==='available';
+  if(offer)line+='<br><strong style="color:var(--og)">'+esc(u.latest_version||'')+' available</strong>';
+  else if(st==='checking')line+='<br>Checking for updates…';
+  else if(st==='downloading')line+='<br>Downloading '+esc(u.progress||'…');
+  else if(st==='ready')line+='<br>Downloaded — starting the installer…';
+  else if(st==='installing')line+='<br>Installer running — the app will close now.';
+  else if(st==='failed')line+='<br><span style="color:#dc2626">'+esc(u.message||'The check could not be made.')+'</span>';
+  else if(st==='latest')line+='<br>'+esc(u.message||'Up to date');
+  info.innerHTML=line;
+  ban.style.display=offer?'inline-flex':'none';
+  if(offer)ban.textContent='⬆ Update available — '+(u.latest_version||'');
+  // The button's busy state belongs to doInstallUpdate, which owns the
+  // click; this function owns the visibility, which is a fact about the
+  // release rather than about the click.
+  btn.style.display=offer?'block':'none';
+  skip.style.display=offer?'block':'none';
+  chk.style.display='block';tog.style.display='block';
+}
+
+function doCheckUpdate(){
+  toast('Checking for updates…',true);
+  fetch('/api/update/check',{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      if(d.status==='busy')toast('⚠️ '+(d.message||'Something else is running'));
+    })
+    .catch(e=>toast('❌ '+e.message));
+}
+
+async function doInstallUpdate(){
+  const btn=document.getElementById('updBtn');
+  if(btn.disabled)return;
+  btn.disabled=true;btn.textContent='⏳ Downloading…';
+  // Once the installer is running, a refused fetch is the teardown arriving,
+  // not a failed update — the poll loop below treats it as silence instead
+  // of an error for exactly that reason.
+  let sawInstalling=false;
+  try{
+    const r=await fetch('/api/update/install',{method:'POST'});
+    const d=await r.json();
+    if(r.status===409){toast('⚠️ '+(d.message||'Something else is running'));btn.disabled=false;return;}
+    // POST-then-poll, like the scrape button: the reply means "started",
+    // and /api/status is the one that knows the outcome. Terminal states
+    // are installing (success — the process exits) and failed; everything
+    // else is the worker still holding the job.
+    const t0=Date.now();let sawBusy=false;
+    while(Date.now()-t0<20*60*1000){
+      await new Promise(s=>setTimeout(s,2000));
+      let st;
+      try{st=await (await fetch('/api/status')).json();}
+      catch(e){if(sawInstalling)return;throw e;}
+      renderUpdate(st);
+      const u=st.update||{};
+      if(u.state==='installing'){sawInstalling=true;toast('✅ Installer running — closing…',true);return;}
+      if(u.state==='failed'){toast('❌ '+(u.message||'The update failed'));return;}
+      if(st.busy){sawBusy=true;continue;}
+      if(!sawBusy)continue;
+      toast('⚠️ Update did not finish — see the sidebar');
+      return;
+    }
+    toast('⚠️ Still working — see the sidebar');
+  }catch(e){
+    if(!sawInstalling)toast('❌ '+e.message);
+  }finally{
+    btn.disabled=false;btn.textContent='Install update';
+  }
+}
+
+function doSkipUpdate(){
+  fetch('/api/update/skip',{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      if(d.status==='ok'){toast('Skipped — a newer release will still show',true);loadStatus();}
+      else toast('⚠️ '+(d.message||'Nothing to skip'));
+    })
+    .catch(e=>toast('❌ '+e.message));
+}
+
+function toggleTokenRow(){
+  const row=document.getElementById('tokenRow');
+  row.style.display=row.style.display==='none'?'block':'none';
+}
+
+function doSaveToken(){
+  const inp=document.getElementById('ghToken');
+  // Trimmed once, not silently cleaned: whitespace *inside* the token is a
+  // paste accident the server refuses by name rather than a token to save.
+  const t=inp.value.trim();
+  fetch('/api/update/token',{method:'POST',headers:{'Content-Type':'application/json'},
+                              body:JSON.stringify({token:t})})
+    .then(r=>r.json()).then(d=>{
+      if(d.status==='ok'){toast('Token saved',true);inp.value='';loadStatus();}
+      else toast('⚠️ '+(d.message||'The token was not saved'));
+    })
+    .catch(e=>toast('❌ '+e.message));
+}
+
+function doClearToken(){
+  fetch('/api/update/token',{method:'DELETE'})
+    .then(r=>r.json()).then(d=>{
+      if(d.status==='ok'){toast('Token cleared',true);loadStatus();}
+    })
+    .catch(e=>toast('❌ '+e.message));
+}
+
 // ── KEYBOARD ──
 // One delegate gives every [role="button"] Enter and Space. Without it the
 // month cells, room chips and free-room pills are clickable but unreachable.
@@ -1884,6 +2038,10 @@ async function loadStatus(){
       '<strong>'+(d.total_events||0).toLocaleString()+' bookings</strong>'
       +(d.date_range?'<br>'+esc(d.date_range):'')
       +(tail?'<br>'+tail:'');
+
+    // The Updates section draws from the same read — see renderUpdate for
+    // why nothing in it fetches on its own.
+    renderUpdate(d);
 
     // The card's own refresh: its progress line is the one thing that moves
     // during a first run, and loadStatus is the only thing that re-renders

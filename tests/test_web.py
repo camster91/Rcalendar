@@ -116,6 +116,16 @@ class StubOrch:
         self.busy = False
         self.busy_action = ""
         self.progress = ""
+        # The updater's half of the status feed, settable for the same
+        # reasons as session: the banner, the sidebar and the list page's
+        # badge are all bound to it, and an offer that is bound to a fact
+        # has to be shown moving when the fact moves.
+        self.update = {
+            "state": "idle", "current_version": "0.0.0-test",
+            "latest_version": "", "notes_url": "", "message": "",
+            "last_check": None, "progress": "", "token_set": False,
+            "staged": "",
+        }
         # The worker owns the scrape message — the scheduler sets this
         # itself when a command fails — while the run row only supplies
         # the status. A stub that reported neither would test nothing.
@@ -129,6 +139,7 @@ class StubOrch:
             "last_scrape": None,
             "last_scrape_message": self.last_scrape_message,
             "backfill": self.backfill,
+            "update": self.update,
         }
 
     def is_busy(self) -> bool:
@@ -141,6 +152,16 @@ class StubOrch:
         LSM, which no test here may do.
         """
         self.calls.append("logout")
+
+    def request_update_check(self, trigger: str = "manual") -> None:
+        """Recorded like logout, for the same reason: the real check talks
+        to GitHub, and no test here may go online."""
+        self.calls.append("update_check")
+
+    def request_update_install(self) -> None:
+        """Recorded, not performed: the real install launches an installer
+        and quits the very process this page is served from."""
+        self.calls.append("update_install")
 
 
 # The single orchestrator the server is built with, kept so a test can change
@@ -872,6 +893,215 @@ def test_list_badge_reads_the_session(browser, base: str) -> None:
         ok("list: ...and does not show the live colour", "bg-gn" not in cls)
     finally:
         dead.close()
+
+
+def _update(**fields) -> dict:
+    """A fresh update block with the given fields, in the scheduler's shape."""
+    base = {
+        "state": "idle", "current_version": "0.0.0-test",
+        "latest_version": "", "notes_url": "", "message": "",
+        "last_check": None, "progress": "", "token_set": False,
+        "staged": "",
+    }
+    base.update(fields)
+    return base
+
+
+def test_update_ui_tracks_the_worker(browser, base: str) -> None:
+    """The banner, the sidebar and the list page all read one /api/status.
+
+    renderUpdate is fed from the same poll as the session badge, so three
+    screens describe one fact — and a screen bound to a fact has to move
+    when the fact moves, which is what the state walk below drives. The
+    inline style is asserted rather than the computed one for the reason the
+    sign-out test states: it is the property the page itself writes.
+    """
+    page = open_page(browser, base, "/")
+
+    def shown(sel: str) -> str:
+        return page.eval_on_selector(sel, "el => el.style.display")
+
+    def poll() -> None:
+        page.evaluate("async () => { await loadStatus(); }")
+
+    try:
+        # Idle: a report, not an offer — nothing amber, nothing clickable.
+        poll()
+        check("calendar: idle shows the current version",
+              "0.0.0-test" in page.inner_text("#updInfo"), True)
+        check("...and no banner", shown("#updBanner"), "none")
+        check("...and no install button", shown("#updBtn"), "none")
+        check("...and no skip link", shown("#updSkip"), "none")
+
+        # Available: the one state that is an offer rather than a report.
+        ORCH.update = _update(state="available", latest_version="v1.2.0")
+        poll()
+        check("calendar: available shows the banner", shown("#updBanner"),
+              "inline-flex")
+        ok("...and the banner names the release",
+           "v1.2.0" in page.inner_text("#updBanner"))
+        check("...and the install button", shown("#updBtn"), "block")
+        check("...and the skip link", shown("#updSkip"), "block")
+        ok("...and the sidebar names it too",
+           "v1.2.0 available" in page.inner_text("#updInfo"))
+
+        # Latest: the offer is withdrawn, not left standing.
+        ORCH.update = _update(state="latest")
+        poll()
+        check("calendar: latest hides the banner", shown("#updBanner"), "none")
+        check("...and the install button", shown("#updBtn"), "none")
+        check("...and the skip link", shown("#updSkip"), "none")
+        ok("...and says so in the sidebar",
+           "Up to date" in page.inner_text("#updInfo"))
+
+        # Downloading: a report with the worker's progress in it.
+        ORCH.update = _update(state="downloading", progress="2.0 of 4.0 MB")
+        poll()
+        ok("calendar: downloading shows the progress",
+           "Downloading 2.0 of 4.0 MB" in page.inner_text("#updInfo"))
+
+        # Failed: the one honest sentence, with the token row as the fix it
+        # names — visible below, not a toast that says "something happened"
+        # and vanishes.
+        ORCH.update = _update(state="failed",
+                              message="GitHub reports nothing found.")
+        poll()
+        ok("calendar: a failure is a sentence, not a code",
+           "GitHub reports nothing found." in page.inner_text("#updInfo"))
+        check("...and the token row is reachable",
+              shown("#updTokenTog"), "block")
+        page.evaluate("() => toggleTokenRow()")
+        check("...and opens on demand", shown("#tokenRow"), "block")
+        page.evaluate("() => toggleTokenRow()")
+        check("...and closes again", shown("#tokenRow"), "none")
+    finally:
+        ORCH.update = _update()
+        page.close()
+
+
+def test_update_actions_land_on_the_worker(browser, base: str) -> None:
+    """The sidebar's buttons are offers to the worker, not work done in the
+    request thread — and the install click rides the post-then-poll loop all
+    the way to the toast that says the process is about to close.
+
+    The stub is stepped through the worker's states from outside the page,
+    because the loop's contract is with /api/status, not with the wall
+    clock: it must keep polling while the worker holds the job and stop the
+    moment it sees 'installing'.
+    """
+    page = open_page(browser, base, "/")
+
+    def poll() -> None:
+        page.evaluate("async () => { await loadStatus(); }")
+
+    def toast_now() -> str:
+        return page.evaluate(
+            "() => { const t = document.getElementById('toast');"
+            "        return t.style.display === 'none' ? '' : t.textContent; }")
+
+    try:
+        # The manual check is a POST to the worker, queued like a scrape.
+        ORCH.calls.clear()
+        page.evaluate("() => doCheckUpdate()")
+        page.wait_for_timeout(300)
+        check("calendar: the check link reaches the worker", ORCH.calls,
+              ["update_check"])
+
+        # Skip records the offered release — and the version recorded is the
+        # one the worker found, not anything the page could have invented.
+        ORCH.update = _update(state="available", latest_version="v1.2.0")
+        poll()
+        page.evaluate("() => doSkipUpdate()")
+        page.wait_for_function(
+            "() => { const t = document.getElementById('toast');"
+            "        return t.style.display !== 'none' &&"
+            "               t.textContent.includes('Skipped'); }")
+        check("calendar: skip records the offered version",
+              store.load_update_state().get("skipped"), "v1.2.0")
+
+        # Install: the click posts once, then the loop polls. The stub holds
+        # the worker busy through the first polls, so the loop has to keep
+        # going rather than declare victory on a not-yet-busy read.
+        ORCH.calls.clear()
+        ORCH.busy = True
+        ORCH.busy_action = "Downloading update"
+        ORCH.update = _update(state="downloading", progress="1.0 of 2.0 MB")
+        page.evaluate("() => document.getElementById('updBtn').click()")
+        page.wait_for_function(
+            "() => { const b = document.getElementById('updBtn');"
+            "        return b.disabled && b.textContent.includes('Downloading'); }")
+        # The disabled flag is set synchronously by the click; the POST
+        # behind it is not. Wait for the call to land before judging it.
+        page.wait_for_timeout(500)
+        check("calendar: the install click reaches the worker once",
+              ORCH.calls, ["update_install"])
+        # The sidebar line is written by the loop's own poll, so it is
+        # waited for rather than read immediately after the click.
+        page.wait_for_function(
+            "() => document.getElementById('updInfo')"
+            ".textContent.includes('Downloading 1.0 of 2.0 MB')")
+
+        # The terminal state ends the loop with the honest sentence, and a
+        # refused fetch after it would have read as silence, not failure.
+        ORCH.update = _update(state="installing")
+        page.wait_for_function(
+            "() => { const t = document.getElementById('toast');"
+            "        return t.style.display !== 'none' &&"
+            "               t.textContent.includes('Installer running'); }")
+        ok("calendar: the install loop ended on the toast, not a timeout",
+           "closing" in toast_now())
+        check("...and the worker saw no second request", ORCH.calls,
+              ["update_install"])
+    finally:
+        ORCH.busy = False
+        ORCH.busy_action = ""
+        ORCH.update = _update()
+        page.close()
+
+
+def test_list_offers_updates_in_words_only(browser, base: str) -> None:
+    """The list page says an update exists and points at the Calendar — and
+    that is all it does.
+
+    It has no install path of its own because it has no sidebar to carry
+    one, and an installer launched from a page with no status display would
+    be a process ending with nothing on screen saying why. The badge is
+    bound to the same status read as the calendar's banner, so the two pages
+    cannot disagree about whether an offer exists.
+    """
+    page = open_page(browser, base, "/list")
+
+    def poll() -> None:
+        page.evaluate("async () => { await loadStatus(); }")
+
+    try:
+        ORCH.update = _update(state="available", latest_version="v1.2.0")
+        poll()
+        check("list: an available release shows the badge",
+              page.eval_on_selector("#updNote", "el => el.style.display"),
+              "inline-block")
+        ok("list: ...pointing at the Calendar page",
+           "install from the Calendar page" in page.inner_text("#updNote"))
+        check("list: ...with the version as its tooltip",
+              page.eval_on_selector("#updNote", "el => el.title"), "v1.2.0")
+
+        # And nothing else: the badge is words, not a button — a click on it
+        # must be inert, and the page must carry no update POST at all.
+        check("list: the badge is not clickable",
+              page.eval_on_selector("#updNote", "el => el.onclick"), None)
+        served = page.evaluate(
+            "async () => (await (await fetch('/list')).text())")
+        ok("list: the page ships no update write of its own",
+           "api/update" not in served)
+
+        ORCH.update = _update(state="latest")
+        poll()
+        check("list: no offer means no badge",
+              page.eval_on_selector("#updNote", "el => el.style.display"),
+              "none")
+    finally:
+        ORCH.update = _update()
+        page.close()
 
 
 def test_sign_out_is_offered_only_with_a_session(browser, base: str) -> None:
@@ -2505,6 +2735,9 @@ TESTS = [
     test_free_at_note_describes_the_span,
     test_list_has_a_url_and_the_links_carry_it,
     test_list_badge_reads_the_session,
+    test_update_ui_tracks_the_worker,
+    test_update_actions_land_on_the_worker,
+    test_list_offers_updates_in_words_only,
     test_sign_out_is_offered_only_with_a_session,
     test_list_select_and_tags_are_one_filter,
     test_list_groups_come_from_the_config,

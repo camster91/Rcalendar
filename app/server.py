@@ -22,6 +22,8 @@ clears the profile's cookies rather than only the snapshot, that ends a
 working session and costs a UTORid login and a Duo approval to restore. None
 of them reaches the LSM *data* (this app is read-only), and the refusal is
 what keeps all of them out of reach of a page the user merely has open.
+The update endpoints belong in that list too: without the guard, a page
+open anywhere could offer the app a real installer and end its process.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from app import avail, store
+from app import avail, store, updater
 from app.config import APP_NAME, WEB_DIR, log
 from app.icon import paint
 from app.parse import split_title
@@ -350,6 +352,10 @@ def create_app(orchestrator: Any) -> Flask:
             "last_scrape_status": (last or {}).get("status"),
             "backfill": st.get("backfill"),
             "last_backfill": _backfill_label(store.last_backfill()),
+            # The updater's state, including current_version — this is the
+            # only route the UI needs for everything from the version line
+            # in the sidebar to the install banner.
+            "update": st.get("update"),
             # Whether the one-time history fill has landed. The sidebar says
             # "filling…" rather than "not backfilled yet" while this is false,
             # because the app now does it unprompted - there is nothing for the
@@ -427,6 +433,78 @@ def create_app(orchestrator: Any) -> Flask:
                             "message": "Something else is running"}), 409
         orchestrator.request_logout()
         return jsonify({"status": "started", "message": "Signing out of LSM"})
+
+    # ── Updates ──────────────────────────────────────────────────────────
+
+    @app.post("/api/update/check")
+    def update_check() -> Any:
+        if orchestrator.is_busy():
+            return jsonify({"status": "busy",
+                            "message": "Something else is running"}), 409
+        orchestrator.request_update_check()
+        return jsonify({"status": "started",
+                        "message": "Checking for updates"})
+
+    @app.post("/api/update/install")
+    def update_install() -> Any:
+        if orchestrator.is_busy():
+            return jsonify({"status": "busy",
+                            "message": "Something else is running"}), 409
+        orchestrator.request_update_install()
+        return jsonify({"status": "started",
+                        "message": "Downloading the update"})
+
+    @app.post("/api/update/skip")
+    def update_skip() -> Any:
+        """Hide this release until a strictly newer one ships.
+
+        The version comes from the orchestrator's own status, not from the
+        request: the server is the one party that knows what was actually
+        offered, and a client dictating what to skip could skip a version it
+        was never shown — or invent one that hides a future release.
+        """
+        update = (orchestrator.status().get("update") or {})
+        if update.get("state") != "available" or not update.get("latest_version"):
+            return jsonify({"status": "error",
+                            "message": "Nothing is available to skip"}), 400
+        state = store.load_update_state()
+        state["skipped"] = update["latest_version"]
+        store.save_update_state(state)
+        return jsonify({"status": "ok",
+                        "skipped": update["latest_version"]})
+
+    @app.post("/api/update/token")
+    def update_token() -> Any:
+        """Store a read-only GitHub token for the private repo, DPAPI-encrypted.
+
+        The reply says whether a token is set, never what it is: echoing it
+        back would put the credential in a response body that browser
+        tooling and any page script could read, which is the one place the
+        token must never go. The value lives in the body as JSON because a
+        password field's paste can carry characters form encoding would
+        mangle.
+        """
+        body = request.get_json(silent=True) or {}
+        token = body.get("token")
+        if not isinstance(token, str):
+            return jsonify({"status": "error",
+                            "message": "No token was sent"}), 400
+        try:
+            updater.save_token(token)
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+        except OSError as exc:
+            # dpapi.protect refusing — no encrypted store means no store:
+            # better a clear refusal than a token written in the clear.
+            return jsonify({"status": "error",
+                            "message": f"The token could not be stored "
+                                       f"encrypted ({exc})"}), 400
+        return jsonify({"status": "ok", "token_set": True})
+
+    @app.delete("/api/update/token")
+    def update_token_clear() -> Any:
+        updater.clear_token()
+        return jsonify({"status": "ok", "token_set": False})
 
     # ── Errors ───────────────────────────────────────────────────────────
 

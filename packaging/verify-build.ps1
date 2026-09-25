@@ -108,6 +108,35 @@ try {
     Write-Host "  Before: $($before.Count) files, sha256 $($exeHash.Substring(0,16))..."
     Write-Host ""
 
+    # -- 1b. Signatures ------------------------------------------------------
+    # build.ps1 signs both binaries; this is the pipeline's own proof, read
+    # back from the files rather than trusted from the signing step. That is
+    # the one failure this catches that nothing else does: an unreachable
+    # timestamp server degrades Set-AuthenticodeSignature to a warning, and
+    # an unsigned release would otherwise ship green.
+    $sig = Get-AuthenticodeSignature -FilePath $DistExe
+    if ($sig.Status -eq "Valid") {
+        Note-Pass "exe signature is Valid"
+    } else {
+        Note-Failure "exe signature is $($sig.Status) - $($sig.StatusMessage)"
+    }
+
+    $setupExe = Get-ChildItem (Join-Path $Root "dist\RotmanLSMCalendar-Setup-*.exe") -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime | Select-Object -Last 1
+    if ($setupExe) {
+        $sig2 = Get-AuthenticodeSignature -FilePath $setupExe.FullName
+        if ($sig2.Status -eq "Valid") {
+            Note-Pass "setup signature is Valid ($($setupExe.Name))"
+        } else {
+            Note-Failure "setup signature is $($sig2.Status) - $($sig2.StatusMessage)"
+        }
+    } else {
+        # A folder build without an installer is a state build.ps1 can leave
+        # on purpose (ISCC absent); not a verdict, so not a failure here.
+        Write-Host "  NOTE  no setup exe in dist\ - its signature was not checked"
+    }
+    Write-Host ""
+
     # -- 2. Watch for deletion while we work --------------------------------
     $watchLog = Join-Path $scratch "watcher.log"
     "watching $DistDir from $(Get-Date -Format 'HH:mm:ss')" | Set-Content -LiteralPath $watchLog

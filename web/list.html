@@ -105,6 +105,12 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
          state; this one now does too, and it opens neutral rather than green so
          the first frame does not claim anything the page has not checked. -->
     <span class="badge bg-gr" id="sessBadge" title="Checking…">● Session …</span>
+    <!-- An update offer, when there is one. A badge of words only: this page
+         owns no install action — the calendar does, and the calendar's
+         sidebar is where the offer is accepted or skipped. Saying it here
+         too is because this page is a tab of the same app and can otherwise
+         be the one that never mentions it. -->
+    <span class="badge bg-og" id="updNote" style="display:none"></span>
     <span class="badge bg-gr" id="evcnt">— events</span>
   </div>
   <div class="bar-r">
@@ -518,6 +524,14 @@ async function loadStatus(){
       el.className='badge bg-og';el.textContent='● '+(d.session_message||'Session unknown');
       el.title='Sign in from the Calendar page';
     }
+    // The update offer, from the same read — hidden unless something is
+    // actually available, so the badge means an offer and nothing else.
+    const upd=document.getElementById('updNote'),u=(d.update||{});
+    if(u.state==='available'){
+      upd.style.display='inline-block';
+      upd.textContent='⬆ Update available — install from the Calendar page';
+      upd.title=u.latest_version||'';
+    }else{upd.style.display='none';}
   }catch(e){
     // Back to unknown rather than leaving the last good reading standing: a
     // stale "active" is the exact claim this badge used to make unconditionally.

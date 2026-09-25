@@ -15,6 +15,8 @@ Responsibilities
 * Daily scrape at SCRAPE_TIME, plus a catch-up run if the app was closed
   over the scheduled time.
 * Heartbeat every HEARTBEAT_HOURS to keep the Shibboleth session warm.
+* Update check every UPDATE_CHECK_HOURS against the repo's GitHub releases
+  (see app/updater.py), plus a manual tray/sidebar check.
 * Serve manual "Scrape now" / "Sign in" / "Check session" requests.
 """
 
@@ -23,12 +25,13 @@ from __future__ import annotations
 import queue
 import threading
 from datetime import date, datetime, time as dtime, timedelta
+from pathlib import Path
 from typing import Any, Iterable
 
-from app import session, store
+from app import session, store, updater
 from app.config import (
-    BACKFILL_MONTHS, HEARTBEAT_HOURS, SCRAPE_MONTHS_AHEAD, SCRAPE_MONTHS_BACK,
-    SCRAPE_ON_START, SCRAPE_TIME, log,
+    APP_VERSION, BACKFILL_MONTHS, HEARTBEAT_HOURS, SCRAPE_MONTHS_AHEAD,
+    SCRAPE_MONTHS_BACK, SCRAPE_ON_START, SCRAPE_TIME, UPDATE_CHECK_HOURS, log,
 )
 from app.rooms import describe
 from app.scrape import (
@@ -41,6 +44,8 @@ CMD_BACKFILL = "backfill"
 CMD_LOGIN = "login"
 CMD_LOGOUT = "logout"
 CMD_PROBE = "probe"
+CMD_CHECK_UPDATE = "check_update"
+CMD_INSTALL_UPDATE = "install_update"
 CMD_STOP = "stop"
 
 
@@ -61,9 +66,32 @@ class Orchestrator:
             "last_heartbeat": None,
             "progress": "",
             "backfill": None,       # dict while/after a backfill, else None
+            # The updater's half of the status page. A nested dict for the
+            # same reason backfill is: it has its own writers (_set_update)
+            # and its own reader (/api/status merges it wholesale).
+            "update": {
+                # idle|checking|available|latest|downloading|ready|installing|failed
+                "state": "idle",
+                "current_version": APP_VERSION,
+                "latest_version": "",
+                "notes_url": "",
+                "message": "",
+                "last_check": None,
+                "progress": "",
+                "token_set": False,
+                "staged": "",
+            },
         }
         self._last_daily: date | None = None
         self._last_heartbeat: datetime | None = None
+        # UI hooks for the updater (main.py wires the tray in): a check that
+        # finds something announces it, an install that has staged and
+        # verified the installer ends the process. Held as callables so this
+        # module stays UI-agnostic — the worker must not import the window.
+        # A check that lands before they are set simply does not toast;
+        # the sidebar is the durable record either way.
+        self._update_notify = None
+        self._update_quit = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -78,7 +106,11 @@ class Orchestrator:
 
     def stop(self) -> None:
         self._q.put((CMD_STOP, {}))
-        if self._thread:
+        # The update path calls the quit hook from this worker's own thread,
+        # and a thread joining itself raises RuntimeError. It also does not
+        # need the join: the caller *is* the loop being stopped, and the
+        # process is about to exit through the window's teardown anyway.
+        if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=10)
 
     def submit(self, command: str, **kwargs: Any) -> None:
@@ -107,6 +139,19 @@ class Orchestrator:
     def request_probe(self) -> None:
         self.submit(CMD_PROBE)
 
+    def request_update_check(self, trigger: str = "manual") -> None:
+        self.submit(CMD_CHECK_UPDATE, trigger=trigger)
+
+    def request_update_install(self) -> None:
+        self.submit(CMD_INSTALL_UPDATE)
+
+    def set_update_hooks(self, notify: Any = None, quit: Any = None) -> None:
+        """Wire the tray in: notify(title, message) on a found update,
+        quit() once a verified installer is running. main.py calls this
+        after the Tray exists; before then the hooks are simply None."""
+        self._update_notify = notify
+        self._update_quit = quit
+
     def is_busy(self) -> bool:
         return bool(self.status().get("busy"))
 
@@ -117,6 +162,13 @@ class Orchestrator:
             store.init_db()
         except Exception:
             log.exception("database init failed")
+
+        # Guarded too: a staged installer left by a previous run is stale
+        # baggage, and failing to delete it must not fail the worker.
+        try:
+            updater.purge_staging()
+        except Exception:
+            log.exception("update staging purge failed")
 
         # This thread is the app's only scraper and nothing restarts it, so
         # every failure inside it is contained here. Before this, one exception
@@ -175,6 +227,10 @@ class Orchestrator:
         elif command == CMD_BACKFILL:
             self._do_backfill(months=kwargs.get("months"),
                               auto=kwargs.get("auto", False))
+        elif command == CMD_CHECK_UPDATE:
+            self._do_check_update(trigger=kwargs.get("trigger", "manual"))
+        elif command == CMD_INSTALL_UPDATE:
+            self._do_install_update()
         else:
             self._tick()
 
@@ -197,6 +253,9 @@ class Orchestrator:
         if self._due_for_heartbeat(now):
             self._do_heartbeat()
 
+        if self._due_for_update_check(now):
+            self._do_check_update(trigger="auto")
+
     def _due_for_daily(self, now: datetime) -> bool:
         if self._last_daily == now.date():
             return False
@@ -209,6 +268,24 @@ class Orchestrator:
         if self._last_heartbeat is None:
             return False
         return now - self._last_heartbeat >= timedelta(hours=HEARTBEAT_HOURS)
+
+    def _due_for_update_check(self, now: datetime) -> bool:
+        """Due when the last check is unknown or older than 24 hours.
+
+        The timestamp lives in the database (store.load_update_state), not in
+        this object: the cadence is a fact about the machine, not the process,
+        so a restart must not reset it — otherwise an app that is relaunched
+        often would check GitHub on every launch instead of once a day. A
+        corrupt timestamp reads as due; the cost is one check.
+        """
+        last = store.load_update_state().get("last_check")
+        if not last:
+            return True
+        try:
+            return now - datetime.fromisoformat(last) >= timedelta(
+                hours=UPDATE_CHECK_HOURS)
+        except ValueError:
+            return True
 
     # ── Operations (worker thread only) ──────────────────────────────────
 
@@ -281,6 +358,139 @@ class Orchestrator:
         self._last_heartbeat = datetime.now()
         self._set(last_heartbeat=datetime.now().isoformat())
         self._set_session(state)
+
+    # ── Update check / install (worker thread only) ──────────────────────
+
+    def _do_check_update(self, trigger: str = "manual") -> None:
+        """Ask GitHub what the latest release is, and say which of four
+        things is true: something is available, we are current, the found
+        release was skipped, or the check could not be made.
+
+        The 24 h stamp is written *before* the check runs, for the same
+        reason _due_for_daily marks the day first: an unreachable GitHub or
+        a refused token must not turn the 20 s tick into a retry storm. A
+        failed check waits a day, or for the manual tray item.
+        """
+        state = store.load_update_state()
+        state["last_check"] = datetime.now().isoformat()
+        store.save_update_state(state)
+
+        self._set(busy=True, busy_action="Checking for updates", progress="")
+        self._set_update(state="checking", last_check=state["last_check"],
+                         message="")
+        try:
+            token = updater.load_token()
+            self._set_update(token_set=bool(token))
+            release = updater.fetch_latest(token)
+            tag = release["tag"]
+            self._set_update(latest_version=tag, notes_url=release["notes_url"])
+
+            if not updater.is_newer(tag, APP_VERSION):
+                self._set_update(state="latest")
+                return
+
+            # A skipped release is hidden until something strictly newer
+            # ships — the skip records "not this one", not "never tell me
+            # again", and comparing against the skipped version rather than
+            # erasing it on the next check is what keeps that distinction.
+            skipped = state.get("skipped")
+            if skipped and not updater.is_newer(tag, skipped):
+                self._set_update(
+                    state="latest",
+                    message=f"Skipped {tag} — a newer release will show here.",
+                )
+                return
+
+            self._set_update(state="available")
+            log.info("update available: %s (found via %s check)", tag, trigger)
+            if self._update_notify:
+                self._update_notify(
+                    "Update available",
+                    f"{tag} — see the calendar sidebar to install it",
+                )
+        except updater.UpdateError as exc:
+            # The one honest sentence, into the sidebar where the fix is —
+            # a toast would say "something failed" and vanish, leaving no
+            # instruction behind.
+            self._set_update(state="failed", message=str(exc))
+        except Exception:
+            log.exception("update check failed")
+            self._set_update(state="failed",
+                             message="The update check failed unexpectedly.")
+        finally:
+            self._set(busy=False, busy_action="", progress="")
+
+    def _do_install_update(self) -> None:
+        """Download the release's installer, verify it against the release's
+        own checksum, run it, and end the process.
+
+        The installer gates its file copy on this app exiting (Inno's
+        CloseApplications), so launching before the quit is an ordering, not
+        a race: the installer waits for the teardown rather than replacing
+        files under a running app. The hash check is the load-bearing step —
+        a download that does not match what the publisher published is
+        never run, whatever went wrong with it.
+        """
+        st = (self.status().get("update") or {})
+        staged = st.get("staged") or ""
+        if st.get("state") != "ready" or not staged or not Path(staged).exists():
+            self._set(busy=True, busy_action="Downloading update", progress="")
+            self._set_update(state="downloading", message="", progress="")
+            try:
+                token = updater.load_token()
+                self._set_update(token_set=bool(token))
+                release = updater.fetch_latest(token)
+                tag = release["tag"]
+                self._set_update(latest_version=tag,
+                                 notes_url=release["notes_url"])
+                if not updater.is_newer(tag, APP_VERSION):
+                    self._set_update(state="latest",
+                                     message="Nothing to install — you are "
+                                             "already up to date.")
+                    return
+
+                def _progress(done: int, total: int | None) -> None:
+                    text = f"{done / 1048576:.1f} MB"
+                    if total:
+                        text += f" of {total / 1048576:.1f} MB"
+                    self._set_update(progress=text)
+
+                path = updater.download_setup(release, token, _progress)
+                expected = updater.fetch_sha256(release, token)
+                if not updater.verify_sha256(path, expected):
+                    raise updater.UpdateError(
+                        "The downloaded installer did not match the "
+                        "release's checksum — it will not be run. Try again."
+                    )
+                staged = str(path)
+                self._set_update(staged=staged, state="ready", progress="")
+            except updater.UpdateError as exc:
+                self._set_update(state="failed", message=str(exc))
+                return
+            except Exception:
+                log.exception("update download failed")
+                self._set_update(state="failed",
+                                 message="The update download failed "
+                                         "unexpectedly.")
+                return
+            finally:
+                self._set(busy=False, busy_action="", progress="")
+
+        # The state above (or the one we just built) says the staged file
+        # was verified against the release's own checksum — from here on,
+        # the app's job is to get out of the installer's way.
+        self._set_update(state="installing",
+                         message="The installer is running — the app will "
+                                 "close now.")
+        try:
+            updater.launch_installer(Path(staged))
+        except Exception:
+            log.exception("update installer could not be launched")
+            self._set_update(state="failed",
+                             message="The installer could not be started.")
+            return
+        if self._update_quit:
+            self._update_quit()
 
     def _do_logout(self) -> None:
         """Clear the session, then report what the probe found afterwards.
@@ -700,6 +910,14 @@ class Orchestrator:
             bf = dict(self._status.get("backfill") or {})
             bf.update(kwargs)
             self._status["backfill"] = bf
+
+    def _set_update(self, **kwargs: Any) -> None:
+        """Merge into the nested update dict under the lock — the same
+        shallow-update race _set_backfill exists for."""
+        with self._status_lock:
+            upd = dict(self._status.get("update") or {})
+            upd.update(kwargs)
+            self._status["update"] = upd
 
 
 def _excluded_rooms(seen: Iterable[str] = ()) -> set[str]:
