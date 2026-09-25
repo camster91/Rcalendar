@@ -161,8 +161,9 @@ if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 # above (source, issues, history) and on the mirror (artifacts only). The
 # same signed Setup, hash and .cer go to both, so the two carries cannot
 # drift apart. The mirror's tag targets its own README commit - that repo
-# deliberately holds no source, so the tag is only the name the release
-# hangs from. A failure here stops the script: this run says "released"
+# deliberately holds no source (packaging\mirror-readme.md is that one file,
+# seeded once via the GitHub contents API), so the tag is only the name the
+# release hangs from. A failure here stops the script: this run says "released"
 # only when the machine the app runs on can actually read what it shipped.
 & gh release create "v$Version" --target main --title "v$Version" `
     --repo $Mirror --notes-file $bodyPath `

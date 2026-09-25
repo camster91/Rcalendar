@@ -192,7 +192,10 @@ this README tells you to run — plus `build.ps1`, `RotmanLSMCalendar.spec` and
 their own headers. It also holds `sign.ps1` (the self-signed code-signing step
 `build.ps1` calls), `release-local.ps1` (the local release pipeline — see
 [Versions and releases](#versions-and-releases)) and `release-notes.md` (the
-release body). `packaging/allow-list-request.md` is the draft AV request
+release body). `packaging/mirror-readme.md` is the README of the public
+releases mirror, seeded once by `packaging\seed-mirror-readme.ps1` — the
+mirror needs that one commit before `release-local.ps1` can publish to it.
+`packaging/allow-list-request.md` is the draft AV request
 described in that appendix.
 
 `web/filters.js` holds the helpers both pages need — time and date formatting,
