@@ -125,12 +125,14 @@ beyond LSM, and every row here is covered by `tests/test_update.py` offline.
 
 | Feature | Where |
 |---|---|
+| Releases are read from a **public mirror** repo (`UPDATES_REPO`) holding nothing but artifacts — the source repo is private, and GitHub cannot serve a release publicly while its repo is not; checks and downloads are tokenless by design | `app/config.py`, `app/updater.py` |
 | Update check at startup, then every 24 h (`UPDATE_CHECK_HOURS`), and on demand from the tray's *Check for updates* | `app/updater.py`, `app/scheduler.py` |
 | The 24-hour clock is persisted, so a restart does not reset it into a retry storm | `app/store.py` |
+| A check that finds a release **pre-downloads it**: hash fetched first, verified bytes staged, so *Install update* starts the installer instead of a 42 MB wait; a failed pre-stage leaves the offer standing and the click downloads the old way | `app/scheduler.py` |
 | One-click install: download via the API's asset endpoint, verify against the release's `sha256.txt`, launch the installer detached, quit | `app/updater.py` |
 | A download that does not match its hash is never run | `app/updater.py` |
 | *Skip this version* — hidden until something strictly newer ships | `app/scheduler.py` |
-| Optional read-only GitHub token, stored the way `session.bin` is — and with no DPAPI, **no** token file is written, never a cleartext one | `app/updater.py`, `app/dpapi.py` |
+| Optional read-only GitHub token (the fallback, not the requirement), stored the way `session.bin` is — and with no DPAPI, **no** token file is written, never a cleartext one | `app/updater.py`, `app/dpapi.py` |
 | The `Bearer` header travels only on requests to `api.github.com` — including the download, which is why it goes through the asset endpoint | `app/updater.py` |
 | Sidebar *Updates* section + amber toolbar banner when an update is offered; the list page gets a text line only, no buttons | `web/calendar.html`, `web/list.html` |
 | `POST /api/update/check` · `install` · `skip` · `token` (never echoes the value) | `app/server.py` |
@@ -154,8 +156,8 @@ beyond LSM, and every row here is covered by `tests/test_update.py` offline.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Eight suites, 1056 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Eight suites, 1080 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The eight suites in CI | `.github/workflows/tests.yml` |
 | Both shipped binaries Authenticode-signed with a self-signed certificate created once and reused, so imported trust survives rebuilds | `packaging/sign.ps1` |
-| The release build: suites → `build.ps1` (signs) → `verify-build.ps1` → hash-after-signing → `gh release create` — locally via `release-local.ps1`, because the signing certificate lives in the build machine's user store and a runner's ephemeral cert dies with it; `release.yml` is manual/diagnostic (`workflow_dispatch` only) until signing moves onto the runner | `packaging/release-local.ps1`, `.github/workflows/release.yml` |
+| The release build: suites → `build.ps1` (signs) → `verify-build.ps1` → hash-after-signing → `gh release create` **twice** — on the private source repo and on the public releases mirror, same signed artifacts, so the repo the app reads cannot drift from the one that ships — locally via `release-local.ps1`, because the signing certificate lives in the build machine's user store and a runner's ephemeral cert dies with it; `release.yml` is manual/diagnostic (`workflow_dispatch` only) until signing moves onto the runner | `packaging/release-local.ps1`, `.github/workflows/release.yml` |

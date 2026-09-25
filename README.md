@@ -109,21 +109,31 @@ window opens from the tray's "Open Calendar".
 
 The app checks the project's GitHub releases at startup and once a day after
 that, plus any time you ask it to — the tray's **Check for updates** item, or
-the *Updates* section in the Calendar sidebar. When a newer release is
-published, an amber banner appears in the toolbar and the sidebar offers
-**Install update**: the app downloads the release's installer, checks it
-against the `sha256.txt` the release itself published, and only then runs
-it — a download that does not match is never run. The installer asks the app
-to close when it is ready to copy files; your data folder is untouched
-throughout. *Skip this version* hides a release you declined until something
-strictly newer ships.
+the *Updates* section in the Calendar sidebar. A check that finds a newer
+release also **pre-downloads it**: the installer is fetched and verified right
+then, so **Install update** starts it instead of a 42 MB wait (a pre-download
+that fails changes nothing — the offer stands and the click downloads the old
+way). An amber banner appears in the toolbar and the sidebar offers
+**Install update**: the app checks the downloaded installer against the
+`sha256.txt` the release itself published and only then runs it — a download
+that does not match is never run. The installer asks the app to close when it
+is ready to copy files; your data folder is untouched throughout. *Skip this
+version* hides a release you declined until something strictly newer ships.
 
-Because the repository is private, the check needs a read-only GitHub token.
-Paste it once into the sidebar's *GitHub token…* row and it is stored the way
+Releases are read from a **public mirror repository**
+(`camster91/rotman-lsm-calendar-releases`) that holds nothing but release
+artifacts — the app's own repository is private, and GitHub cannot serve a
+release publicly while its repo is not. That makes checks and downloads
+**tokenless and zero-config** on every machine.
+
+A GitHub token is therefore optional — a fallback, not a requirement. If one
+is pasted into the sidebar's *GitHub token…* row it is stored the way
 `session.bin` is: DPAPI-encrypted, readable only by your Windows account on
 this machine, never displayed again, and — same refusal, same reason —
-**never written at all** when DPAPI is unavailable. Without a token the check
-fails softly with one honest sentence rather than pretending to work.
+**never written at all** when DPAPI is unavailable. It is still sent on every
+request, so the update path keeps working unchanged the day the mirror is
+ever made private. Without a token, a refused or empty listing fails softly
+with one honest sentence rather than pretending to work.
 
 The token travels as an `Authorization: Bearer` header on requests to
 `api.github.com` **only**. The installer download goes through the API's asset
@@ -723,10 +733,13 @@ server degrades `Set-AuthenticodeSignature` to a warning and an unsigned
 release would otherwise ship green — then a hash of the **signed**
 installer written to `dist\sha256.txt`. The hash is taken after signing
 on purpose: that sidecar is what the updater verifies a download against.
-The script publishes with `gh release create --target master`; the
-Actions workflow stays as a manual/diagnostic path until signing moves
-onto the runner (a CA-issued certificate, or a pfx held in secrets — a
-decision not made here).
+The script publishes with `gh release create --target master` **twice** —
+once on this private repo and once on the public releases mirror
+(`camster91/rotman-lsm-calendar-releases`), with the same signed Setup,
+hash and `.cer`, so the repository the updater reads cannot drift from the
+one that ships. The Actions workflow stays as a manual/diagnostic path
+until signing moves onto the runner (a CA-issued certificate, or a pfx
+held in secrets — a decision not made here).
 
 ## Not the supported path: building an .exe
 
@@ -937,7 +950,9 @@ only** (loopback, no authentication, no host override), and its outbound
 traffic is HTTPS to `lsm.utoronto.ca` in a Playwright-driven Chromium, plus —
 since v1.1.2 — HTTPS to `api.github.com` for the update check and, when an
 update is accepted, the release's installer download (`app/updater.py`; the
-Bearer token, when one is set, travels only on those requests). There is
+Bearer token, when one is set, travels only on those requests; since v1.2.0
+the requests name the public releases mirror
+`camster91/rotman-lsm-calendar-releases`, not the private source repo). There is
 no OAuth loopback listener here — that belongs to a different tool of mine, and
 naming the wrong port in a security request is worse than naming none. AV teams
 approve far faster when told what the binary talks to and why.

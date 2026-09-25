@@ -431,7 +431,23 @@ class Orchestrator:
                 )
                 return
 
-            self._set_update(state="available")
+            # Pre-stage: the check already knows a newer release is out, so
+            # it downloads and verifies the installer now — "Install update"
+            # then starts the installer instead of a 42 MB wait, and a
+            # machine that checks while connected has the bytes before its
+            # user ever clicks. The worker is busy for the download either
+            # way; the label says what is actually happening. A pre-stage
+            # that fails is NOT a failed check: the offer still stands, the
+            # sentence says why the click will be slower, and the install
+            # path downloads the old way.
+            self._set(busy_action="Downloading update")
+            try:
+                staged = self._stage_update(release, token)
+                self._set_update(staged=staged, state="ready",
+                                 message="", progress="")
+            except updater.UpdateError as exc:
+                log.warning("update pre-stage failed: %s", exc)
+                self._set_update(state="available", message=str(exc))
             log.info("update available: %s (found via %s check)", tag, trigger)
             if self._update_notify:
                 self._update_notify(
@@ -453,16 +469,43 @@ class Orchestrator:
         finally:
             self._set(busy=False, busy_action="", progress="")
 
+    def _stage_update(self, release: dict, token: str | None) -> str:
+        """Download the release's installer and verify it against the
+        release's own checksum, returning the staged path.
+
+        One method for both writers — the check's pre-stage and the install
+        click — because the hash check is the load-bearing step and must be
+        identical wherever the bytes came from: a download that does not
+        match what the publisher published is never staged, never run,
+        whatever went wrong with it. The hash is fetched before the download
+        it describes: a release published without its sidecar fails in one
+        small request instead of after a 42 MB download.
+        """
+        setup_name = str(updater.select_setup(release)["name"])
+        expected = updater.fetch_sha256(release, token, setup_name)
+
+        def _progress(done: int, total: int | None) -> None:
+            text = f"{done / 1048576:.1f} MB"
+            if total:
+                text += f" of {total / 1048576:.1f} MB"
+            self._set_update(progress=text)
+
+        path = updater.download_setup(release, token, _progress)
+        if not updater.verify_sha256(path, expected):
+            raise updater.UpdateError(
+                "The downloaded installer did not match the "
+                "release's checksum — it will not be run. Try again."
+            )
+        return str(path)
+
     def _do_install_update(self) -> None:
-        """Download the release's installer, verify it against the release's
-        own checksum, run it, and end the process.
+        """Put the release's installer on disk verified (unless the check
+        already did), run it, and end the process.
 
         The installer gates its file copy on this app exiting (Inno's
         CloseApplications), so launching before the quit is an ordering, not
         a race: the installer waits for the teardown rather than replacing
-        files under a running app. The hash check is the load-bearing step —
-        a download that does not match what the publisher published is
-        never run, whatever went wrong with it.
+        files under a running app.
         """
         st = (self.status().get("update") or {})
         staged = st.get("staged") or ""
@@ -495,26 +538,7 @@ class Orchestrator:
                                 "since the last check.")
                     return
 
-                # The hash is fetched before the download it describes: a
-                # release published without its sidecar fails in one small
-                # request instead of after a 42 MB download, and an
-                # installer the release did not vouch for is never staged.
-                setup_name = str(updater.select_setup(release)["name"])
-                expected = updater.fetch_sha256(release, token, setup_name)
-
-                def _progress(done: int, total: int | None) -> None:
-                    text = f"{done / 1048576:.1f} MB"
-                    if total:
-                        text += f" of {total / 1048576:.1f} MB"
-                    self._set_update(progress=text)
-
-                path = updater.download_setup(release, token, _progress)
-                if not updater.verify_sha256(path, expected):
-                    raise updater.UpdateError(
-                        "The downloaded installer did not match the "
-                        "release's checksum — it will not be run. Try again."
-                    )
-                staged = str(path)
+                staged = self._stage_update(release, token)
                 self._set_update(staged=staged, state="ready", progress="")
             except updater.UpdateError as exc:
                 # Error-grade on purpose: this handler is where a checksum

@@ -1902,14 +1902,20 @@ function renderUpdate(d){
   if(u.last_check)line+='<br>checked '+new Date(u.last_check)
     .toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
   // The amber offer — and the only state that shows the Install controls.
-  // Everything else is a report: downloading shows progress, failed shows
-  // its one honest sentence (with the token row below as the fix it names),
-  // installing tells the reader why the page is about to die.
-  const offer=st==='available';
-  if(offer)line+='<br><strong style="color:var(--og)">'+esc(u.latest_version||'')+' available</strong>';
+  // "Available" and "ready" are the same offer at two ages: the check that
+  // finds a release pre-downloads and verifies it, so "ready" is that offer
+  // with the wait already paid. Everything else is a report: downloading
+  // shows progress, failed shows its one honest sentence (with the token
+  // row below as the fix it names), installing tells the reader why the
+  // page is about to die.
+  const offer=st==='available'||st==='ready';
+  if(offer){
+    line+='<br><strong style="color:var(--og)">'+esc(u.latest_version||'')+' available</strong>';
+    if(st==='ready')line+='<br>Downloaded and verified — Install runs it.';
+    else if(u.message)line+='<br>'+esc(u.message);
+  }
   else if(st==='checking')line+='<br>Checking for updates…';
   else if(st==='downloading')line+='<br>Downloading '+esc(u.progress||'…');
-  else if(st==='ready')line+='<br>Downloaded — starting the installer…';
   else if(st==='installing')line+='<br>Installer running — the app will close now.';
   else if(st==='failed')line+='<br><span style="color:#dc2626">'+esc(u.message||'The check could not be made.')+'</span>';
   else if(st==='latest')line+='<br>'+esc(u.message||'Up to date');
@@ -1953,7 +1959,12 @@ function doCheckUpdate(){
 async function doInstallUpdate(){
   const btn=document.getElementById('updBtn');
   if(btn.disabled)return;
-  btn.disabled=true;btn.textContent='⏳ Downloading…';
+  // The wait the label promises is the wait the click actually faces: a
+  // pre-staged (ready) offer already holds verified bytes, so the click
+  // starts the installer; anything else downloads first.
+  btn.disabled=true;
+  btn.textContent=(STATUS&&STATUS.update&&STATUS.update.state==='ready')
+    ?'⬆ Starting the installer…':'⏳ Downloading…';
   // Once the installer is running, a refused fetch is the teardown arriving,
   // not a failed update — the poll loop below treats it as silence instead
   // of an error for exactly that reason.

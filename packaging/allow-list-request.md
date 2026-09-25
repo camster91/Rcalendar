@@ -74,12 +74,14 @@ shipped folder.
   Playwright, signed in by me with Duo. Since v1.1.2 it also checks the
   project's own GitHub releases for updates — HTTPS to `api.github.com`, and
   the release's installer download through the same API when an update is
-  accepted. No other endpoints.
+  accepted (since v1.2.0 those requests name a public releases mirror
+  repository, not the private source repository). No other endpoints.
 - **Credentials:** the sign-in happens in a normal browser window with my own
   credentials. The application never sees or stores my password. It keeps the
   resulting session cookie locally so it does not have to re-authenticate daily.
-  The optional GitHub token the update check uses (the repository is private) is
-  stored encrypted with Windows DPAPI and sent only to `api.github.com`.
+  The optional GitHub token the update check can use (a fallback — the
+  releases mirror is public) is stored encrypted with Windows DPAPI and sent
+  only to `api.github.com`.
 - **No telemetry, no analytics, no third-party services.** The update check is
   the one thing the app fetches beyond LSM, and it fetches it from the
   project's own release page.

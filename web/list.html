@@ -542,9 +542,11 @@ async function loadStatus(){
       el.title='Sign in from the Calendar page';
     }
     // The update offer, from the same read — hidden unless something is
-    // actually available, so the badge means an offer and nothing else.
+    // actually on offer, so the badge means an offer and nothing else. The
+    // calendar pre-downloads a found release, so "ready" is the same offer
+    // with the wait already paid.
     const upd=document.getElementById('updNote'),u=(d.update||{});
-    if(u.state==='available'){
+    if(u.state==='available'||u.state==='ready'){
       upd.style.display='inline-block';
       upd.textContent='⬆ Update available — install from the Calendar page';
       upd.title=u.latest_version||'';

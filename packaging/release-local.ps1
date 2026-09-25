@@ -53,6 +53,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $VenvPy = Join-Path $Root ".venv\Scripts\python.exe"
 $Repo = "camster91/rotman-lsm-calendar"
+$Mirror = "camster91/rotman-lsm-calendar-releases"
 
 if (-not (Test-Path $VenvPy)) {
     throw "no venv found - run .\packaging\setup.ps1 first"
@@ -153,6 +154,22 @@ Write-Host ""
     $Setup.FullName $shaPath $certPath
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 
+# -- The public mirror - what the updater actually reads ---------------------
+# GitHub cannot serve a release publicly while its repo is private, and the
+# app's updater is tokenless by design (app/config.py: UPDATES_REPO), so
+# every release is published twice from this one run: on the private repo
+# above (source, issues, history) and on the mirror (artifacts only). The
+# same signed Setup, hash and .cer go to both, so the two carries cannot
+# drift apart. The mirror's tag targets its own README commit - that repo
+# deliberately holds no source, so the tag is only the name the release
+# hangs from. A failure here stops the script: this run says "released"
+# only when the machine the app runs on can actually read what it shipped.
+& gh release create "v$Version" --target main --title "v$Version" `
+    --repo $Mirror --notes-file $bodyPath `
+    $Setup.FullName $shaPath $certPath
+if ($LASTEXITCODE -ne 0) { throw "gh release create on the mirror failed" }
+
 Write-Host ""
 Write-Host "  Released v$Version." -ForegroundColor Green
 Write-Host "  https://github.com/$Repo/releases/tag/v$Version"
+Write-Host "  https://github.com/$Mirror/releases/tag/v$Version  (what the app reads)"

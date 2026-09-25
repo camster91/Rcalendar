@@ -1,7 +1,8 @@
 """
 The updater: version comparison, checksum verification, the download's
-staging discipline, the token's encryption, the 24-hour cadence, and the
-worker's four check outcomes plus the install path.
+staging discipline, the token's encryption, the 24-hour cadence, the
+worker's four check outcomes, the check's pre-stage of what it offers,
+and the install path.
 
     python tests/test_update.py
 
@@ -25,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import http.client
+import json
 import os
 import sys
 import tempfile
@@ -183,7 +185,7 @@ def test_download() -> None:
           "RotmanLSMCalendar-Setup-1.2.0.exe")
     check("the download went through the asset endpoint",
           ff.calls[0]["url"],
-          f"{updater.GITHUB_API}/repos/camster91/rotman-lsm-calendar"
+          f"{updater.GITHUB_API}/repos/{updater.UPDATES_REPO}"
           "/releases/assets/102")
     check("with the octet-stream Accept", ff.calls[0]["accept"],
           "application/octet-stream")
@@ -251,7 +253,7 @@ def test_sha256_asset() -> None:
                                    "RotmanLSMCalendar-Setup-1.2.0.exe"),
               "ab12cd34" * 8)
     check("the sidecar asset was found by name", ff.calls[0]["url"],
-          f"{updater.GITHUB_API}/repos/camster91/rotman-lsm-calendar"
+          f"{updater.GITHUB_API}/repos/{updater.UPDATES_REPO}"
           "/releases/assets/101")
 
     for label, body in (
@@ -362,7 +364,7 @@ def test_fetch_headers() -> None:
             updater._fetch("https://api.github.com/x")
             ok("a 404 raises", False)
         except updater.UpdateError as exc:
-            ok("a 404 says the repo is private with no token",
+            ok("a 404 without a token names the token fix",
                "private" in str(exc) and "token" in str(exc))
 
     with patched(urllib.request, urlopen=raise_status(403)):
@@ -408,6 +410,12 @@ def test_fetch_latest() -> None:
     ff = FakeFetch(body=good)
     with patched(updater, _fetch=ff):
         rel = updater.fetch_latest("tok")
+    # The listing is read from the public mirror, not the private source
+    # repo — the whole tokenless design hangs on which repo is asked.
+    check("the listing is read from the public mirror",
+          ff.calls[0]["url"],
+          f"{updater.GITHUB_API}/repos/{updater.UPDATES_REPO}"
+          "/releases/latest")
     check("the release's tag", rel["tag"], "v1.2.0")
     check("...its notes url", rel["notes_url"], "https://example/n")
     check("...and its assets", rel["assets"],
@@ -779,6 +787,127 @@ def test_install() -> None:
     ok("...with no quit", quits == [])
 
 
+# ── 7b. The check's pre-stage ──────────────────────────────────────────────
+
+class RideFetch:
+    """One fake for the check's whole ride — listing, sidecar, download —
+    answered by URL, because the check now pre-stages what it offers and
+    the point under test is the real _fetch-driven sequence, not the
+    helpers test_install already covers individually."""
+
+    def __init__(self, fail_download: bool = False) -> None:
+        self.calls: list[str] = []
+        self.fail_download = fail_download
+
+    def __call__(self, url, token=None, accept="application/json",
+                 timeout=20.0, on_data=None):
+        self.calls.append(url)
+        if "releases/latest" in url:
+            return json.dumps({
+                "tag_name": "v99.0.0", "name": "v99.0.0",
+                "html_url": "https://example/n",
+                "assets": [
+                    {"id": 401, "name": "sha256.txt", "size": 90},
+                    {"id": 402, "name": "RotmanLSMCalendar-Setup-99.0.0.exe",
+                     "size": len(INSTALLER_BYTES)},
+                ],
+            }).encode()
+        if url.endswith("/assets/401"):
+            digest = hashlib.sha256(INSTALLER_BYTES).hexdigest()
+            return (f"{digest}  RotmanLSMCalendar-Setup-99.0.0.exe\n").encode()
+        if self.fail_download:
+            raise updater.UpdateError("Could not reach GitHub (offline).")
+        if on_data is None:
+            return INSTALLER_BYTES
+        view = memoryview(INSTALLER_BYTES)
+        for i in range(0, len(INSTALLER_BYTES), 2):
+            on_data(view[i:i + 2].tobytes(), len(INSTALLER_BYTES))
+        return INSTALLER_BYTES
+
+
+def test_pre_stage() -> None:
+    print("\nthe check pre-downloads what it offers")
+    store.init_db()
+    updater.purge_staging()
+
+    # The ride: a check that finds v99.0.0 downloads and verifies it on the
+    # spot, so the offer it toasts already holds its own bytes — and the
+    # install click after it launches without fetching anything.
+    orch = scheduler.Orchestrator()
+    notes: list[tuple] = []
+    orch.set_update_hooks(notify=lambda t, m: notes.append((t, m)))
+    ride = RideFetch()
+    with patched(updater, load_token=lambda: "", _fetch=ride):
+        orch._do_check_update(trigger="auto")
+    st = orch.status()["update"]
+    check("a found release is pre-staged to 'ready'", st["state"], "ready")
+    staged = Path(st["staged"] or "?")
+    ok("...and the staged file exists", staged.exists())
+    ok("...holding the verified download",
+       staged.exists() and staged.read_bytes() == INSTALLER_BYTES)
+    ok("...and the toast still fired",
+       notes == [("Update available",
+                  "v99.0.0 — see the calendar sidebar to install it")])
+    ok("...and the worker is not left busy", not orch.status()["busy"])
+    # The order is the load-bearing part: the hash was fetched before the
+    # bytes it describes, exactly as the install path does it.
+    check("the ride asked for listing, sidecar, then installer",
+          [u.rsplit("/", 1)[-1] for u in ride.calls],
+          ["latest", "401", "402"])
+
+    # The install from 'ready' launches what the check staged — no listing,
+    # no sidecar, no download, just the run and the quit.
+    launched: list[Path] = []
+    quits: list[bool] = []
+    orch.set_update_hooks(notify=None, quit=lambda: quits.append(True))
+
+    def must_fetch(*a, **k):
+        raise AssertionError("a ready install must not fetch anything")
+
+    with patched(updater, _fetch=must_fetch,
+                 launch_installer=lambda p: launched.append(p)):
+        orch._do_install_update()
+    ok("a ready install launches the staged file", len(launched) == 1)
+    ok("...and it is the file the check verified", launched[0] == staged)
+    ok("...and still quits the app", quits == [True])
+    check("...and the state says installing",
+          orch.status()["update"]["state"], "installing")
+
+    # A pre-stage that fails is not a failed check: the offer stands, the
+    # sentence says why the click will be slower, and nothing half-written
+    # is left under the real name. (The staging dir is purged first because
+    # the ride above staged a good copy of the same file — in the app, the
+    # purge at worker start is what separates one version's staging from
+    # the next's.)
+    updater.purge_staging()
+    orch = scheduler.Orchestrator()
+    with patched(updater, load_token=lambda: "",
+                 _fetch=RideFetch(fail_download=True)):
+        orch._do_check_update(trigger="auto")
+    st = orch.status()["update"]
+    check("a failed pre-stage still offers the release",
+          st["state"], "available")
+    ok("...and says so in a sentence",
+       "Could not reach GitHub" in (st.get("message") or ""))
+    ok("...with no half-installer under the real name",
+       not (updater.STAGE_DIR /
+            "RotmanLSMCalendar-Setup-99.0.0.exe").exists())
+
+    # And the install click from that fallback downloads the old way — the
+    # offer never strands the user on the other side of a dead pre-stage.
+    launched.clear()
+    quits.clear()
+    orch.set_update_hooks(notify=None, quit=lambda: quits.append(True))
+    with patched(updater, load_token=lambda: "",
+                 _fetch=RideFetch(),
+                 launch_installer=lambda p: launched.append(p)):
+        orch._do_install_update()
+    ok("the fallback install downloads and verifies", len(launched) == 1)
+    ok("...and quits", quits == [True])
+
+    updater.purge_staging()
+
+
 # ── 8. The endpoints ────────────────────────────────────────────────────────
 
 class UpdateOrch:
@@ -899,6 +1028,7 @@ def main() -> int:
     test_cadence()
     test_check_outcomes()
     test_install()
+    test_pre_stage()
     test_endpoints()
 
     print("\n" + "=" * 60)

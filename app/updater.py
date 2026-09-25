@@ -7,8 +7,12 @@ single function (`_fetch`) that tests can replace. Nothing here knows about
 Flask, the tray, or the window: the scheduler drives it and decides what the
 status dict says; this module only does the work and says why it could not.
 
-The repository is private, so both the release listing and the asset
-downloads need a token. Downloads go through the API's asset endpoint
+Releases live on a public mirror repository (config.UPDATES_REPO) that
+holds nothing but release artifacts — the app's own repository is private,
+and GitHub cannot serve a release publicly while its repo is not — so the
+listing and the asset downloads need no token. A token, when the user has
+pasted one, is still sent on every request so the mirror keeps working the
+day it is ever made private. Downloads go through the API's asset endpoint
 (/repos/<repo>/releases/assets/<id> with Accept: application/octet-stream)
 rather than browser_download_url on purpose: that endpoint answers 302 to a
 pre-signed URL that needs no Authorization header, so the token only ever
@@ -31,7 +35,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from app.config import APP_VERSION, DATA_DIR, GITHUB_REPO, log
+from app.config import APP_VERSION, DATA_DIR, UPDATES_REPO, log
 from app import dpapi
 
 GITHUB_API = "https://api.github.com"
@@ -148,10 +152,12 @@ def _fetch(url: str, token: str | None = None,
     except urllib.error.HTTPError as exc:
         code = exc.code
         if code == 404:
-            # The same 404 means two different things, and the token in hand
-            # is the one fact that separates them. With no token on a private
-            # repo the fix is pasting one; with a token that just worked on
-            # the listing, the 404 is the release's own doing — an asset the
+            # The updates repo is public by design, so the same 404 means two
+            # different things and the token in hand is the one fact that
+            # separates them. Without one it most often means the repo has
+            # no published release yet (or has been made private — the
+            # sentence names that fix); with a token that just worked on the
+            # listing, the 404 is the release's own doing — an asset the
             # notes promised but the release does not carry — and sending
             # that user to paste a token they demonstrably have is false
             # advice.
@@ -161,9 +167,10 @@ def _fetch(url: str, token: str | None = None,
                     "the release is missing a file the updater needs."
                 ) from exc
             raise UpdateError(
-                "GitHub reports nothing found. The repository is private and "
-                "no token is set (or has no releases) — paste a read-only "
-                "GitHub token in the sidebar's Updates section."
+                "GitHub reports nothing found. The updates repository has "
+                "no published releases yet — or it is private and needs a "
+                "read-only GitHub token (paste one in the sidebar's "
+                "Updates section)."
             ) from exc
         if code in (401, 403):
             raise UpdateError(
@@ -212,7 +219,7 @@ def _asset(release: dict[str, Any], name: str,
 
 
 def _asset_url(asset: dict[str, Any]) -> str:
-    return f"{GITHUB_API}/repos/{GITHUB_REPO}/releases/assets/{asset['id']}"
+    return f"{GITHUB_API}/repos/{UPDATES_REPO}/releases/assets/{asset['id']}"
 
 
 # ── Release listing, hash, download ───────────────────────────────────────
@@ -220,7 +227,7 @@ def _asset_url(asset: dict[str, Any]) -> str:
 def fetch_latest(token: str | None) -> dict[str, Any]:
     """The latest published release, reduced to what the app needs:
     tag, name, notes URL and the asset list (id, name, size)."""
-    body = _fetch(f"{GITHUB_API}/repos/{GITHUB_REPO}/releases/latest",
+    body = _fetch(f"{GITHUB_API}/repos/{UPDATES_REPO}/releases/latest",
                   token=token, accept="application/vnd.github+json")
     try:
         data = json.loads(body.decode("utf-8"))

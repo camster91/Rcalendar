@@ -27,9 +27,18 @@ APP_NAME = "Rotman LSM Calendar"
 APP_VERSION = "1.1.2"
 APP_SLUG = "RotmanLSMCalendar"
 
-# Where releases live. The updater polls this repo's GitHub releases (and
-# downloads its assets) and packaging/release-notes.md links here, so the
-# repo is named in one place the same way the version is.
+# Where releases live. The app's own repository is private — its history and
+# issue tracker are what the privacy is for — and GitHub cannot serve a
+# release publicly while its repo is not, so every release is published
+# twice: on the private repo, and on a public mirror that holds nothing but
+# release artifacts. The updater talks ONLY to the mirror, which makes
+# checks and downloads tokenless on every machine; a pasted token is still
+# sent (see updater._fetch), so the fallback keeps working unchanged the
+# day the mirror is ever made private. packaging/release-local.ps1 does
+# both publishes in one run, so the two cannot drift apart.
+UPDATES_REPO = "camster91/rotman-lsm-calendar-releases"
+# The private source repo — named here only so docs and scripts have one
+# place to read it from, exactly like the version.
 GITHUB_REPO = "camster91/rotman-lsm-calendar"
 
 # ── Paths ────────────────────────────────────────────────────────────────

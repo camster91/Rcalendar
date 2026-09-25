@@ -973,6 +973,21 @@ def test_update_ui_tracks_the_worker(browser, base: str) -> None:
         poll()
         ok("calendar: downloading shows the progress",
            "Downloading 2.0 of 4.0 MB" in page.inner_text("#updInfo"))
+        check("...and hides the banner while it works",
+              shown("#updBanner"), "none")
+        check("...and the install button with it", shown("#updBtn"), "none")
+
+        # Ready: the same offer with the wait already paid — the check
+        # pre-downloaded and verified the installer, so Install starts it
+        # rather than a 42 MB wait. An offer, not a report.
+        ORCH.update = _update(state="ready", latest_version="v1.2.0")
+        poll()
+        check("calendar: ready shows the banner", shown("#updBanner"),
+              "inline-flex")
+        check("...and the install button", shown("#updBtn"), "block")
+        check("...and the skip link", shown("#updSkip"), "block")
+        ok("...and the sidebar says the download is done",
+           "Downloaded and verified" in page.inner_text("#updInfo"))
 
         # Failed: the one honest sentence, with the token row as the fix it
         # names — visible below, not a toast that says "something happened"
@@ -1209,6 +1224,26 @@ def test_update_actions_land_on_the_worker(browser, base: str) -> None:
            "closing" in toast_now())
         check("...and the worker saw no second request", ORCH.calls,
               ["update_install"])
+
+        # The same click on a pre-staged offer: the check already holds
+        # verified bytes, so the label the reader watches must promise the
+        # installer, not the download the wait no longer contains.
+        ORCH.calls.clear()
+        ORCH.update = _update(state="ready", latest_version="v1.2.0")
+        poll()
+        page.evaluate("() => document.getElementById('updBtn').click()")
+        page.wait_for_function(
+            "() => { const b = document.getElementById('updBtn');"
+            "        return b.disabled &&"
+            "               b.textContent.includes('Starting the installer'); }")
+        page.wait_for_timeout(500)
+        check("calendar: the pre-staged install reaches the worker once",
+              ORCH.calls, ["update_install"])
+        ORCH.update = _update(state="installing")
+        page.wait_for_function(
+            "() => { const t = document.getElementById('toast');"
+            "        return t.style.display !== 'none' &&"
+            "               t.textContent.includes('Installer running'); }")
     finally:
         ORCH.busy = False
         ORCH.busy_action = ""
@@ -1327,6 +1362,14 @@ def test_list_offers_updates_in_words_only(browser, base: str) -> None:
            "install from the Calendar page" in page.inner_text("#updNote"))
         check("list: ...with the version as its tooltip",
               page.eval_on_selector("#updNote", "el => el.title"), "v1.2.0")
+
+        # Ready is the same offer with the wait already paid — the calendar
+        # pre-downloaded it, and this page still points at the click.
+        ORCH.update = _update(state="ready", latest_version="v1.2.0")
+        poll()
+        check("list: a pre-staged release keeps the badge",
+              page.eval_on_selector("#updNote", "el => el.style.display"),
+              "inline-block")
 
         # And nothing else: the badge is words, not a button — a click on it
         # must be inert, and the page must carry no update POST at all.
