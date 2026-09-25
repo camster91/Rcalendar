@@ -21,6 +21,7 @@ held: never in cleartext, exactly like the session snapshot.)
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
@@ -89,6 +90,22 @@ def is_newer(candidate: str, current: str) -> bool:
 
 # ── The one network touchpoint ─────────────────────────────────────────────
 
+# Everything a socket can raise mid-transfer that is not an HTTP status:
+# IncompleteRead (a proxy truncating the body — an HTTPException, not an
+# OSError, which is why it is named here rather than inherited) belongs in
+# the same sentence as a refused connection, because both say "the
+# transfer died, try again".
+_NET_ERRORS = (urllib.error.URLError, http.client.HTTPException,
+               TimeoutError, OSError)
+
+
+def _unreachable(exc: BaseException) -> UpdateError:
+    return UpdateError(
+        f"Could not reach GitHub ({exc}). Updates need outbound HTTPS to "
+        "api.github.com."
+    )
+
+
 def _fetch(url: str, token: str | None = None,
            accept: str = "application/json", timeout: float = 20.0,
            on_data: Callable[[bytes, int | None], None] | None = None) -> bytes:
@@ -114,25 +131,35 @@ def _fetch(url: str, token: str | None = None,
         # asset downloads are routed so that it never needs to leave it).
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
+
+    # Each read is translated on its own, and the on_data callback is
+    # deliberately called OUTSIDE every translation below it: the callback
+    # writes the chunk to disk, and a disk-full write is not a network
+    # failure — rewriting it as one would tell the user to check their
+    # firewall while their disk is full. Its exceptions propagate raw.
+    def _read(count: int | None) -> bytes:
+        try:
+            return resp.read(count)  # type: ignore[union-attr]
+        except _NET_ERRORS as exc:
+            raise _unreachable(exc) from exc
+
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_total = resp.headers.get("Content-Length")
-            total = int(raw_total) if raw_total and raw_total.isdigit() else None
-            if on_data is None:
-                return resp.read()
-            chunks: list[bytes] = []
-            done = 0
-            while True:
-                chunk = resp.read(_CHUNK)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                done += len(chunk)
-                on_data(chunk, total if total is not None else done)
-            return b"".join(chunks)
+        resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
         code = exc.code
         if code == 404:
+            # The same 404 means two different things, and the token in hand
+            # is the one fact that separates them. With no token on a private
+            # repo the fix is pasting one; with a token that just worked on
+            # the listing, the 404 is the release's own doing — an asset the
+            # notes promised but the release does not carry — and sending
+            # that user to paste a token they demonstrably have is false
+            # advice.
+            if token:
+                raise UpdateError(
+                    "GitHub reports nothing found even with the token set — "
+                    "the release is missing a file the updater needs."
+                ) from exc
             raise UpdateError(
                 "GitHub reports nothing found. The repository is private and "
                 "no token is set (or has no releases) — paste a read-only "
@@ -147,11 +174,27 @@ def _fetch(url: str, token: str | None = None,
         raise UpdateError(
             f"GitHub answered HTTP {code} and the update could not be read."
         ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise UpdateError(
-            f"Could not reach GitHub ({exc}). Updates need outbound HTTPS to "
-            "api.github.com."
-        ) from exc
+    except _NET_ERRORS as exc:
+        raise _unreachable(exc) from exc
+
+    # No try around the body: _read has already translated the network
+    # errors, and the on_data callback's exceptions are the point above.
+    with resp:
+        raw_total = resp.headers.get("Content-Length")
+        total = (int(raw_total) if raw_total and raw_total.isdigit()
+                 else None)
+        if on_data is None:
+            return _read(None)
+        chunks: list[bytes] = []
+        done = 0
+        while True:
+            chunk = _read(_CHUNK)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            done += len(chunk)
+            on_data(chunk, total if total is not None else done)
+        return b"".join(chunks)
 
 
 def _asset(release: dict[str, Any], name: str,
@@ -197,24 +240,52 @@ def fetch_latest(token: str | None) -> dict[str, Any]:
     }
 
 
-def fetch_sha256(release: dict[str, Any], token: str | None) -> str:
+def select_setup(release: dict[str, Any]) -> dict[str, Any]:
+    """The release's installer asset. One selection site, so the hash
+    check and the download can never disagree about which file they mean."""
+    asset = _asset(release, SETUP_PREFIX, prefix=True)
+    if not str(asset.get("name", "")).endswith(".exe"):
+        raise UpdateError(
+            "The release's setup asset is not the installer — its name does "
+            "not end in .exe."
+        )
+    return asset
+
+
+def fetch_sha256(release: dict[str, Any], token: str | None,
+                 setup_name: str) -> str:
     """The hash the release itself claims for its installer.
 
     Read straight from the release's sha256.txt sidecar, so the check below
     is not the app trusting its own download — it is the app checking its
     download against what the publisher published, which is the only
     version of the check worth having.
+
+    The sidecar's second field names the file the hash describes; it is
+    compared against `setup_name` because the installer is chosen by prefix
+    and the sidecar is not — a release whose two assets disagree (a rebuilt
+    Setup uploaded beside the old one, a sidecar left over from the last
+    version) would otherwise hand every client a download that fails
+    verification byte-identically, forever, under a message that calls a
+    broken release a bad network.
     """
     asset = _asset(release, SHA256_ASSET)
     body = _fetch(_asset_url(asset), token=token,
                   accept="application/octet-stream")
     first = body.decode("utf-8", "replace").splitlines()[0].strip() if body.strip() else ""
-    if len(first.split()) < 1 or len(first.split()[0]) != 64:
+    parts = first.split()
+    if len(parts) < 2 or len(parts[0]) != 64:
         raise UpdateError(
             "sha256.txt does not hold a hash — the release's checksum file "
             "is malformed."
         )
-    return first.split()[0].lower()
+    if parts[1] != setup_name:
+        raise UpdateError(
+            f"The release's checksum file describes '{parts[1]}' but the "
+            f"installer is '{setup_name}' — the release is inconsistent. "
+            "Nothing can be installed from it until it is republished."
+        )
+    return parts[0].lower()
 
 
 def download_setup(release: dict[str, Any], token: str | None,
@@ -226,12 +297,7 @@ def download_setup(release: dict[str, Any], token: str | None,
     under the real name — a file that *looks* like the thing the next click
     would run is worse than no file at all.
     """
-    asset = _asset(release, SETUP_PREFIX, prefix=True)
-    if not str(asset.get("name", "")).endswith(".exe"):
-        raise UpdateError(
-            "The release's setup asset is not the installer — its name does "
-            "not end in .exe."
-        )
+    asset = select_setup(release)
     STAGE_DIR.mkdir(parents=True, exist_ok=True)
     final = STAGE_DIR / str(asset["name"])
     part = final.with_suffix(".exe.part")
@@ -279,8 +345,21 @@ def purge_staging() -> None:
     A staged installer left by a previous run belongs to a version that may
     already be behind the one now running, and 'ready' state from a dead
     process must not offer it as if it had been verified by this one.
+
+    A file that cannot be deleted (locked by an installer still running
+    from an interrupted update) is logged rather than skipped in silence:
+    ignore_errors=True would make the except the caller wrote around this
+    call dead code, and a purge that quietly failed leaves exactly the
+    stale file it exists to remove.
     """
-    shutil.rmtree(STAGE_DIR, ignore_errors=True)
+    if not STAGE_DIR.exists():
+        return
+
+    def _note(_func: Any, path: Any, exc: BaseException) -> None:
+        log.warning("update staging purge could not remove %s (%s)",
+                    path, exc)
+
+    shutil.rmtree(STAGE_DIR, onexc=_note)
 
 
 # ── The GitHub token ──────────────────────────────────────────────────────

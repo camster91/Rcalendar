@@ -124,7 +124,7 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
   <div class="ctrls">
     <div class="sbox">
       <span class="si">🔍</span>
-      <input type="text" id="search" placeholder="Search rooms, events..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="setTimeout(()=>closeDrop(),200)">
+      <input type="text" id="search" placeholder="Search rooms, events..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="dropBlur()">
       <div class="sdrop" id="sdrop"></div>
       <div class="tags" id="tags"></div>
     </div>
@@ -147,6 +147,11 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
 <script>
 // Populated from /api/bootstrap on startup.
 let EVENTS=[],ROOMS=[],GROUPS={};
+// The scrape timestamp of the EVENTS this page is holding, so loadStatus
+// can tell a scrape that landed behind this window from a clock tick.
+// null before the first reading, which is adopted rather than acted on —
+// the boot fetch is, or is within a breath of, the same scrape.
+let EVENTS_SCRAPE=null;
 
 // The single source of truth for what is selected. This page used to keep the
 // selection twice -- a `tags` array pushed to imperatively, and activeGroups --
@@ -298,6 +303,18 @@ function showDrop(d){
   box.classList.add('show');
 }
 function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
+// The blur close fires only when focus has left both the box and the list.
+// Tab moves focus into the list's buttons, and an unconditional timer closed
+// the list under that keypress. The delay stays for the mouse's sake: a
+// press on an item blurs the box first, and closing immediately would race
+// the mousedown the pick rides on.
+function dropBlur(){
+  setTimeout(()=>{
+    const a=document.activeElement;
+    if(a&&(a.id==='search'||(a.closest&&a.closest('#sdrop'))))return;
+    closeDrop();
+  },200);
+}
 function addTag(type,value){
   if(type==='group'){if(!activeGroups.has(value))toggleGroup(value);return;}
   if(type==='query'){searchQ=value.toLowerCase();document.getElementById('search').value=value;}
@@ -532,11 +549,39 @@ async function loadStatus(){
       upd.textContent='⬆ Update available — install from the Calendar page';
       upd.title=u.latest_version||'';
     }else{upd.style.display='none';}
+    // A scrape that ran behind this window — the 06:00 refresh while the
+    // tab sat open — changed the store, while this page's EVENTS were
+    // fetched once at boot. Without this the list keeps answering
+    // yesterday's question, and a booking cancelled overnight stays on
+    // it with nothing to say so. The calendar page adopted the same edge
+    // for the same reason (EVENTS_AT there).
+    const at=d.last_scrape;
+    if(at){
+      if(EVENTS_SCRAPE===null)EVENTS_SCRAPE=at;
+      else if(at!==EVENTS_SCRAPE){EVENTS_SCRAPE=at;refreshBookings();}
+    }
   }catch(e){
     // Back to unknown rather than leaving the last good reading standing: a
     // stale "active" is the exact claim this badge used to make unconditionally.
     el.className='badge bg-gr';el.textContent='● Session unknown';
     el.title='Could not reach the app';
+  }
+}
+
+// Fetched once at boot, so a scrape that lands while the page is open has
+// to be pulled in deliberately. Only the events are re-read: a scrape
+// writes events, not room metadata or groupings, and re-running the
+// filter builders would flash a rebuilt page to say nothing new.
+async function refreshBookings(){
+  try{
+    const d=await (await fetch('/api/bootstrap')).json();
+    EVENTS=d.events||[];
+    renderStats();
+    render();
+  }catch(e){
+    // Deliberately quiet: the list on screen is still true as of its last
+    // good read, and the badge above it catches its own failures. The
+    // next scrape tick retries this.
   }
 }
 

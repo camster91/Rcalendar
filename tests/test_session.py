@@ -38,7 +38,15 @@ def check(label: str, got, want) -> None:
         print(f"  PASS  {label}")
     else:
         FAIL += 1
-        print(f"  FAIL  {label}\n          got:  {got!r}\n          want: {want!r}")
+        # This console is cp1252; a failed assertion should report the
+        # mismatch, not die printing it.
+        g = f"{got!r}".encode("ascii", "replace").decode()
+        w = f"{want!r}".encode("ascii", "replace").decode()
+        print(f"  FAIL  {label}\n          got:  {g}\n          want: {w}")
+
+
+def ok(label: str, cond: bool) -> None:
+    check(label, bool(cond), True)
 
 
 # The URL the login window navigates to on open. Note it carries no APEX

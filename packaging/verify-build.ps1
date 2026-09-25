@@ -202,12 +202,25 @@ try {
 
     # -- 4. The bundle itself ----------------------------------------------
     if (Test-Path $selftestPath) {
-        $st = Get-Content $selftestPath -Raw | ConvertFrom-Json
-        foreach ($name in $st.checks.PSObject.Properties.Name) {
-            $c = $st.checks.$name
-            if ($c.ok) { Note-Pass "$name" } else { Note-Failure "$name -- $($c.detail)" }
+        # A truncated report (the app killed mid-write) must not discard
+        # the failures already collected with a raw parser error: the
+        # verdict is the list, and a corrupt report is itself a finding,
+        # stated plainly rather than thrown as an unattributed one.
+        $st = $null
+        try {
+            $st = Get-Content $selftestPath -Raw | ConvertFrom-Json
+        } catch {
+            Note-Failure "selftest.json exists but cannot be parsed - the report is corrupt ($_)"
         }
-        Write-Host "    frozen=$($st.frozen)  web_dir=$($st.web_dir)"
+        if ($st -and $st.checks) {
+            foreach ($name in $st.checks.PSObject.Properties.Name) {
+                $c = $st.checks.$name
+                if ($c.ok) { Note-Pass "$name" } else { Note-Failure "$name -- $($c.detail)" }
+            }
+            Write-Host "    frozen=$($st.frozen)  web_dir=$($st.web_dir)"
+        } elseif ($st) {
+            Note-Failure "selftest.json parsed but holds no checks - the run produced no verdict"
+        }
     } else {
         # No report at all. Distinguish the two worlds rather than reporting a
         # flat failure: config.py opens its FileHandler at import, so the mere
@@ -288,6 +301,15 @@ try {
     Get-Process -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($DistDir, [StringComparison]::OrdinalIgnoreCase) } |
         ForEach-Object { & taskkill /PID $_.Id /T /F 2>&1 | Out-Null }
+
+    # A kill that failed silently would leave a process running out of the
+    # folder being verified, and the next build would then fail on a
+    # file-in-use error that names nothing. Name it here instead.
+    $left = @(Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($DistDir, [StringComparison]::OrdinalIgnoreCase) })
+    if ($left.Count -gt 0) {
+        Write-Host ("  WARNING  " + $left.Count + " process(es) are still running out of dist\ - the next build may fail on a file-in-use error") -ForegroundColor Yellow
+    }
 
     $env:LSM_DATA_DIR = $prevData
     $env:LSM_PORT = $prevPort

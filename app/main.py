@@ -650,12 +650,30 @@ def run_app(show_window: bool = True, start_hidden: bool = False) -> int:
     log.info("web UI ready at %s", BASE_URL)
 
     if not show_window:
-        # Headless: the web UI is up, keep serving until interrupted.
+        # Headless: the web UI is up, keep serving until interrupted — or
+        # until an update's quit hook ends it, because "the app will close
+        # now" must be as true in this mode as in the tray one. The loop
+        # watches an Event instead of sleeping so the hook can end it from
+        # the worker thread; there is no window or tray here to route the
+        # quit through, and a plain sys.exit from that thread would only
+        # kill the worker.
+        headless_done = threading.Event()
+
+        def _headless_quit() -> None:
+            headless_done.set()
+
+        def _headless_notify(title: str, message: str) -> None:
+            # No tray to toast through in this mode; the log is the
+            # headless user's only channel.
+            log.info("update: %s (%s)", title, message)
+
+        orch.set_update_hooks(notify=_headless_notify, quit=_headless_quit)
         try:
-            while True:
-                time.sleep(1)
+            while not headless_done.wait(1.0):
+                pass
         except KeyboardInterrupt:
-            orch.stop()
+            pass
+        orch.stop()
         return 0
 
     import webview

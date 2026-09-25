@@ -39,7 +39,16 @@ def check(label: str, got, want) -> None:
         print(f"  PASS  {label}")
     else:
         FAIL += 1
-        print(f"  FAIL  {label}\n          got:  {got!r}\n          want: {want!r}")
+        # This console is cp1252 and the assertions below carry the odd
+        # non-ascii title character. A failed assertion should report the
+        # mismatch, not die printing it.
+        g = f"{got!r}".encode("ascii", "replace").decode()
+        w = f"{want!r}".encode("ascii", "replace").decode()
+        print(f"  FAIL  {label}\n          got:  {g}\n          want: {w}")
+
+
+def ok(label: str, cond: bool) -> None:
+    check(label, bool(cond), True)
 
 
 def test_dates() -> None:

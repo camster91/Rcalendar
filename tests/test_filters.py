@@ -56,6 +56,10 @@ def check(label: str, got, want) -> None:
         print(f"  FAIL  {label}\n          got:  {g}\n          want: {w}")
 
 
+def ok(label: str, cond: bool) -> None:
+    check(label, bool(cond), True)
+
+
 class StubOrch:
     """Stands in for the Playwright worker."""
 

@@ -130,13 +130,17 @@ class StubOrch:
         # itself when a command fails — while the run row only supplies
         # the status. A stub that reported neither would test nothing.
         self.last_scrape_message = ""
+        # Settable for the same reason as session: the list page re-fetches
+        # its bookings when this timestamp moves, and an edge needs two
+        # different answers to exist at all.
+        self.last_scrape = None
 
     def status(self) -> dict:
         return {
             "session": self.session, "session_message": self.session_message,
             "busy": self.busy, "busy_action": self.busy_action,
             "progress": self.progress,
-            "last_scrape": None,
+            "last_scrape": self.last_scrape,
             "last_scrape_message": self.last_scrape_message,
             "backfill": self.backfill,
             "update": self.update,
@@ -162,6 +166,11 @@ class StubOrch:
         """Recorded, not performed: the real install launches an installer
         and quits the very process this page is served from."""
         self.calls.append("update_install")
+
+    def skip_update(self, tag: str) -> None:
+        """Recorded like the others: the real one flips the live state,
+        which the page tests assert on through the update dict instead."""
+        self.calls.append("update_skip:" + tag)
 
 
 # The single orchestrator the server is built with, kept so a test can change
@@ -331,7 +340,10 @@ def chip_labels(page) -> list:
 def open_presets(page) -> None:
     """Open the filter panel, which is what loads the preset tags."""
     page.evaluate("() => openFilters()")
-    page.wait_for_selector("#presetTags .tag")
+    # The apply button, not the pill around it: the pill is layout since
+    # the chips became two real buttons, and waiting on the actuator is
+    # what proves it rendered.
+    page.wait_for_selector("#presetTags .tag-btn")
 
 
 def apply_preset(page, name: str):
@@ -344,7 +356,9 @@ def apply_preset(page, name: str):
     """
     return page.evaluate(
         """(name) => {
-             const t = [...document.querySelectorAll('#presetTags .tag')]
+             // The apply button, not the pill: that is the element the
+             // handler is wired to, and the element a keyboard would act on.
+             const t = [...document.querySelectorAll('#presetTags .tag-btn')]
                .find(el => el.textContent.startsWith(name));
              if (!t) return null;
              t.click();
@@ -979,6 +993,149 @@ def test_update_ui_tracks_the_worker(browser, base: str) -> None:
         page.close()
 
 
+def test_update_ui_offers_retry_and_names_the_token(browser, base: str) -> None:
+    """The two states the old renderer left a reader stranded in.
+
+    A failed install's sentence says "Try again", but the button was gone with
+    the offer -- an instruction with no act. And a saved token was invisible:
+    the row that exists to fix a missing token could not admit it was already
+    holding one, so its owner was sent to paste a token they demonstrably have.
+    """
+    page = open_page(browser, base, "/")
+
+    def shown(sel: str) -> str:
+        return page.eval_on_selector(sel, "el => el.style.display")
+
+    def poll() -> None:
+        page.evaluate("async () => { await loadStatus(); }")
+
+    try:
+        # A failed install with the offer still standing: the retry *is* the
+        # offer, restated.
+        ORCH.update = _update(
+            state="failed",
+            message="The downloaded installer did not match the release's "
+                    "checksum. Try again.",
+            latest_version="v1.2.0")
+        poll()
+        check("calendar: a failed install keeps the button",
+              shown("#updBtn"), "block")
+        check("...labelled as the retry the sentence asks for",
+              page.eval_on_selector("#updBtn", "el => el.textContent"),
+              "Try again")
+
+        # The same failed state with nothing on offer: a failed *check* has
+        # nothing to retry, so no button.
+        ORCH.update = _update(state="failed",
+                              message="Could not reach GitHub.")
+        poll()
+        check("calendar: a failed check with no offer shows no button",
+              shown("#updBtn"), "none")
+
+        # A saved token names itself, and Clear stops offering to remove
+        # what is not there.
+        ORCH.update = _update(state="failed",
+                              message="no token is set", token_set=True)
+        poll()
+        ok("calendar: the token row admits a token is saved",
+           "saved" in page.inner_text("#updTokenTog"))
+        check("...so Clear is offered", shown("#ghClear"), "")
+        ORCH.update = _update(token_set=False)
+        poll()
+        check("calendar: with no token saved, Clear is not offered",
+              shown("#ghClear"), "none")
+        ok("...and the row asks for one instead",
+           "saved" not in page.inner_text("#updTokenTog"))
+
+        # The toggle's expanded state is announced, not just drawn.
+        page.evaluate("() => toggleTokenRow()")
+        check("calendar: opening the token row sets aria-expanded",
+              page.eval_on_selector("#updTokenTog",
+                                    "el => el.getAttribute('aria-expanded')"),
+              "true")
+        page.evaluate("() => toggleTokenRow()")
+        check("...and closing it clears it again",
+              page.eval_on_selector("#updTokenTog",
+                                    "el => el.getAttribute('aria-expanded')"),
+              "false")
+    finally:
+        ORCH.update = _update()
+        page.close()
+
+
+def test_the_pages_own_state_changes_are_announced(browser, base: str) -> None:
+    """The things that change on their own, and the tabs that are one-of-a-set.
+
+    The toast is where every transient verdict lands, and the update line is
+    where the story lives between toasts -- a check that fails while the tab
+    is in the background lands there and nowhere else. Both need to be live
+    regions or their change is silent by construction. The view tabs are a
+    one-of-four selection, so the pressed state is the fact a screen reader
+    has to be able to ask for.
+    """
+    page = open_page(browser, base, "/")
+    try:
+        ok("calendar: the toast is a status region",
+           page.eval_on_selector("#toast", "el => el.getAttribute('role')")
+           == "status")
+        ok("calendar: the update line announces its changes",
+           page.eval_on_selector("#updInfo",
+                                 "el => el.getAttribute('aria-live')")
+           == "polite")
+
+        page.evaluate("() => setView('week')")
+        pressed = page.evaluate(
+            """() => Object.fromEntries(
+                 [...document.querySelectorAll('button.vtab')]
+                   .map(b => [b.id, b.getAttribute('aria-pressed')]))""")
+        check("calendar: after setView, exactly the week tab reads pressed",
+              sorted(k for k, v in pressed.items() if v == "true"),
+              ["v-week"])
+        ok("...and no tab is left without a state at all",
+           all(v in ("true", "false") for v in pressed.values()))
+        # The List link is a link, not a tab: the sweep must never have
+        # reached it.
+        ok("...and the List link carries no pressed state",
+           page.eval_on_selector("#tab-list",
+                                 "el => el.getAttribute('aria-pressed')")
+           is None)
+    finally:
+        page.close()
+
+
+def test_preset_chips_are_real_buttons(browser, base: str) -> None:
+    """Applying a preset and deleting one are two separate acts.
+
+    Both used to be spans with onclicks -- outside the keyboard entirely,
+    and the delete's x additionally rode a stopPropagation inside the apply
+    button's clickable area, so the two acts were one clickable pill that
+    happened to do either depending on where in it the mouse landed.
+    """
+    page = open_page(browser, base, "/")
+    try:
+        open_presets(page)
+
+        def chip(sel: str) -> dict:
+            return page.eval_on_selector(
+                "#presetTags " + sel,
+                "el => ({tag: el.tagName, type: el.type,"
+                "          label: el.getAttribute('aria-label')"
+                "                  || el.title || ''})")
+
+        apply_btn = chip(".tag-btn")
+        ok("presets: apply is a real button", apply_btn["tag"] == "BUTTON")
+        ok("presets: ...that submits nothing on its own",
+           apply_btn["type"] == "button")
+        ok("presets: ...and says what it does", "Apply" in apply_btn["label"])
+
+        del_btn = chip(".tag-x")
+        ok("presets: delete is a real button too", del_btn["tag"] == "BUTTON")
+        ok("presets: ...that says which preset it deletes",
+           "Delete" in del_btn["label"])
+    finally:
+        page.close()
+
+
 def test_update_actions_land_on_the_worker(browser, base: str) -> None:
     """The sidebar's buttons are offers to the worker, not work done in the
     request thread — and the install click rides the post-then-poll loop all
@@ -1057,6 +1214,92 @@ def test_update_actions_land_on_the_worker(browser, base: str) -> None:
         ORCH.busy_action = ""
         ORCH.update = _update()
         page.close()
+
+
+def test_a_dead_fetch_retracts_the_session_line(browser, base: str) -> None:
+    """loadStatus swallowed a dead fetch, leaving the last good reading on
+    screen as if it were a live claim about now -- and "Session active"
+    is the worst claim to leave standing while the app is unreachable. The
+    list page's badge already retracts to unknown on the same failure; the
+    calendar's session line needed the same honesty, and only for the
+    fetch itself: a session that was read is a fact even when a later line
+    fails to draw.
+    """
+    page = open_page(browser, base, "/")
+
+    def shown(sel: str) -> str:
+        return page.eval_on_selector(sel, "el => el.style.display")
+
+    try:
+        page.evaluate("async () => { await loadStatus(); }")
+        check("calendar: the session line says active while reachable",
+              page.inner_text("#sessInfo"), "● Session active")
+
+        # Kill /api/status for this page only, then poll: the fetch dies
+        # where a backgrounded tray app's would -- behind the user's back.
+        page.route("**/api/status", lambda route: route.abort())
+        page.evaluate("async () => { await loadStatus(); }")
+        ok("calendar: a dead fetch retracts the session line to unknown",
+           "unknown" in page.inner_text("#sessInfo"))
+        check("...and offers the sign-in, which is the thing that can be tried",
+              shown("#loginBtn"), "block")
+        check("...and not the sign-out, which no longer can",
+              shown("#logoutLink"), "none")
+    finally:
+        page.unroute("**/api/status")
+        page.close()
+
+
+def test_the_list_page_follows_a_scrape_that_lands(browser, base: str) -> None:
+    """The list page fetched its bookings once, at boot, and never again.
+
+    So a scrape that landed behind the window -- the 06:00 refresh while the
+    tab sat open -- changed the store while the list kept answering
+    yesterday's question, beside a badge whose clock had moved. The calendar
+    page adopted this edge for its grid (EVENTS_AT there); the list page
+    needed the same one.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        # The first reading is adopted, not acted on: the boot fetch is, or
+        # is within a breath of, the same scrape.
+        ORCH.last_scrape = "2026-03-10T06:00:00"
+        page.evaluate("async () => { await loadStatus(); }")
+        before = page.evaluate(
+            "() => document.querySelectorAll('.evcard').length")
+
+        # A scrape lands: the store gains a booking, and the timestamp
+        # moves. Only EVENTS_SCRAPE separates this from a quiet minute.
+        store.replace_events(
+            # The corpus the other tests count on, plus one new booking --
+            # which is what a scrape brings, and what the old page ignored.
+            [booking("142", D, "09:00", "12:00", "RSM 6307"),
+             booking("147", D, "14:00", "16:00", "CIBC Info Session"),
+             booking("157", D1, "10:00", "11:00", "Standup"),
+             booking("142", D1, "09:00", "17:00", "Full day workshop"),
+             booking("147", D1, "00:00", "23:00", "RENOVATIONS", all_day=True),
+             booking("127", SOW, "09:00", "12:00", "Sunday morning session"),
+             booking("127", NEXT_SOW, "00:00", "23:00", "Sunday service block",
+                     all_day=True),
+             booking("Auditorium", D2, "09:00", "12:00", HOSTILE),
+             booking("147", D1, "18:00", "20:00", "Evening event")],
+            SOW, D2)
+        ORCH.last_scrape = "2026-03-11T06:00:00"
+        page.evaluate("async () => { await loadStatus(); }")
+        page.wait_for_timeout(500)
+        check("list: a scrape that lands re-fetches the bookings",
+              page.evaluate(
+                  "() => document.body.textContent"
+                  ".includes('Evening event')"), True)
+        after = page.evaluate(
+            "() => document.querySelectorAll('.evcard').length")
+        ok("list: ...which grows the list, not just the badge's clock",
+           after > before)
+    finally:
+        ORCH.last_scrape = None
+        page.close()
+        # The corpus the later tests count on, back to eight bookings.
+        seeded()
 
 
 def test_list_offers_updates_in_words_only(browser, base: str) -> None:
@@ -1417,6 +1660,71 @@ def test_week_view_owns_all_seven_of_its_days(browser, base: str) -> None:
         )
         ok("week: the next Sunday's block is in its own week",
            "Sunday service block" in strip)
+    finally:
+        page.close()
+
+
+def test_week_view_is_reachable_by_keyboard(browser, base: str) -> None:
+    """The week grid had no keyboard path at all.
+
+    Every bar was a div with an onclick, and the all-day strip's items were
+    the same -- so the one view whose whole surface is "things that happened
+    at these hours" could not be asked about them without a mouse. The bars
+    are buttons now, with spoken labels, and Enter opens the tip the click
+    always opened. The month grid deliberately does not do this: it gives the
+    keyboard one focusable cell per day instead, because its chips are too
+    many to tab through -- the week view's are not.
+    """
+    # D1's week: one timed bar (127 on SOW) and one all-day strip item
+    # (RENOVATIONS on D1), which is both shapes this view renders.
+    page = open_page(browser, base, f"/?view=week&date={D1}")
+    try:
+        tags = page.eval_on_selector_all(
+            ".wkev", "els => els.map(e => e.tagName)")
+        ok("week: the event bars are buttons",
+           tags and all(t == "BUTTON" for t in tags))
+        ok("week: each bar carries a spoken label",
+           page.eval_on_selector_all(
+               ".wkev",
+               "els => els.every(e =>"
+               " (e.getAttribute('aria-label') || '').length > 8)"))
+
+        # Doing it rather than reading the markup: focus a bar, open the tip
+        # with the keyboard, and read what landed in it.
+        page.evaluate(
+            "() => [...document.querySelectorAll('.wkev')][0].focus()")
+        page.keyboard.press("Enter")
+        check("week: Enter on a focused bar opens the tip",
+              page.evaluate(
+                  "() => document.getElementById('tip').style.display"),
+              "block")
+        ok("week: ...carrying the bar's own booking",
+           "Sunday morning session" in page.inner_text("#tipT"))
+        ok("week: ...and its room",
+           "127" in page.inner_text("#tipR"))
+        page.keyboard.press("Escape")
+        check("week: Escape closes it again",
+              page.evaluate(
+                  "() => document.getElementById('tip').style.display"),
+              "none")
+
+        # The all-day strip: focusable, and the same keypress opens it.
+        strip = page.eval_on_selector(".wkad", "el => el.tagName")
+        ok("week: the strip item is focusable markup",
+           strip in ("DIV", "SPAN"))
+        ok("week: ...with a role and a tab stop",
+           page.eval_on_selector(
+               ".wkad",
+               "el => el.getAttribute('role') === 'button'"
+               " && el.tabIndex === 0"))
+        page.evaluate("() => document.querySelector('.wkad').focus()")
+        page.keyboard.press("Enter")
+        check("week: Enter on a strip item opens the tip",
+              page.evaluate(
+                  "() => document.getElementById('tip').style.display"),
+              "block")
+        ok("week: ...carrying the strip's own booking",
+           "RENOVATIONS" in page.inner_text("#tipT"))
     finally:
         page.close()
 
@@ -2366,6 +2674,18 @@ def test_search_suggestions_are_reachable_by_keyboard(browser, base: str) -> Non
             ok(f"{path}: Tab from the search box lands on a suggestion",
                landed.startswith("sdrop-item"))
 
+            # The blur close used to be unconditional 200ms after the box lost
+            # focus, so it fired under this exact keypress and ate the list
+            # one element into the trip. Waiting past the timer is what turns
+            # the two checks above from a timing accident into a promise.
+            page.wait_for_timeout(400)
+            still = page.evaluate(
+                "() => { const a = document.activeElement;"
+                " return [a ? a.className : '',"
+                "         document.getElementById('sdrop').className]; }")
+            ok(f"{path}: the list survives its own blur timer",
+               still[0].startswith("sdrop-item") and "show" in still[1])
+
             page.keyboard.press("Enter")
             page.wait_for_selector(f"{chips} .tag")
             tag = page.inner_text(f"{chips} .tag")
@@ -2735,7 +3055,11 @@ TESTS = [
     test_free_at_note_describes_the_span,
     test_list_has_a_url_and_the_links_carry_it,
     test_list_badge_reads_the_session,
+    test_a_dead_fetch_retracts_the_session_line,
+    test_the_list_page_follows_a_scrape_that_lands,
     test_update_ui_tracks_the_worker,
+    test_update_ui_offers_retry_and_names_the_token,
+    test_the_pages_own_state_changes_are_announced,
     test_update_actions_land_on_the_worker,
     test_list_offers_updates_in_words_only,
     test_sign_out_is_offered_only_with_a_session,
@@ -2746,6 +3070,8 @@ TESTS = [
     test_a_hostile_title_is_not_code,
     test_code_prefix_is_parsed_out_of_titles,
     test_week_view_owns_all_seven_of_its_days,
+    test_week_view_is_reachable_by_keyboard,
+    test_preset_chips_are_real_buttons,
     test_nav_steps_the_view_you_are_looking_at,
     test_list_reads_the_calendars_link,
     test_a_link_with_rooms_and_groups_means_one_thing,

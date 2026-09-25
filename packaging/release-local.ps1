@@ -65,7 +65,12 @@ if (-not (Test-Path $VenvPy)) {
 # resolves from the repo root.
 Push-Location $Root
 try {
-    $AppVersion = (& $VenvPy -c "import app.config as c; print(c.APP_VERSION)").Trim()
+    $raw = (& $VenvPy -c "import app.config as c; print(c.APP_VERSION)")
+    if ($LASTEXITCODE -ne 0 -or -not $raw) {
+        throw ("reading APP_VERSION failed (exit $LASTEXITCODE) - the " +
+               "traceback above is the reason, this is only the consequence")
+    }
+    $AppVersion = $raw.Trim()
 } finally {
     Pop-Location
 }

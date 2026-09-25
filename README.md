@@ -150,6 +150,8 @@ want. The venv path never reads it, so nothing breaks by leaving it alone.
 | `calendar.db` | SQLite: bookings, scrape history, room metadata |
 | `profile/` | Chromium profile — **holds a live session; treat as a password** |
 | `session.bin` | DPAPI-encrypted cookie snapshot |
+| `github-token.bin` | DPAPI-encrypted optional GitHub token (updater) |
+| `update-staged/` | Half-downloaded installers; cleared on every check |
 | `room_groups.json` | Editable room groupings shown as filter chips |
 | `app.log` | Rolling log |
 

@@ -114,6 +114,9 @@ a.vtab{display:inline-flex;align-items:center}
    different thing at a glance from "picked a room or a group". */
 .tag-f{background:rgba(11,126,88,.08);color:var(--gn2);border:1px solid rgba(11,126,88,.22)}
 .tag-x{cursor:pointer;opacity:.6;font-size:.78rem;margin-left:2px;background:none;border:none;padding:0;color:inherit;font-family:inherit;line-height:1}.tag-x:hover{opacity:1}
+/* The preset drawer's apply button: the pill around it owns the look, the
+   button owns the click, so it wears none of the UA chrome a button brings. */
+.tag-btn{background:none;border:none;padding:0;color:inherit;font:inherit;cursor:pointer}
 /* "clear all" is an action, not a filter, so it deliberately does not carry
    .tag: the row's chips are what .tag counts, and a second element wearing the
    class would make every count of them off by one. */
@@ -216,7 +219,10 @@ a.vtab{display:inline-flex;align-items:center}
 .wkc:hover{background:rgba(59,130,246,.03)}
 .wkdh{text-align:center;padding:8px 4px;font-size:.88rem;font-weight:600;background:var(--sf2);border-left:1px solid var(--bd);border-bottom:1px solid var(--bd)}
 .wkdh.tdy{color:var(--ac);background:var(--acg)}.wkdh .wn{font-size:.78rem;color:var(--tx3);font-weight:400}
-.wkev{position:absolute;left:2px;right:2px;border-radius:4px;padding:2px 6px;font-size:.78rem;font-weight:500;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;z-index:2;color:#fff}
+.wkev{position:absolute;left:2px;right:2px;border-radius:4px;padding:2px 6px;font-size:.78rem;font-weight:500;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;z-index:2;color:#fff;text-align:left}
+/* The bars are buttons since the week view gained a keyboard path, so they
+   wear none of the UA chrome — the bar's own rules above are the whole look. */
+.wkev{background:none;border:none;font-family:inherit}
 /* All-day strip above the week grid. */
 .wkadrow{display:flex;flex-wrap:wrap;gap:5px;padding:6px 4px 8px}
 .wkad{padding:2px 8px;border-left:3px solid;border-radius:3px;background:var(--sf2);color:var(--tx2);font-size:.76rem;font-weight:600;cursor:pointer;max-width:290px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -311,7 +317,8 @@ a.vtab{display:inline-flex;align-items:center}
 .fdel{background:none;border:1px solid var(--bd2);border-radius:var(--rs);color:var(--rd);cursor:pointer;font:inherit;font-size:.8rem;padding:4px 9px}
 .fdel:hover{border-color:var(--rd)}
 .ftags{display:flex;flex-wrap:wrap;gap:6px}
-.ftags .tag{cursor:pointer}
+/* No pointer rule for the pills themselves: the click lives on the buttons
+   inside them now (.tag-btn, .tag-x), and the cursor should say so. */
 /* No rule of its own any more: the "Actions" heading above it is the
    separation, and two lines with a gap between them read as two dividers. */
 .facts{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
@@ -329,10 +336,10 @@ a.vtab{display:inline-flex;align-items:center}
   </div>
   <div class="bar-r">
     <div class="vtabs">
-      <button class="vtab" id="v-month" onclick="setView('month')">📅 Month</button>
-      <button class="vtab" id="v-week" onclick="setView('week')">📊 Week</button>
-      <button class="vtab on" id="v-today" onclick="setView('today')">📋 Today</button>
-      <button class="vtab" id="v-changes" onclick="setView('changes')">🔀 Changes</button>
+      <button class="vtab" id="v-month" aria-pressed="false" onclick="setView('month')">📅 Month</button>
+      <button class="vtab" id="v-week" aria-pressed="false" onclick="setView('week')">📊 Week</button>
+      <button class="vtab on" id="v-today" aria-pressed="true" onclick="setView('today')">📋 Today</button>
+      <button class="vtab" id="v-changes" aria-pressed="false" onclick="setView('changes')">🔀 Changes</button>
       <a class="vtab" id="tab-list" href="/list">☰ List</a>
     </div>
     <!-- The drawer's entry point, and the only new thing on this bar — the
@@ -360,7 +367,7 @@ a.vtab{display:inline-flex;align-items:center}
     <div class="stit">Search</div>
     <div class="sbox">
       <span class="si">🔍</span>
-      <input type="text" id="q" placeholder="Room, group, event..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="setTimeout(()=>closeDrop(),200)">
+      <input type="text" id="q" placeholder="Room, group, event..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="dropBlur()">
       <div class="sdrop" id="sdrop"></div>
     </div>
     <!-- Opens the filter panel. Floor, seats, Panopto and free-at need more
@@ -412,17 +419,22 @@ a.vtab{display:inline-flex;align-items:center}
        repo's releases only need it while the repository is private. -->
   <div>
     <div class="stit">Updates</div>
-    <div class="sval" id="updInfo"><strong>loading…</strong></div>
+    <!-- aria-live: this line is where the update story lives between
+         toasts (a check that fails while the tab is in the background
+         lands here and nowhere else), and the poll rewrites it with
+         identical content between real changes, which live regions
+         diff rather than re-announce. -->
+    <div class="sval" id="updInfo" aria-live="polite"><strong>loading…</strong></div>
     <button class="btn btn-w" id="updBtn" onclick="doInstallUpdate()" style="display:none;width:100%;margin-top:8px">Install update</button>
     <a href="#" id="updSkip" onclick="doSkipUpdate();return false" style="display:none">Skip this version</a>
     <a href="#" id="updCheck" onclick="doCheckUpdate();return false" style="display:none">Check for updates</a>
-    <a href="#" id="updTokenTog" onclick="toggleTokenRow();return false" style="display:none">GitHub token…</a>
+    <a href="#" id="updTokenTog" onclick="toggleTokenRow();return false" style="display:none" aria-expanded="false" aria-controls="tokenRow">GitHub token…</a>
     <div id="tokenRow" style="display:none;margin-top:6px">
       <input type="password" id="ghToken" placeholder="read-only GitHub token"
              aria-label="GitHub token for update checks" autocomplete="off"
              style="width:100%;margin-bottom:6px">
       <button class="btn" onclick="doSaveToken()" style="width:47%">Save</button>
-      <button class="btn" onclick="doClearToken()" style="width:47%;float:right">Clear</button>
+      <button class="btn" id="ghClear" onclick="doClearToken()" style="width:47%;float:right">Clear</button>
     </div>
   </div>
 </div>
@@ -430,7 +442,7 @@ a.vtab{display:inline-flex;align-items:center}
 </div>
 
 <div class="tip" id="tip" onmousedown="event.stopPropagation()"><div class="tip-t" id="tipT"></div><div class="tip-tm" id="tipD"></div><div class="tip-r" id="tipR"></div><div class="tip-d" id="tipDe"></div></div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="mover" id="dayModal">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">
     <button class="mcl" onclick="closeOverlays()" aria-label="Close">✕</button>
@@ -678,6 +690,19 @@ function showDrop(d){
   box.classList.add('show');
 }
 function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
+// The blur close fires only when focus has left both the box and the list.
+// Tab moves focus into the list's buttons, and the old unconditional timer
+// closed the list under that keypress — the dropdown invited a keyboard
+// in and then ate it one element into the trip. The delay itself stays: a
+// mouse press on an item blurs the input first, and closing immediately
+// would race the mousedown the pick rides on.
+function dropBlur(){
+  setTimeout(()=>{
+    const a=document.activeElement;
+    if(a&&(a.id==='q'||(a.closest&&a.closest('#sdrop'))))return;
+    closeDrop();
+  },200);
+}
 
 // What the search dropdown and the free-room rows do, both. A room is chosen,
 // not accumulated: with every room selected there is nothing to add to, so the
@@ -769,7 +794,7 @@ function renderActiveChips(){
 }
 
 // ── VIEW ──
-function setView(v){viewMode=v;document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));document.getElementById('v-'+v).classList.add('on');render();}
+function setView(v){viewMode=v;document.querySelectorAll('button.vtab').forEach(b=>{b.classList.remove('on');b.setAttribute('aria-pressed','false');});const on=document.getElementById('v-'+v);if(on){on.classList.add('on');on.setAttribute('aria-pressed','true');}render();}
 
 // ── FILTER ──
 // The search box and searchQ are the same value kept in two places: onSearch
@@ -914,13 +939,26 @@ function renderWeek(){
   // All-day blocks get their own strip above the grid rather than being
   // dropped: they have no hour to land on, and silently omitting them made the
   // week view disagree with the month view about the same week.
-  const adStrip=allDayWeek.length?'<div class="wkadrow">'+allDayWeek.map(ev=>'<div class="wkad" style="border-left-color:'+rcol(ev.room, ROOMS)+'" '+tipAttrs(ev)+'>'+esc(fmtDay(ev.start).slice(0,3)+' · '+ev.title)+'</div>').join('')+'</div>':'';
+  // Focusable like the bars below it (tipAttrs carries the data; the keydown
+  // delegate under showTip carries the keypress), so the all-day strip is
+  // not the one part of the week view a keyboard cannot ask about.
+  const adStrip=allDayWeek.length?'<div class="wkadrow">'+allDayWeek.map(ev=>'<div class="wkad" role="button" tabindex="0" aria-label="All day — '+esc(ev.title)+'" style="border-left-color:'+rcol(ev.room, ROOMS)+'" '+tipAttrs(ev)+'>'+esc(fmtDay(ev.start).slice(0,3)+' · '+ev.title)+'</div>').join('')+'</div>':'';
   let h='<div class="chead"><div class="cnav"><button onclick="nav(-1)" aria-label="Previous week">◀</button><button class="td" onclick="goToday()">Today</button><button onclick="nav(1)" aria-label="Next week">▶</button></div><h2>'+MONTHS[sow.getMonth()]+' '+sow.getDate()+' – '+MONTHS[eow.getMonth()]+' '+eow.getDate()+', '+eow.getFullYear()+'</h2><span class="badge bg-bl">'+filtered.length+' events</span></div>'+adStrip+'<div class="wkgrid"><div class="cdhead" style="border-left:none"></div>';
   for(let d=0;d<7;d++){const day=new Date(sow);day.setDate(sow.getDate()+d);h+='<div class="wkdh'+(day.toDateString()===now.toDateString()?' tdy':'')+'">'+DAYS[d]+'<br><span class="wn">'+day.getDate()+'</span></div>';}
   const hours=[];for(let hr=H0;hr<=H1;hr++)hours.push(hr);
   hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+fmtISO(new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d))+'" data-hour="'+hr+'"></div>';}});
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
-  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=ev.end?new Date(ev.end):new Date(ev.start);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('div');d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room, ROOMS)+';';d.textContent=fmtT(ev.start)+' '+ev.title;d.onclick=e=>{e.stopPropagation();showTip(e,ev)};cell.appendChild(d);});
+  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=ev.end?new Date(ev.end):new Date(ev.start);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('button');d.type='button';d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room, ROOMS)+';';d.textContent=fmtT(ev.start)+' '+ev.title;
+    // The month grid gives the keyboard one focusable cell per day; the
+    // week grid's equivalent is the event bars, which are few enough to
+    // tab through individually. So each is a real button with a spoken
+    // label, and Enter/Space opens the same tip the click does — anchored
+    // at the bar's own corner, because a keypress carries no coordinates
+    // and showTip positions from the event it is handed.
+    d.setAttribute('aria-label',fmtT(ev.start)+(ev.end?' to '+fmtT(ev.end):'')+' — '+(ev.title||'')+' — Room '+(ev.room||'?'));
+    d.onclick=e=>{e.stopPropagation();showTip(e,ev);};
+    d.onkeydown=e=>{if(e.key!=='Enter'&&e.key!==' ')return;e.preventDefault();const r=d.getBoundingClientRect();showTip({clientX:r.left,clientY:r.bottom},ev);};
+    cell.appendChild(d);});
 }
 
 function renderToday(){
@@ -1649,13 +1687,19 @@ function renderPresets(){
   box.innerHTML='';
   if(!PRESETS.length){box.appendChild(el('div','fempty','No saved filters yet.'));return;}
   PRESETS.forEach(p=>{
-    const t=el('span','tag',p.name);
-    t.title='Apply “'+p.name+'”';
-    t.onclick=()=>applyPreset(p);
-    const x=el('span','tag-x','✕');
-    x.title='Delete';
-    x.onclick=ev=>{ev.stopPropagation();deletePreset(p.name);};
-    t.appendChild(x);
+    // Two real buttons, not one span with an onclick and a ✕ riding a
+    // stopPropagation inside it: applying a preset and deleting one are
+    // separate acts, and each deserves its own focusable, activatable
+    // element — a span puts both outside the keyboard and outside every
+    // "what here can I act on" question a reader asks of the row.
+    const t=el('span','tag');
+    const b=el('button','tag-btn',p.name);b.type='button';
+    b.title='Apply “'+p.name+'”';
+    b.onclick=()=>applyPreset(p);
+    const x=el('button','tag-x','✕');x.type='button';
+    x.title='Delete “'+p.name+'”';
+    x.onclick=()=>deletePreset(p.name);
+    t.appendChild(b);t.appendChild(x);
     box.appendChild(t);
   });
 }
@@ -1772,9 +1816,9 @@ function readURL(){
   // Noon, so the local-date round-trip through fmtISO cannot slip a day — the
   // same reason fmtDay appends T12:00:00.
   if(d&&/^\d{4}-\d{2}-\d{2}$/.test(d))curDate=new Date(d+'T12:00:00');
-  document.querySelectorAll('.vtab').forEach(b=>b.classList.remove('on'));
+  document.querySelectorAll('button.vtab').forEach(b=>{b.classList.remove('on');b.setAttribute('aria-pressed','false');});
   const tab=document.getElementById('v-'+viewMode);
-  if(tab)tab.classList.add('on');
+  if(tab){tab.classList.add('on');tab.setAttribute('aria-pressed','true');}
   syncGroupBtns();syncChips();
   return p.toString().length>0;
 }
@@ -1794,6 +1838,21 @@ function showTip(e,el){
 }
 // Only close tooltip on mousedown outside the tooltip
 document.addEventListener('mousedown',e=>{const tip=document.getElementById('tip');if(tip.style.display==='block'&&!tip.contains(e.target))tip.style.display='none';});
+// The keyboard's half of the tip: Enter or Space on a focusable strip item
+// (.wkad, via tipAttrs' dataset) opens the same box the click does, anchored
+// at the item's corner for the same reason the week bars anchor theirs.
+// Escape closes it — a click anywhere already could, and a keyboard that
+// opened the box needs a way to put it back.
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){const tip=document.getElementById('tip');if(tip.style.display==='block')tip.style.display='none';return;}
+  if(e.key!=='Enter'&&e.key!==' ')return;
+  const t=e.target;
+  if(t.classList&&t.classList.contains('wkad')){
+    e.preventDefault();
+    const r=t.getBoundingClientRect();
+    showTip({clientX:r.left,clientY:r.bottom},t);
+  }
+});
 
 // ── SCRAPE ──
 async function triggerScrape(){
@@ -1859,10 +1918,27 @@ function renderUpdate(d){
   if(offer)ban.textContent='⬆ Update available — '+(u.latest_version||'');
   // The button's busy state belongs to doInstallUpdate, which owns the
   // click; this function owns the visibility, which is a fact about the
-  // release rather than about the click.
-  btn.style.display=offer?'block':'none';
+  // release rather than about the click. A failed install's sentence says
+  // "Try again", so when an offer is still standing the button is the
+  // thing to try again *with* — hidden, the sentence would be an
+  // instruction with no act. Only when something was genuinely offered:
+  // a failed *check* that never saw a release has nothing to retry.
+  const cur='v'+(u.current_version||'?');
+  const retry=st==='failed'&&u.latest_version&&u.latest_version!==cur;
+  btn.style.display=(offer||retry)?'block':'none';
+  // The label only when the click does not own the button: mid-install it
+  // is disabled and doInstallUpdate has set its own working label, and a
+  // poll rewriting that mid-download would flash "Install update" over
+  // the progress the reader is watching.
+  if(!btn.disabled)btn.textContent=retry&&!offer?'Try again':'Install update';
   skip.style.display=offer?'block':'none';
   chk.style.display='block';tog.style.display='block';
+  // The token row is the fix a failed check names, so it must also admit
+  // whether it is already fixed — a person with a saved token who reads
+  // "paste a token" needs to know the app is already holding one.
+  tog.textContent=u.token_set?'GitHub token — saved, replace it…':'GitHub token…';
+  // And its Clear button must not offer to remove what is not there.
+  document.getElementById('ghClear').style.display=u.token_set?'':'none';
 }
 
 function doCheckUpdate(){
@@ -1909,7 +1985,12 @@ async function doInstallUpdate(){
   }catch(e){
     if(!sawInstalling)toast('❌ '+e.message);
   }finally{
-    btn.disabled=false;btn.textContent='Install update';
+    btn.disabled=false;
+    // Not a hard-coded label: the poll that would relabel this button can
+    // be a minute away, and the state it must speak for is already in
+    // hand — STATUS is the last /api/status reading, the same dict
+    // renderUpdate speaks from.
+    renderUpdate(STATUS||{});
   }
 }
 
@@ -1923,8 +2004,10 @@ function doSkipUpdate(){
 }
 
 function toggleTokenRow(){
-  const row=document.getElementById('tokenRow');
-  row.style.display=row.style.display==='none'?'block':'none';
+  const row=document.getElementById('tokenRow'),tog=document.getElementById('updTokenTog');
+  const open=row.style.display==='none';
+  row.style.display=open?'block':'none';
+  tog.setAttribute('aria-expanded',open?'true':'false');
 }
 
 function doSaveToken(){
@@ -1935,7 +2018,15 @@ function doSaveToken(){
   fetch('/api/update/token',{method:'POST',headers:{'Content-Type':'application/json'},
                               body:JSON.stringify({token:t})})
     .then(r=>r.json()).then(d=>{
-      if(d.status==='ok'){toast('Token saved',true);inp.value='';loadStatus();}
+      if(d.status==='ok'){
+        toast('Token saved',true);inp.value='';loadStatus();
+        // A saved token is what a failed check told the reader to go get,
+        // so the check runs again by itself: making them find the Check
+        // link and press it would be handing them the last step of the
+        // errand they just finished. A busy worker's 409 is toasted by
+        // doCheckUpdate like any other click.
+        doCheckUpdate();
+      }
       else toast('⚠️ '+(d.message||'The token was not saved'));
     })
     .catch(e=>toast('❌ '+e.message));
@@ -1987,8 +2078,23 @@ document.addEventListener('keydown',e=>{
 
 // ── BOOT ──
 async function loadStatus(){
+  let d;
   try{
-    const r=await fetch('/api/status');const d=await r.json();
+    const r=await fetch('/api/status');d=await r.json();
+  }catch(e){
+    // The fetch itself died, so the last good reading is now a stale claim,
+    // and "Session active" is the worst of those to leave standing. Back to
+    // unknown — the same retraction list.html's badge makes. Only the
+    // session line is touched, deliberately: a failure later in this body
+    // is a drawing fault, and a session that *was* read is a fact even
+    // when a later line fails to render it.
+    const el=document.getElementById('sessInfo');
+    el.className='sess warn';el.textContent='● Session unknown — could not reach the app';
+    document.getElementById('loginBtn').style.display='block';
+    document.getElementById('logoutLink').style.display='none';
+    return;
+  }
+  try{
     // The card and the fast poll both speak from this reading, and the BF
     // edge below can return early, so both are handled here at the top
     // rather than at the end.

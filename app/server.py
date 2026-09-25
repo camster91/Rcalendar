@@ -463,6 +463,9 @@ def create_app(orchestrator: Any) -> Flask:
         offered, and a client dictating what to skip could skip a version it
         was never shown — or invent one that hides a future release.
         """
+        if orchestrator.is_busy():
+            return jsonify({"status": "busy",
+                            "message": "Something else is running"}), 409
         update = (orchestrator.status().get("update") or {})
         if update.get("state") != "available" or not update.get("latest_version"):
             return jsonify({"status": "error",
@@ -470,6 +473,12 @@ def create_app(orchestrator: Any) -> Flask:
         state = store.load_update_state()
         state["skipped"] = update["latest_version"]
         store.save_update_state(state)
+        # The store write makes the skip survive a restart; this makes it
+        # visible now. Without it the banner, the Install button and the
+        # Skip link stay on screen until the next check — up to 24 h — and
+        # the click that was supposed to hide the offer appears to have
+        # done nothing.
+        orchestrator.skip_update(update["latest_version"])
         return jsonify({"status": "ok",
                         "skipped": update["latest_version"]})
 

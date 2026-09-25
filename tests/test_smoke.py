@@ -42,7 +42,11 @@ def check(label: str, got, want) -> None:
         print(f"  PASS  {label}")
     else:
         FAIL += 1
-        print(f"  FAIL  {label}\n          got:  {got!r}\n          want: {want!r}")
+        # This console is cp1252; a failed assertion should report the
+        # mismatch, not die printing it.
+        g = f"{got!r}".encode("ascii", "replace").decode()
+        w = f"{want!r}".encode("ascii", "replace").decode()
+        print(f"  FAIL  {label}\n          got:  {g}\n          want: {w}")
 
 
 def ok(label: str, cond: bool) -> None:
@@ -61,7 +65,9 @@ class StubOrch:
             "busy_action": "", "progress": "",
             "last_scrape": datetime.now().isoformat(),
             "last_scrape_message": "42 bookings",
-            "update": {"state": "idle", "current_version": "1.1.2",
+            # APP_VERSION, not a literal: a version bump must not turn this
+            # suite red for a reason unrelated to the change being made.
+            "update": {"state": "idle", "current_version": APP_VERSION,
                        "latest_version": "", "notes_url": "", "message": "",
                        "last_check": None, "progress": "", "token_set": False,
                        "staged": ""},
@@ -87,6 +93,9 @@ class StubOrch:
 
     def request_update_install(self) -> None:
         self.calls.append("update_install")
+
+    def skip_update(self, tag: str) -> None:
+        self.calls.append("update_skip:" + tag)
 
 
 def sample_events() -> list[dict]:

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import http.client
 import os
 import sys
 import tempfile
@@ -54,7 +55,11 @@ def check(label: str, got, want) -> None:
         print(f"  PASS  {label}")
     else:
         FAIL += 1
-        print(f"  FAIL  {label}\n          got:  {got!r}\n          want: {want!r}")
+        # This console is cp1252; a failed assertion should report the
+        # mismatch, not die printing it.
+        g = f"{got!r}".encode("ascii", "replace").decode()
+        w = f"{want!r}".encode("ascii", "replace").decode()
+        print(f"  FAIL  {label}\n          got:  {g}\n          want: {w}")
 
 
 def ok(label: str, cond: bool) -> None:
@@ -109,7 +114,9 @@ def test_versions() -> None:
 def test_sha256() -> None:
     print("\nsha256 verification")
     body = b"these would be installer bytes"
-    path = Path(tempfile.mkdtemp(prefix="lsm-hash-")) / "setup.exe"
+    # Under the suite's LSM_DATA_DIR scratch, not a fresh mkdtemp: that
+    # leaks a directory per run, and the scratch is the one dir left behind.
+    path = Path(os.environ["LSM_DATA_DIR"]) / "hash-fixture-setup.exe"
     path.write_bytes(body)
     digest = hashlib.sha256(body).hexdigest()
 
@@ -240,7 +247,9 @@ def test_sha256_asset() -> None:
                    + b"  RotmanLSMCalendar-Setup-1.2.0.exe\n")
     with patched(updater, _fetch=ff):
         check("the hash is read from the sidecar's first line",
-              updater.fetch_sha256(RELEASE, "tok"), "ab12cd34" * 8)
+              updater.fetch_sha256(RELEASE, "tok",
+                                   "RotmanLSMCalendar-Setup-1.2.0.exe"),
+              "ab12cd34" * 8)
     check("the sidecar asset was found by name", ff.calls[0]["url"],
           f"{updater.GITHUB_API}/repos/camster91/rotman-lsm-calendar"
           "/releases/assets/101")
@@ -249,13 +258,29 @@ def test_sha256_asset() -> None:
         ("no hash at all", b""),
         ("not a hash", b"hello world\n"),
         ("a short hash", b"ab12cd\n"),
+        ("a hash with no filename", ("ab12cd34" * 8).encode() + b"\n"),
     ):
         with patched(updater, _fetch=FakeFetch(body=body)):
             try:
-                updater.fetch_sha256(RELEASE, None)
+                updater.fetch_sha256(RELEASE, None,
+                                     "RotmanLSMCalendar-Setup-1.2.0.exe")
                 ok(f"{label} is refused", False)
             except updater.UpdateError:
                 ok(f"{label} is refused", True)
+
+    # The sidecar must describe the installer the prefix match chose: a
+    # release whose two assets disagree would otherwise fail verification
+    # byte-identically forever, under a message calling it a bad download.
+    wrong = FakeFetch(body=("ab12cd34" * 8).encode()
+                      + b"  RotmanLSMCalendar-Setup-1.1.0.exe\n")
+    with patched(updater, _fetch=wrong):
+        try:
+            updater.fetch_sha256(RELEASE, None,
+                                 "RotmanLSMCalendar-Setup-1.2.0.exe")
+            ok("a sidecar naming another file is refused", False)
+        except updater.UpdateError as exc:
+            ok("a sidecar naming another file is refused",
+               "release is inconsistent" in str(exc))
 
 
 # ── 4. _fetch itself: headers and error sentences ──────────────────────────
@@ -356,6 +381,22 @@ def test_fetch_headers() -> None:
             ok("an unreachable host raises", False)
         except updater.UpdateError as exc:
             ok("an unreachable host says so", "Could not reach GitHub" in str(exc))
+
+    # A response that dies mid-body raises IncompleteRead, which is an
+    # HTTPException, not an OSError — http.client being named in the
+    # translated set is the only reason this becomes the sentence the
+    # sidebar can print instead of a traceback.
+    class dying(FakeResponse):
+        def read(self, size: int = -1) -> bytes:
+            raise http.client.IncompleteRead(b"partial", 10)
+
+    with patched(urllib.request, urlopen=lambda req, timeout=None: dying(b"")):
+        try:
+            updater._fetch("https://api.github.com/x")
+            ok("a mid-body disconnect raises", False)
+        except updater.UpdateError as exc:
+            ok("...and says could not reach GitHub",
+               "Could not reach GitHub" in str(exc))
 
 
 def test_fetch_latest() -> None:
@@ -504,6 +545,18 @@ def test_check_outcomes() -> None:
     check("the current version is 'latest'", st["state"], "latest")
     check("...with no toast", notes, [])
 
+    # A published release whose tag does not parse is not "up to date":
+    # /releases/latest only returns a release a maintainer deliberately
+    # shipped, so a tag this app cannot compare may well be newer — saying
+    # otherwise would leave every user waiting for a fix that already
+    # shipped. It fails loudly with the tag named instead.
+    orch, st = run_check("v1.2.0-rc1")
+    check("an unparsable tag is 'failed', not 'latest'",
+          st["state"], "failed")
+    ok("...and the sentence names the tag it could not compare",
+       "v1.2.0-rc1" in st["message"])
+    check("...with no toast", notes, [])
+
     # Skipped and nothing newer: still hidden, with the sentence that says so.
     orch, st = run_check("v99.0.0", skipped="v99.0.0")
     check("a skipped release stays hidden", st["state"], "latest")
@@ -547,6 +600,19 @@ def test_check_outcomes() -> None:
     check("the status reports no token set",
           orch.status()["update"]["token_set"], False)
 
+    # The live flip is a real-Orchestrator behaviour and is tested here on
+    # the real class: the endpoint test's stub mirrors skip_update by hand,
+    # so it can prove the endpoint calls the method but not that the method
+    # itself flips anything.
+    orch = scheduler.Orchestrator()
+    orch._set_update(state="available", latest_version="v99.0.0")
+    orch.skip_update("v99.0.0")
+    st = orch.status()["update"]
+    check("a real orchestrator's skip flips the live state",
+          st["state"], "latest")
+    ok("...and the message says what it did",
+       "Skipped v99.0.0" in (st.get("message") or ""))
+
 
 # ── 7. The install path ────────────────────────────────────────────────────
 
@@ -559,7 +625,10 @@ def test_install() -> None:
 
     def good_release():
         return {"tag": "v99.0.0", "name": "v99.0.0",
-                "notes_url": "https://example/n", "assets": []}
+                "notes_url": "https://example/n",
+                "assets": [{"id": 401,
+                            "name": "RotmanLSMCalendar-Setup-99.0.0.exe",
+                            "size": 44}]}
 
     def fake_download(release, token, on_progress):
         updater.STAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -570,20 +639,32 @@ def test_install() -> None:
 
     launched: list[Path] = []
     quits: list[bool] = []
+    order: list[str] = []
 
-    def run_install(download=fake_download,
-                    sha=lambda release, token: hashlib.sha256(
-                        INSTALLER_BYTES).hexdigest(),
-                    tag="v99.0.0", staged=None, state=None):
+    def run_install(download=None, sha=None, tag="v99.0.0", staged=None,
+                    state=None):
         orch = scheduler.Orchestrator()
         launched.clear()
         quits.clear()
+        order.clear()
         orch.set_update_hooks(quit=lambda: quits.append(True))
         if staged is not None:
             orch._set_update(state=state or "ready", staged=str(staged))
         with patched(updater, load_token=lambda: "tok",
-                     fetch_latest=lambda token: good_release() | {"tag": tag},
-                     download_setup=download, fetch_sha256=sha,
+                     fetch_latest=lambda token: (
+                         order.append("fetch_latest"),
+                         good_release() | {"tag": tag})[1],
+                     select_setup=lambda release: (
+                         order.append("select_setup"),
+                         {"name": "RotmanLSMCalendar-Setup-99.0.0.exe"})[1],
+                     download_setup=(download or (
+                         lambda release, token, on_progress: (
+                             order.append("download"),
+                             fake_download(release, token, on_progress))[1])),
+                     fetch_sha256=(sha or (
+                         lambda release, token, name: (
+                             order.append("hash:" + name),
+                             hashlib.sha256(INSTALLER_BYTES).hexdigest())[1])),
                      launch_installer=lambda p: launched.append(p)):
             orch._do_install_update()
         return orch, orch.status()["update"]
@@ -598,21 +679,55 @@ def test_install() -> None:
     ok("...with the quit hook fired", quits == [True])
     ok("...and the worker not left busy", not orch.status()["busy"])
 
+    # The hash is fetched before the download it describes, so a release
+    # published without its sidecar fails in one small request instead of
+    # staging an unverifiable 42 MB installer.
+    check("the install fetches hash before download",
+          order, ["fetch_latest", "select_setup",
+                  "hash:RotmanLSMCalendar-Setup-99.0.0.exe", "download"])
+
     # The hash is the load-bearing step: a download that does not match what
     # the release published is never run, whatever went wrong with it.
-    orch, st = run_install(sha=lambda release, token: "0" * 64)
+    orch, st = run_install(sha=lambda release, token, name: "0" * 64)
     check("a mismatched checksum is 'failed'", st["state"], "failed")
     ok("...with the sentence that says it will not be run",
        "checksum" in st["message"])
     ok("...and the installer was not launched", launched == [])
     ok("...and the process was not quit", quits == [])
 
-    # The ready shortcut: a staged, verified installer from an earlier click
-    # is launched without re-downloading anything.
-    existing = Path(tempfile.mkdtemp(prefix="lsm-staged-")) / "setup.exe"
-    existing.write_bytes(INSTALLER_BYTES)
+    # The click answered an offer, not "whatever is latest right now": a
+    # release published between the check and the click is offered again
+    # under its own name, never installed past the user's consent.
+    orch = scheduler.Orchestrator()
+    launched.clear()
+    quits.clear()
+    orch.set_update_hooks(quit=lambda: quits.append(True))
+    orch._set_update(state="available", latest_version="v98.0.0")
 
     def must_not_download(release, token, on_progress):
+        raise AssertionError("a re-offered install must not download")
+
+    with patched(updater, load_token=lambda: "tok",
+                 fetch_latest=lambda token: good_release(),
+                 select_setup=lambda release: {"name": "x"},
+                 download_setup=must_not_download,
+                 fetch_sha256=lambda r, t, n: "",
+                 launch_installer=lambda p: launched.append(p)):
+        orch._do_install_update()
+    st = orch.status()["update"]
+    check("a release that changed since the offer is re-offered",
+          st["state"], "available")
+    check("...under its own name", st["latest_version"], "v99.0.0")
+    ok("...with nothing launched", launched == [])
+    ok("...and no quit", quits == [])
+
+    # The ready shortcut: a staged, verified installer from an earlier click
+    # is launched without re-downloading anything.
+    # In the scratch dir for the same reason as the hash fixture above.
+    existing = Path(os.environ["LSM_DATA_DIR"]) / "ready-setup.exe"
+    existing.write_bytes(INSTALLER_BYTES)
+
+    def must_not_download2(release, token, on_progress):
         raise AssertionError("a ready install must not download again")
 
     def must_not_fetch(token):
@@ -624,8 +739,8 @@ def test_install() -> None:
     orch.set_update_hooks(quit=lambda: quits.append(True))
     orch._set_update(state="ready", staged=str(existing))
     with patched(updater, load_token=lambda: "tok",
-                 fetch_latest=must_not_fetch, download_setup=must_not_download,
-                 fetch_sha256=lambda r, t: "",
+                 fetch_latest=must_not_fetch, download_setup=must_not_download2,
+                 fetch_sha256=lambda r, t, n: "",
                  launch_installer=lambda p: launched.append(p)):
         orch._do_install_update()
     ok("a ready install launches straight away", len(launched) == 1)
@@ -651,7 +766,7 @@ def test_install() -> None:
         with patched(updater, load_token=lambda: "tok",
                      fetch_latest=lambda token: good_release(),
                      download_setup=fake_download,
-                     fetch_sha256=lambda r, t: hashlib.sha256(
+                     fetch_sha256=lambda r, t, n: hashlib.sha256(
                          INSTALLER_BYTES).hexdigest(),
                      launch_installer=exploding_launch):
             orch._do_install_update()
@@ -689,6 +804,13 @@ class UpdateOrch:
     def request_update_install(self) -> None:
         self.calls.append("install")
 
+    def skip_update(self, tag: str) -> None:
+        # Mirrors the real one closely enough to test what the endpoint
+        # must do: the live state stops offering the skipped release.
+        self.calls.append("skip:" + tag)
+        self.update["state"] = "latest"
+        self.update["message"] = f"Skipped {tag} — a newer release will show here."
+
 
 def test_endpoints() -> None:
     print("\nthe update endpoints")
@@ -710,7 +832,9 @@ def test_endpoints() -> None:
           client.post("/api/update/check").status_code, 409)
     check("...and refuses the install",
           client.post("/api/update/install").status_code, 409)
-    check("...without queueing either", orch.calls, [])
+    check("...and refuses the skip",
+          client.post("/api/update/skip").status_code, 409)
+    check("...without queueing any of it", orch.calls, [])
     orch._busy = False
 
     # Skip takes its version from the orchestrator, not the request: the
@@ -724,6 +848,10 @@ def test_endpoints() -> None:
     check("an available release can be skipped", r.status_code, 200)
     check("...recording what was offered, not what was posted",
           store.load_update_state().get("skipped"), "v1.1.9")
+    check("...and the live state stops offering it now, not at the next check",
+          orch.update["state"], "latest")
+    ok("...which is what the orchestrator was told to say",
+       orch.calls == ["skip:v1.1.9"])
 
     # The token write: stored encrypted, replied about only as a boolean,
     # and refused with a sentence when it does not look like a token.

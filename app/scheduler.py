@@ -152,6 +152,21 @@ class Orchestrator:
         self._update_notify = notify
         self._update_quit = quit
 
+    def skip_update(self, tag: str) -> None:
+        """Mirror a skip in the live state, not only in the store.
+
+        The store write (server.py) is what makes the skip survive a
+        restart, but without this the banner, the Install button and the
+        Skip link stay on screen until the next check — up to 24 h — and a
+        person who just declined an offer keeps looking at it. This runs on
+        the Flask request thread, not the worker: it touches only the
+        lock-guarded status dict, enqueues nothing, and the next check
+        re-derives the same state from the store anyway.
+        """
+        self._set_update(state="latest",
+                         message=f"Skipped {tag} — a newer release will "
+                                 "show here.")
+
     def is_busy(self) -> bool:
         return bool(self.status().get("busy"))
 
@@ -371,19 +386,34 @@ class Orchestrator:
         a refused token must not turn the 20 s tick into a retry storm. A
         failed check waits a day, or for the manual tray item.
         """
-        state = store.load_update_state()
-        state["last_check"] = datetime.now().isoformat()
-        store.save_update_state(state)
-
         self._set(busy=True, busy_action="Checking for updates", progress="")
-        self._set_update(state="checking", last_check=state["last_check"],
-                         message="")
+        self._set_update(state="checking", message="")
         try:
+            # The stamp is written inside the try so a database error lands
+            # in the failed state below instead of killing the command with
+            # the update dict still looking idle — "a check happened and it
+            # failed" must not read as "no check happened at all".
+            state = store.load_update_state()
+            state["last_check"] = datetime.now().isoformat()
+            store.save_update_state(state)
+            self._set_update(last_check=state["last_check"])
             token = updater.load_token()
             self._set_update(token_set=bool(token))
             release = updater.fetch_latest(token)
             tag = release["tag"]
             self._set_update(latest_version=tag, notes_url=release["notes_url"])
+
+            if updater.parse_version(tag) is None:
+                # /releases/latest only returns a release a maintainer
+                # deliberately published, so an unparsable tag here is a
+                # real release this app cannot place — "up to date" would
+                # be a claim about a version it failed to read, and every
+                # user would wait for a fix that already shipped.
+                self._set_update(
+                    state="failed",
+                    message=f"The latest release is tagged '{tag}', which "
+                            "this app cannot compare — it may be newer.")
+                return
 
             if not updater.is_newer(tag, APP_VERSION):
                 self._set_update(state="latest")
@@ -411,7 +441,10 @@ class Orchestrator:
         except updater.UpdateError as exc:
             # The one honest sentence, into the sidebar where the fix is —
             # a toast would say "something failed" and vanish, leaving no
-            # instruction behind.
+            # instruction behind. The same event goes to app.log, which is
+            # the only record that survives the next check overwriting the
+            # sidebar sentence.
+            log.warning("update check failed: %s", exc)
             self._set_update(state="failed", message=str(exc))
         except Exception:
             log.exception("update check failed")
@@ -441,13 +474,33 @@ class Orchestrator:
                 self._set_update(token_set=bool(token))
                 release = updater.fetch_latest(token)
                 tag = release["tag"]
-                self._set_update(latest_version=tag,
-                                 notes_url=release["notes_url"])
                 if not updater.is_newer(tag, APP_VERSION):
                     self._set_update(state="latest",
                                      message="Nothing to install — you are "
                                              "already up to date.")
                     return
+
+                # The click answered an offer, not "whatever is latest at
+                # this moment". A release published between the check and
+                # the click is not the version the sidebar was showing when
+                # the user accepted it, so it is offered again rather than
+                # installed — and latest_version is never rewritten past
+                # the user's consent to mean a version they never saw.
+                shown = (st.get("latest_version") or "")
+                if shown and tag != shown:
+                    self._set_update(
+                        latest_version=tag,
+                        state="available",
+                        message=f"{tag} is out — a newer release shipped "
+                                "since the last check.")
+                    return
+
+                # The hash is fetched before the download it describes: a
+                # release published without its sidecar fails in one small
+                # request instead of after a 42 MB download, and an
+                # installer the release did not vouch for is never staged.
+                setup_name = str(updater.select_setup(release)["name"])
+                expected = updater.fetch_sha256(release, token, setup_name)
 
                 def _progress(done: int, total: int | None) -> None:
                     text = f"{done / 1048576:.1f} MB"
@@ -456,7 +509,6 @@ class Orchestrator:
                     self._set_update(progress=text)
 
                 path = updater.download_setup(release, token, _progress)
-                expected = updater.fetch_sha256(release, token)
                 if not updater.verify_sha256(path, expected):
                     raise updater.UpdateError(
                         "The downloaded installer did not match the "
@@ -465,6 +517,13 @@ class Orchestrator:
                 staged = str(path)
                 self._set_update(staged=staged, state="ready", progress="")
             except updater.UpdateError as exc:
+                # Error-grade on purpose: this handler is where a checksum
+                # mismatch lands — the app was served a binary that does not
+                # match what the publisher published — and app.log is the
+                # only record that survives the next check overwriting the
+                # sidebar sentence. The store write above is durable; the
+                # sentence alone is not.
+                log.error("update install failed: %s", exc)
                 self._set_update(state="failed", message=str(exc))
                 return
             except Exception:

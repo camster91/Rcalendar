@@ -800,6 +800,11 @@ def get_kv(key: str, default: Any = None) -> Any:
     try:
         return json.loads(row["value"])
     except (ValueError, TypeError):
+        # Not silent, like load_groups: a corrupt row is a persisted decision
+        # (the updater's skip, its last-check stamp) disappearing, and the
+        # user who skipped a version only to see it offered again deserves
+        # a line in the log explaining why.
+        log.warning("kv row '%s' is corrupt — returning the default", key)
         return default
 
 

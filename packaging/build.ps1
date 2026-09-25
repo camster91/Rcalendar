@@ -119,7 +119,7 @@ if (Test-Path $StaleOnefile) {
     throw "dist\RotmanLSMCalendar.exe reappeared during the build"
 }
 
-# ── Signing ──────────────────────────────────────────────────────────────
+# -- Signing ---------------------------------------------------------------
 #
 # The exe is signed before it is packaged because the installer copies this
 # folder as-is: after ISCC runs there is no second chance to sign what the
@@ -129,7 +129,7 @@ if (Test-Path $StaleOnefile) {
 # the same missing signature further from its cause.
 & (Join-Path $PSScriptRoot "sign.ps1") -Path $DistExe
 
-# ── The installer ────────────────────────────────────────────────────────
+# -- The installer ---------------------------------------------------------
 #
 # Compiling the installer is part of building, not a separate errand: the .iss
 # packages the folder built above, and an installer made from a stale dist\ is
@@ -168,7 +168,12 @@ if (-not $Iscc) {
 # actually succeeded.
 Push-Location $Root
 try {
-    $AppVersion = (& $VenvPy -c "import app.config as c; print(c.APP_VERSION)").Trim()
+    $raw = & $VenvPy -c "import app.config as c; print(c.APP_VERSION)"
+    if ($LASTEXITCODE -ne 0 -or -not $raw) {
+        throw ("reading APP_VERSION failed (exit $LASTEXITCODE) - the " +
+               "traceback above is the reason, this is only the consequence")
+    }
+    $AppVersion = $raw.Trim()
 } finally {
     Pop-Location
 }
