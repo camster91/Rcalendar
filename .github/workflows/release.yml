@@ -1,29 +1,44 @@
-# The release build, run where compiling an unsigned exe costs nothing.
+# The release build, run where compiling an exe costs nothing.
 #
-# packaging/build.ps1 is deliberately "not the supported path" for *running*
-# the app, but the installer still has to exist somewhere: an office machine
-# with no checkout needs a Setup exe and a sha256. Until v1.1.1 that build ran
-# on the developer's machine, where every build writes two SentinelOne
-# console entries (the flag lands when the unsigned exe is *written*, not
-# when it runs). A GitHub runner writes it on a machine no console watches.
+# NOT the release path any more, and manual-only on purpose. A release
+# has to ship signed binaries, and the signing certificate is a
+# per-user self-signed certificate in the build machine's user store
+# (packaging/sign.ps1): a runner cannot hold it, and a runner build
+# signs with an ephemeral certificate build.ps1 mints for itself, which
+# dies with the runner -- every importable trace of the signature gone.
+# Measured 2026-09-25: the first v1.1.2 publish (gh release create
+# --target master, a tag made through the API) fired this workflow
+# through its push:tags trigger -- an API-created tag is a tag push to
+# the event system exactly like a pushed one, a premise that had been
+# assumed the other way -- and within five minutes the workflow had
+# overwritten the signed release with such a runner build. Since that
+# day the only trigger here is workflow_dispatch, so nothing a release
+# does can start it, and packaging/release-local.ps1 is the release
+# path. Do not restore a tag trigger without moving signing onto the
+# runner first (a CA-issued certificate, or a pfx held in secrets --
+# a decision not made here).
 #
-# On tag push (v<APP_VERSION>), one job:
-#   1. the seven suites, because a tag push does not run tests.yml (its
-#      `branches: [master]` filter matches pushes, not tags) and a release
-#      must not be built from code the suites have not passed;
-#   2. packaging/build.ps1, which compiles the onedir bundle and then the
-#      Inno Setup installer from it -- the same script as the local path,
-#      no second build process to drift;
+# Kept as a manual/diagnostic path, for the day signing moves to CI
+# and this can be the release path again. When run by hand it does
+# what it always did, one job:
+#   1. the eight suites, because a release must not be built from code
+#      the suites have not passed;
+#   2. packaging/build.ps1, which compiles the onedir bundle, signs
+#      both binaries (on a runner, with an ephemeral certificate --
+#      see above) and then the Inno Setup installer from the same
+#      bundle;
 #   3. the packaged exe's own --selftest (the "does the bundle work" half of
 #      verify-build.ps1; the "does it survive this machine's agents" half
 #      has no meaning on a runner with no agents -- the survival question
 #      lives on whatever machine the installer is eventually run on);
 #   4. the GitHub release: the Setup exe, a sha256 sidecar, and the notes
 #      from packaging/release-notes.md with the hash substituted in.
-#      That file is the *whole* release body -- anything in it ships, so the
-#      guidance about maintaining it lives here and not there. It is the
-#      current release's notes, not a template history: update it as part
-#      of the change being released, the same as APP_VERSION.
+#      It does not ship the .cer -- it does not hold the certificate
+#      that one carries. That file is the *whole* release body --
+#      anything in it ships, so the guidance about maintaining it lives
+#      here and not there. It is the current release's notes, not a
+#      template history: update it as part of the change being
+#      released, the same as APP_VERSION.
 #
 # A version mismatch fails the job rather than the release: the tag has to
 # name the APP_VERSION that built the exe, or Add/Remove Programs on an
@@ -37,8 +52,7 @@
 name: release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -104,6 +118,9 @@ jobs:
 
       - name: test_session
         run: .venv\Scripts\python.exe tests\test_session.py
+
+      - name: test_update
+        run: .venv\Scripts\python.exe tests\test_update.py
 
       - name: test_worker
         run: .venv\Scripts\python.exe tests\test_worker.py

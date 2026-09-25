@@ -701,22 +701,30 @@ machine may still flag a first-sight binary. If one does, the fix is the
 allow-list request in `packaging/allow-list-request.md`, keyed on path or
 publisher, never on hash.
 
-Releases are currently **built locally, not by Actions**. GitHub's included
-minutes ran out account-wide in September 2026 and every queued job sits
-unassigned, so `.github/workflows/release.yml` cannot run;
-`packaging/release-local.ps1 -Version <APP_VERSION>` is the local
-replacement, and it follows the Actions workflow's order: all eight
-suites, `build.ps1` (which signs both binaries), `verify-build.ps1` —
-whose signature checks read the signing back from the files, because an
-unreachable timestamp server degrades `Set-AuthenticodeSignature` to a
-warning and an unsigned release would otherwise ship green — then a hash
-of the **signed** installer written to `dist\sha256.txt`. The hash is
-taken after signing on purpose: that sidecar is what the updater verifies
-a download against. The script publishes with `gh release create
---target master`, which creates the tag through the API rather than
-pushing it, so the wedged `release.yml` never fires. The Actions path
-remains the supported one and will be used again once billing is
-restored.
+Releases are **built locally, not by Actions** — because of the certificate,
+not because of billing. A release has to ship binaries signed with the
+project's code-signing certificate, and that certificate is a per-user,
+self-signed one in the build machine's user store: a runner cannot hold
+it, and what a runner build signs with is an ephemeral certificate
+`build.ps1` mints for it, which dies with the runner — measured
+2026-09-25, when the first v1.1.2 publish fired `release.yml` (an
+API-created tag fires the push event exactly like a pushed one, a premise
+this repo had assumed the other way) and the runner overwrote the signed
+release within five minutes with a build signed by a certificate that no
+longer exists. `release.yml`'s trigger is `workflow_dispatch` only since
+that day, so nothing a release does can start it, and
+`packaging/release-local.ps1 -Version <APP_VERSION>` is the release path.
+It follows the Actions workflow's order: all eight suites, `build.ps1`
+(which signs both binaries), `verify-build.ps1` — whose signature checks
+read the signing back from the files, because an unreachable timestamp
+server degrades `Set-AuthenticodeSignature` to a warning and an unsigned
+release would otherwise ship green — then a hash of the **signed**
+installer written to `dist\sha256.txt`. The hash is taken after signing
+on purpose: that sidecar is what the updater verifies a download against.
+The script publishes with `gh release create --target master`; the
+Actions workflow stays as a manual/diagnostic path until signing moves
+onto the runner (a CA-issued certificate, or a pfx held in secrets — a
+decision not made here).
 
 ## Not the supported path: building an .exe
 

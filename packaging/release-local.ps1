@@ -3,18 +3,35 @@
 Build, verify and publish a release locally - the Actions path, run here.
 
 .DESCRIPTION
-.github/workflows/release.yml is the documented release path; this script
-is its local stand-in for as long as GitHub Actions cannot run (billing
-exhausted, every private-repo job wedged in "queued"). It reproduces the
-workflow's steps in the workflow's order, on this machine, and adds the
-two things the runner did for free that a local run has to promise:
+This IS the release path - not a stand-in for .github/workflows/release.yml
+but its replacement. A release has to ship binaries signed with the
+project's code-signing certificate, and that certificate is a per-user,
+self-signed one in this machine's user store (packaging/sign.ps1): a
+runner cannot hold it, and what a runner build signs with is an ephemeral
+certificate build.ps1 mints for it, which dies with the runner (measured
+2026-09-25 - the runner build that overwrote the first v1.1.2 publish was
+signed by a certificate that no longer exists). The workflow is kept as a
+manual/diagnostic path with a workflow_dispatch-only trigger; releases
+are cut here. This script reproduces the workflow's steps in the
+workflow's order, and adds the two things the runner did for free that a
+local run has to promise:
 
-  1. The tag is created BY THE API, never pushed. `gh release create
-     --target master` makes the tag through the API, which fires the
-     *create* event; a `git push` of a v* tag fires the *push* event that
-     release.yml listens for. Pushing the branch is fine and required -
-     the release targets master - but pushing a tag would start the very
-     workflow that cannot run.
+  1. Nothing this script does may start release.yml - and the tag rule
+     this file used to state is now known FALSE. Creating a tag through
+     the API (gh release create --target master) was believed to fire
+     only the *create* event, not the *push* event release.yml's
+     tag trigger listens for; measured 2026-09-25, on the first v1.1.2
+     publish, it fires the push event exactly like a pushed tag, and
+     release.yml overwrote the signed release with a runner build
+     within five minutes - a build signed with an ephemeral certificate
+     the runner had minted for itself and took with it when it died.
+     What makes this script safe is therefore not HOW the tag is made
+     but release.yml's own trigger: since that day it listens for
+     workflow_dispatch only, so no tag event of any kind can start it.
+     The tag is still created through gh (never `git push` of a v*
+     tag), because a release must name the commit it targets and the
+     release IS the publish. Pushing the branch is fine and required -
+     the release targets master.
 
   2. The hash is taken AFTER signing. build.ps1 signs the installer
      before this script hashes it, so sha256.txt and the release body
@@ -122,8 +139,10 @@ Write-Host "    installer: $($Setup.Name)"
 Write-Host "    sha256:    $hash"
 Write-Host ""
 
-# The tag is created by this call, through the API - see the header for why
-# that is the difference between a release and a broken workflow run.
+# The tag is created by this call, through the API. It fires the push event
+# exactly like a pushed tag would (measured 2026-09-25 - see the header);
+# what keeps that event from starting release.yml is the workflow's
+# workflow_dispatch-only trigger, not the way this tag is made.
 & gh release create "v$Version" --target master --title "v$Version" `
     --repo $Repo --notes-file $bodyPath `
     $Setup.FullName $shaPath $certPath

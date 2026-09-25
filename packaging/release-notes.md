@@ -125,12 +125,12 @@ fix was verified by breaking it on purpose first.
 Your data folder (bookings database, groups, saved filters) carries over
 from 1.1.1 untouched — the installer does not touch it.
 
-This release was built, signed and self-tested locally — GitHub Actions
-ran out of included minutes, and the Actions release path remains the
-supported one; it will be used again once billing is restored.
-`sha256.txt` beside the installer carries the hash below, and it is the
-hash of the *signed* installer: the app verifies what it downloads
-against this file, which is why it is taken after signing.
+This release was built, signed and self-tested locally — signing needs the
+project's code-signing certificate, which lives in the build machine's user
+store; a cloud runner cannot hold it. `sha256.txt` beside the installer
+carries the hash below, and it is the hash of the *signed* installer: the
+app verifies what it downloads against this file, which is why it is taken
+after signing.
 
 Note for managed machines: signing with a self-signed certificate gives
 the binaries a stable publisher identity — one an endpoint agent can be
