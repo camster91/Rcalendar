@@ -87,7 +87,7 @@ softly with one honest sentence instead of pretending to work.
 Both the installer and the app inside it are now Authenticode-signed
 with the project's code-signing certificate. It is self-signed, so
 "unknown publisher" prompts persist on machines that have not imported
-the certificate — see Install below; one paste closes that for good.
+the certificate — see Install below; two imports close that for good.
 
 The test suite now stands at 1003 assertions across eight suites; each
 fix was verified by breaking it on purpose first.
@@ -103,12 +103,24 @@ fix was verified by breaking it on purpose first.
 2. First launch: use the tray item **Sign in to LSM** for the UofT SSO +
    Duo sign-in. The app never stores a password; the browser profile holds
    the session.
-3. Optional, to stop the "unknown publisher" prompt: download
-   `RotmanLSMCalendar-CodeSigning.cer` from the same release and run, in
-   PowerShell:
+3. Optional, to stop the "unknown publisher" prompts: download
+   `RotmanLSMCalendar-CodeSigning.cer` from the same release and import it
+   into your own Trusted Root and Trusted Publishers stores, per-user and
+   with no admin rights, in PowerShell:
 
        Import-Certificate -FilePath .\RotmanLSMCalendar-CodeSigning.cer `
-         -CertStoreLocation Cert:\CurrentUser\TrustedPeople
+         -CertStoreLocation Cert:\CurrentUser\Root
+       Import-Certificate -FilePath .\RotmanLSMCalendar-CodeSigning.cer `
+         -CertStoreLocation Cert:\CurrentUser\TrustedPublisher
+
+   Windows asks for confirmation on the Root import, and it should: that
+   is the real trust decision — "treat this certificate as a root I trust",
+   for your user account only. Trusted Root alone is what makes Windows
+   validate the signature; Trusted Publishers is what stops the run
+   prompt. (An earlier draft of this step named Trusted People instead;
+   that store does not do it — measured: the signature still reads as
+   untrusted with the certificate in Trusted People, which is why this
+   step names the two stores above.)
 
 Your data folder (bookings database, groups, saved filters) carries over
 from 1.1.1 untouched — the installer does not touch it.

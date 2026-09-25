@@ -110,25 +110,41 @@ try {
 
     # -- 1b. Signatures ------------------------------------------------------
     # build.ps1 signs both binaries; this is the pipeline's own proof, read
-    # back from the files rather than trusted from the signing step. That is
-    # the one failure this catches that nothing else does: an unreachable
-    # timestamp server degrades Set-AuthenticodeSignature to a warning, and
-    # an unsigned release would otherwise ship green.
+    # back from the files rather than trusted from the signing step. The
+    # criterion is deliberately NOT Status -eq "Valid": a self-signed
+    # certificate's chain terminates in itself, which is in no trusted-root
+    # store here on purpose (root trust is each machine's decision, not the
+    # build's), so the readback reads UnknownError here and on every machine
+    # that has not imported the shipped .cer. The three things this gate
+    # CAN prove are the three ways signing actually fails: no signature,
+    # the wrong certificate, or no timestamp - the last being the case
+    # nothing else catches, because a timestamp server that did not answer
+    # degrades Set-AuthenticodeSignature to a warning and an untimestamped
+    # release would otherwise ship green.
+    $SignSubject = "CN=Rotman LSM Calendar (self-signed code signing)"
     $sig = Get-AuthenticodeSignature -FilePath $DistExe
-    if ($sig.Status -eq "Valid") {
-        Note-Pass "exe signature is Valid"
+    if ($sig.Status -eq "NotSigned") {
+        Note-Failure "exe is not signed at all"
+    } elseif (-not $sig.SignerCertificate -or $sig.SignerCertificate.Subject -ne $SignSubject) {
+        Note-Failure "exe signature is not the project certificate"
+    } elseif (-not $sig.TimeStamperCertificate) {
+        Note-Failure "exe signature has no timestamp - the timestamp server did not answer"
     } else {
-        Note-Failure "exe signature is $($sig.Status) - $($sig.StatusMessage)"
+        Note-Pass "exe signature is present, the project's, and timestamped"
     }
 
     $setupExe = Get-ChildItem (Join-Path $Root "dist\RotmanLSMCalendar-Setup-*.exe") -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime | Select-Object -Last 1
     if ($setupExe) {
         $sig2 = Get-AuthenticodeSignature -FilePath $setupExe.FullName
-        if ($sig2.Status -eq "Valid") {
-            Note-Pass "setup signature is Valid ($($setupExe.Name))"
+        if ($sig2.Status -eq "NotSigned") {
+            Note-Failure "setup exe is not signed at all"
+        } elseif (-not $sig2.SignerCertificate -or $sig2.SignerCertificate.Subject -ne $SignSubject) {
+            Note-Failure "setup signature is not the project certificate"
+        } elseif (-not $sig2.TimeStamperCertificate) {
+            Note-Failure "setup signature has no timestamp - the timestamp server did not answer"
         } else {
-            Note-Failure "setup signature is $($sig2.Status) - $($sig2.StatusMessage)"
+            Note-Pass "setup signature is present, the project's, and timestamped ($($setupExe.Name))"
         }
     } else {
         # A folder build without an installer is a state build.ps1 can leave
