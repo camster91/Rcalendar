@@ -156,7 +156,7 @@ beyond LSM, and every row here is covered by `tests/test_update.py` offline.
 | The unsupported path: the packaged exe, kept as a record | README → *Not the supported path* |
 | The installer: per-user, no UAC, with the browser fetch as a task | `packaging/installer.iss`, README → *The installer* |
 | Health check end to end: `python -m app.main --selftest` | `app/main.py` |
-| Eight suites, 1080 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
+| Eight suites, 1109 assertions, no network and no UofT SSO | `tests/`, README → *Tests* |
 | Accessibility: every control named, toggles not colour-alone, nothing focusable removed, suggestions and chips reachable by keyboard | `tests/test_web.py` |
 | The eight suites in CI | `.github/workflows/tests.yml` |
 | Both shipped binaries Authenticode-signed with a self-signed certificate created once and reused, so imported trust survives rebuilds | `packaging/sign.ps1` |

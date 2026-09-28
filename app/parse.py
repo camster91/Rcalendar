@@ -109,6 +109,33 @@ def _pick(row: dict[str, str], field: str) -> str:
     return ""
 
 
+def is_report_csv(content: str) -> bool:
+    """
+    Whether a download is the report's CSV at all, judged by its header.
+
+    The Download link's file is trusted to be the report, and an empty one
+    is the report saying "nothing booked". An HTML error page or a login
+    redirect saved as the download parses to zero events just the same, so
+    zero events cannot tell those apart — the header can. The three columns
+    parse_csv cannot make an event without must all be named in it.
+    """
+    content = content.lstrip("﻿").lstrip("\r\n")
+    first = content.splitlines()[0] if content.strip() else ""
+    try:
+        dialect = csv.Sniffer().sniff(first, delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    try:
+        header = next(csv.reader([first], dialect=dialect))
+    except (csv.Error, StopIteration):
+        return False
+    names = {h.strip().lower() for h in header}
+    return all(
+        any(alias.lower() in names for alias in COLMAP[field])
+        for field in ("room", "title", "date")
+    )
+
+
 def parse_csv(content: str) -> list[dict[str, Any]]:
     """Parse the APEX report CSV into event dicts. Never raises on bad rows."""
     if not content.strip():

@@ -34,7 +34,7 @@ from app.config import (
     APEX_APP_ID, APEX_AUTH_URL, BROWSER_TIMEOUT_MS, NAVIGATE_TIMEOUT_MS,
     ROTMAN_PAGE_ID, log,
 )
-from app.parse import clean_title, parse_csv
+from app.parse import clean_title, is_report_csv, parse_csv
 
 APEX_SESSION_RE = re.compile(rf"f\?p={APEX_APP_ID}:\d+:(\d+)")
 
@@ -210,13 +210,6 @@ def scrape(
             # from a fresh render (see _generate_report).
             fresh = _generate_report(page)
 
-            body = page.locator("body").inner_text()
-            if "no data found" in body.lower():
-                say("Report returned no data for this window")
-                return ScrapeResult("empty", date_from=date_from,
-                                    date_to=date_to, rooms=rooms,
-                                    complete=fresh)
-
             # ── Export ──
             # `reasons` is the list of things the reconcile delete is
             # allowed to trust, each with the failure it guards against:
@@ -231,12 +224,6 @@ def scrape(
             # room's bookings as cancellations). Any reason present means
             # the result is adds-only: adds land, deletes do not.
             reasons: list[str] = []
-            csv_text = _download_csv(page, downloads)
-            if not csv_text:
-                say("CSV download unavailable — falling back to HTML table")
-                csv_text = _html_table_to_csv(page)
-                reasons.append("read from the rendered page, which is not "
-                               "the whole report")
             if not fresh:
                 reasons.append("no evidence the Generate click produced a "
                                "new render, so the page may still hold the "
@@ -244,6 +231,21 @@ def scrape(
             if not selection_ok:
                 reasons.append("the room selection was incomplete, so the "
                                "export may cover only part of the calendar")
+
+            # The export is tried before anything concludes "empty": an
+            # empty report is the export's answer to give, and the page's
+            # text is only asked when there is no export to ask.
+            csv_text = _download_csv(page, downloads)
+            if not csv_text:
+                if _no_data_message(page):
+                    say("Report returned no data for this window")
+                    return ScrapeResult("empty", date_from=date_from,
+                                        date_to=date_to, rooms=rooms,
+                                        complete=not reasons)
+                say("CSV download unavailable — falling back to HTML table")
+                csv_text = _html_table_to_csv(page)
+                reasons.append("read from the rendered page, which is not "
+                               "the whole report")
             complete = not reasons
 
             if not csv_text.strip():
@@ -557,26 +559,69 @@ def _generate_report(page: Any) -> bool:
 
 
 def _download_csv(page: Any, downloads: list[Any]) -> str | None:
+    """
+    The report's CSV export, or None when there is no export to be had.
+
+    Whatever the Download link hands over has to *be* the report before it
+    is returned: an HTML error page or a login redirect saved as the file
+    parses to zero events, and zero events from the export is the report
+    saying "nothing booked" — a trusted answer about the whole window. A
+    file without the report's header is treated as no export at all, so
+    the caller falls back to the page and the result is adds-only.
+    """
     link = page.locator('a:has-text("Download")')
     if link.count() == 0:
         return None
 
+    text: str | None = None
     try:
         with page.expect_download(timeout=BROWSER_TIMEOUT_MS) as dl:
             link.first.click()
         path = dl.value.path()
         if path:
-            return path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:
         log.info("download link did not yield a file: %s", exc)
 
     # Some APEX builds fire the download without expect_download catching it.
-    if downloads:
+    if text is None and downloads:
         try:
-            return downloads[-1].path().read_text(encoding="utf-8", errors="replace")
+            text = downloads[-1].path().read_text(encoding="utf-8",
+                                                  errors="replace")
         except Exception:
             pass
-    return None
+
+    if text is None:
+        return None
+    if not is_report_csv(text):
+        log.warning("the download is not the report's CSV (starts %r); "
+                    "ignoring it", text[:80])
+        return None
+    return text
+
+
+# The report's own "no data" message, as an element whose whole text is
+# the message — not the phrase anywhere on the page, where help text or a
+# second region saying it would turn a real report into an empty one.
+_NO_DATA_JS = r"""() => {
+    const want = /^\s*no data found\.?\s*$/i;
+    for (const el of document.querySelectorAll('body *')) {
+        if (el.children.length === 0 && want.test(el.textContent || '')
+                && el.getClientRects().length > 0) {
+            return true;
+        }
+    }
+    return false;
+}"""
+
+
+def _no_data_message(page: Any) -> bool:
+    """Whether the page shows the report's "No data found" message itself."""
+    try:
+        return bool(page.evaluate(_NO_DATA_JS))
+    except Exception as exc:
+        log.info("could not probe for the no-data message: %s", exc)
+        return False
 
 
 def _outside_window(events: list[dict[str, Any]],

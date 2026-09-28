@@ -878,6 +878,20 @@ class Orchestrator:
                     # is destroyed, because replace_events refuses to reconcile
                     # an empty report, so the month is simply never populated
                     # rather than emptied.
+                    #
+                    # That answer has to be this month's, though. An empty
+                    # result that is not complete — a Generate with no
+                    # evidence of a render, or a partial room selection — is
+                    # no evidence the month is quiet, only that some page
+                    # was. It is counted partial, not empty, so the fill
+                    # stays owed and the month is asked again.
+                    if not result.complete:
+                        log.info("backfill: %s → %s came back empty from an "
+                                 "unproven report — left owed",
+                                 win_from, win_to)
+                        partial.append(win_from)
+                        self._set_backfill(partial=len(partial))
+                        continue
                     log.info("backfill: %s → %s came back empty — skipped",
                              win_from, win_to)
                     empty.append(win_from)

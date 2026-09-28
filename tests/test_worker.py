@@ -22,6 +22,7 @@ before it is imported.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import time
@@ -318,6 +319,13 @@ class ReportPage:
             return None
         if "p_page_submission_id" in script:
             return None if self._render == "no-token" else self._token
+        if "no data found" in script:
+            # The scoped probe: a line of the page whose whole text is the
+            # message, as _NO_DATA_JS decides it for an element. The real
+            # script is driven in Chromium by
+            # test_the_no_data_probe_reads_the_message_not_the_phrase.
+            return any(re.fullmatch(r"\s*no data found\.?\s*", line, re.I)
+                       for line in self._body.splitlines())
         if "querySelectorAll('table')" in script:
             return self._csv
         return []
@@ -981,6 +989,193 @@ def test_a_page_read_backfill_does_not_retire_the_history_fill() -> None:
         scheduler.scrape = real["scrape"]
 
 
+def _scrape_page(page: "ReportPage"):
+    return with_fake_browser(
+        page,
+        lambda: scrape.scrape(date_from="01/03/2026", date_to="31/03/2026"),
+    )
+
+
+def _staged(text: str) -> Path:
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(text)
+        return Path(fh.name)
+
+
+def test_an_empty_report_has_to_be_the_report() -> None:
+    """"No data found" is the report's answer, and only the report gives it.
+
+    Issue #14. The emptiness check used to be the phrase anywhere in the
+    page's text, asked *before* the export — so help text or a second region
+    saying it turned a real report into `empty`, and the day's bookings were
+    silently skipped (in a backfill, for good). And the export's own content
+    was never checked: an HTML error page saved as the download parsed to
+    zero events, which read as a trusted, complete empty report.
+
+    Now the export is asked first and has to carry the report's header; the
+    page is only asked when there is no export, and then only for the
+    message itself.
+    """
+    print("\nempty report")
+
+    readback = ["01/03/2026", "31/03/2026"]
+    rows = CSV_HEAD + _csv_row("142", "Alpha", "1-Mar-2026")
+
+    # The phrase in help text is not the report's message.
+    help_text = "Tip: if the report says no data found, widen the window."
+    r = _scrape_page(ReportPage(rows, has_download=False, readback=readback,
+                                body_text=help_text))
+    check("the phrase in help text does not empty a report", r.status, "ok")
+    check("...its bookings are read", len(r.events), 1)
+
+    # The export outranks the page: a message on the page (say, a second
+    # region with nothing in it) does not empty a report that downloaded rows.
+    path = _staged(rows)
+    try:
+        r = _scrape_page(ReportPage(rows, has_download=True, readback=readback,
+                                    download_path=path,
+                                    body_text="No data found."))
+    finally:
+        path.unlink(missing_ok=True)
+    check("the export is asked before the page's message", r.status, "ok")
+    check("...and is complete", r.complete, True)
+
+    # The export's own empty answer: its header and no rows.
+    path = _staged(CSV_HEAD)
+    try:
+        r = _scrape_page(ReportPage("", has_download=True, readback=readback,
+                                    download_path=path))
+    finally:
+        path.unlink(missing_ok=True)
+    check("a header-only export is an empty report", r.status, "empty")
+    check("...a trusted one", r.complete, True)
+
+    # An error page saved as the download is not the report.
+    html = "<!DOCTYPE html><html><body>Session timed out</body></html>"
+    path = _staged(html)
+    try:
+        r = _scrape_page(ReportPage(rows, has_download=True, readback=readback,
+                                    download_path=path))
+    finally:
+        path.unlink(missing_ok=True)
+    check("an HTML download is not taken as the report", r.status, "ok")
+    ok("...the page is read instead", len(r.events) == 1)
+    check("...and the result is adds-only", r.complete, False)
+
+    path = _staged(html)
+    try:
+        r = _scrape_page(ReportPage("", has_download=True, readback=readback,
+                                    download_path=path))
+    finally:
+        path.unlink(missing_ok=True)
+    check("an HTML download over an unreadable page is an error, not empty",
+          r.status, "error")
+
+    # No export at all, and the page shows the message: empty, and trusted
+    # exactly as far as the render and selection are.
+    r = _scrape_page(ReportPage("", has_download=False, readback=readback,
+                                body_text="Report\nNo data found.\n"))
+    check("the report's own message, with no export, is empty", r.status, "empty")
+    check("...and a fresh render makes it complete", r.complete, True)
+
+
+def test_the_no_data_probe_reads_the_message_not_the_phrase() -> None:
+    """_NO_DATA_JS in a real Chromium, because the fake can only mirror it.
+
+    The markup is APEX's own shapes for the message — the classic report's
+    `span.nodatafound`, the interactive report's icon + text pair — against
+    the phrase in running text and a hidden template. A missing browser fails
+    the run, as it does in test_web: a skipped probe is no probe.
+    """
+    print("\nno-data probe (Chromium)")
+    from playwright.sync_api import sync_playwright
+
+    cases = [
+        ("classic report message",
+         '<table><tr><td><span class="nodatafound">No data found.</span>'
+         "</td></tr></table>", True),
+        ("interactive report message",
+         '<div class="a-IRR-noDataMsg"><span class="a-IRR-noDataMsg-icon">'
+         '</span><span class="a-IRR-noDataMsg-text">No data found</span></div>',
+         True),
+        ("the phrase in help text",
+         "<p>If the report says no data found, widen the window.</p>"
+         "<table><tr><td>142</td></tr></table>", False),
+        ("a hidden template",
+         '<span style="display:none">No data found.</span>', False),
+        ("a report with rows", "<table><tr><td>142</td></tr></table>", False),
+    ]
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            for name, html, want in cases:
+                page.set_content(f"<html><body>{html}</body></html>")
+                check(name, scrape._no_data_message(page), want)
+        finally:
+            browser.close()
+
+
+def test_an_unproven_empty_month_keeps_the_fill_owed() -> None:
+    """An empty month settles the fill only when it proves it ran.
+
+    The backfill's empty branch settles on purpose — a quiet summer month is
+    the report's answer. But an empty result that is not complete (a Generate
+    with no evidence of a render) is no answer about the month at all, and
+    settling on it skipped the month for good (issue #14).
+    """
+    print("\nunproven empty backfill month")
+
+    from app import session as _session
+
+    scheduler.store.init_db()
+    with scheduler.store._conn() as conn:
+        conn.execute("DELETE FROM scrape_runs WHERE trigger = 'backfill'")
+
+    real = {"probe": _session.probe, "scrape": scheduler.scrape}
+    try:
+        _session.probe = lambda headless=True: _session.SessionState("ok")
+
+        # One booked month and the rest empty, because a fill that stored
+        # nothing never settles whatever its months said (backfill_done's
+        # events_count > 0) — all-empty would pass for the wrong reason.
+        def empty(complete: bool):
+            seen: list[str] = []
+
+            def do_scrape(date_from=None, date_to=None, **kwargs):
+                seen.append(date_from)
+                if len(seen) == 1:
+                    day = datetime.strptime(date_from, "%d/%m/%Y").date()
+                    return scrape.ScrapeResult(
+                        "ok",
+                        events=[{"title": "Booked", "room": "P51EMPTY",
+                                 "start": f"{day}T09:00:00",
+                                 "end": f"{day}T11:00:00",
+                                 "description": "", "class_code": "A",
+                                 "cancelled": False}],
+                        date_from=date_from, date_to=date_to,
+                        rooms=["P51EMPTY"], complete=True,
+                    )
+                return scrape.ScrapeResult("empty", date_from=date_from,
+                                           date_to=date_to, complete=complete)
+            return do_scrape
+
+        scheduler.scrape = empty(complete=False)  # type: ignore[assignment]
+        orch = scheduler.Orchestrator()
+        orch._do_backfill(auto=True)
+        check("unproven empty months leave the fill owed",
+              scheduler.store.backfill_done(), False)
+        check("...filed as partial",
+              (scheduler.store.last_backfill() or {}).get("status"), "partial")
+
+        scheduler.scrape = empty(complete=True)  # type: ignore[assignment]
+        orch._do_backfill(auto=True)
+        check("proven empty months settle it", scheduler.store.backfill_done(), True)
+    finally:
+        _session.probe = real["probe"]
+        scheduler.scrape = real["scrape"]
+
 def test_parse_time() -> None:
     """A SCRAPE_TIME nobody can read must not mean "scrape constantly"."""
     print("\nscrape time")
@@ -1065,6 +1260,9 @@ def main() -> int:
     test_a_report_read_off_the_page_is_marked_incomplete()
     test_a_partial_scrape_does_not_delete_stored_bookings()
     test_a_page_read_backfill_does_not_retire_the_history_fill()
+    test_an_empty_report_has_to_be_the_report()
+    test_the_no_data_probe_reads_the_message_not_the_phrase()
+    test_an_unproven_empty_month_keeps_the_fill_owed()
     test_exclusions()
     test_parse_time()
 

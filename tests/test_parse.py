@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["LSM_DATA_DIR"] = tempfile.mkdtemp(prefix="lsm-parse-")
 
 from app.parse import (  # noqa: E402
-    clean_description, clean_title, normalise_room, parse_csv,
+    clean_description, clean_title, is_report_csv, normalise_room,
+    parse_csv,
     parse_rotman_date, parse_rotman_time, split_title,
 )
 
@@ -272,6 +273,26 @@ def _one(comment: str) -> dict:
     return parse_csv(csv_text)[0]
 
 
+def test_is_report_csv() -> None:
+    """A download is the report only if its header names the report's columns.
+
+    Issue #14: an HTML error page saved as the download parsed to zero events,
+    and zero events from the export is a trusted "nothing booked".
+    """
+    print("\nis_report_csv")
+    head = "Room,Event/Course,Date,Start Time,End Time,Class Code,Comment\n"
+    check("the report's header", is_report_csv(head), True)
+    check("...with rows", is_report_csv(head + '"142","A","1-Mar-2026"\n'), True)
+    check("...behind a BOM", is_report_csv("﻿" + head), True)
+    check("...semicolon-separated", is_report_csv(head.replace(",", ";")), True)
+    check("...in another case", is_report_csv(head.upper()), True)
+    check("...with the aliases", is_report_csv("Room Number,Course,Date\n"), True)
+    check("an HTML page", is_report_csv("<!DOCTYPE html><html><body>x</body>"
+                                        "</html>"), False)
+    check("an empty file", is_report_csv(""), False)
+    check("a header without Date", is_report_csv("Room,Event/Course\n"), False)
+
+
 def test_cancelled_spellings() -> None:
     print("\ncancellation spellings")
     # The report spells it "CANCLD" / "Cancld", leading the Comment field.
@@ -389,6 +410,7 @@ def main() -> int:
     test_cleanup()
     test_split_title()
     test_csv()
+    test_is_report_csv()
     test_cancelled_spellings()
     test_a_mentioned_cancellation_does_not_drop_the_booking()
     test_all_day()
