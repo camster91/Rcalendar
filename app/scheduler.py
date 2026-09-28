@@ -644,6 +644,8 @@ class Orchestrator:
                 # message that gets persisted with the run.
                 why = ("Session expired — sign in required"
                        if state.state == "expired"
+                       else "No access to LSM's report"
+                       if state.state == "no_access"
                        else (state.message or "Could not reach LSM"))
                 store.finish_run(
                     run_id, "auth_required",
@@ -715,6 +717,9 @@ class Orchestrator:
                 if result.status == "auth_required":
                     self._set(session="expired",
                               session_message="Session expired — sign in required")
+                elif result.status == "no_access":
+                    self._set(session="no_access",
+                              session_message=result.message)
         except Exception as exc:
             log.exception("scrape failed")
             try:
@@ -841,16 +846,24 @@ class Orchestrator:
                     self._set_backfill(failed=len(errored))
                     continue
 
-                if result.status == "auth_required":
-                    # The session is gone; every later chunk would fail the
-                    # same way. Stop, and leave the finished months standing.
+                if result.status in ("auth_required", "no_access"):
+                    # The session is gone, or this account cannot open the
+                    # report; every later chunk would fail the same way.
+                    # Stop, and leave the finished months standing.
+                    denied = result.status == "no_access"
                     store.finish_run(
                         run_id, "auth_required", events_count=stored,
                         date_from=reach_from, date_to=reach_to,
-                        message=f"Session expired after {i - 1}/{len(windows)} months",
+                        message=(f"No access to LSM's report after "
+                                 f"{i - 1}/{len(windows)} months" if denied else
+                                 f"Session expired after {i - 1}/{len(windows)} months"),
                     )
-                    self._set(session="expired",
-                              session_message="Session expired — sign in required")
+                    if denied:
+                        self._set(session="no_access",
+                                  session_message=result.message)
+                    else:
+                        self._set(session="expired",
+                                  session_message="Session expired — sign in required")
                     # Every month after the last fetched one is skipped by
                     # this stop, so they count as failed for the CLI exit.
                     self._set_backfill(running=False,

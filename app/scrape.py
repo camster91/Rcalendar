@@ -31,7 +31,8 @@ from typing import Any
 
 from app import session
 from app.config import (
-    APEX_APP_ID, APEX_AUTH_URL, BROWSER_TIMEOUT_MS, NAVIGATE_TIMEOUT_MS,
+    APEX_APP_ID, APEX_AUTH_URL, BROWSER_TIMEOUT_MS, LSM_HOST,
+    NAVIGATE_TIMEOUT_MS,
     ROTMAN_PAGE_ID, log,
 )
 from app.parse import clean_title, is_report_csv, parse_csv
@@ -170,10 +171,10 @@ def scrape(
             session_id = m.group(1) if m else None
 
             url = (
-                f"https://lsm.utoronto.ca/ords/f?p={APEX_APP_ID}:"
+                f"https://{LSM_HOST}/ords/f?p={APEX_APP_ID}:"
                 f"{ROTMAN_PAGE_ID}:{session_id}:::::"
                 if session_id
-                else f"https://lsm.utoronto.ca/ords/f?p={APEX_APP_ID}:{ROTMAN_PAGE_ID}"
+                else f"https://{LSM_HOST}/ords/f?p={APEX_APP_ID}:{ROTMAN_PAGE_ID}"
             )
             page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATE_TIMEOUT_MS)
             page.wait_for_timeout(2500)
@@ -182,6 +183,12 @@ def scrape(
                 return ScrapeResult("auth_required", message="Session expired")
 
             if not _wait_for_item(page, "P51_FR_DATE"):
+                # Asked only now, after the report failed to load: an account
+                # LSM will not show page 51 to gets the answer it can act on,
+                # instead of this raw message every morning.
+                if session.access_denied(page):
+                    return ScrapeResult("no_access",
+                                        message=session.NO_ACCESS_MESSAGE)
                 return ScrapeResult(
                     "error",
                     message="Report page did not load (P51_FR_DATE missing)",

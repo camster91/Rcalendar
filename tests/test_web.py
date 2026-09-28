@@ -854,6 +854,13 @@ def test_list_badge_reads_the_session(browser, base: str) -> None:
               badge(), "● Session expired")
         ok("list: ...and turns red rather than staying green", "bg-rd" in colour())
 
+        ORCH.session = "no_access"
+        ORCH.session_message = "Ask the LSM administrator"
+        poll()
+        check("list: a refused account is named as one",
+              badge(), "● No access to LSM's report")
+        ok("list: ...in red", "bg-rd" in colour())
+
         ORCH.session = "unknown"
         ORCH.session_message = "No browser profile"
         poll()
@@ -2382,6 +2389,36 @@ def test_a_fresh_install_says_what_it_is_doing(browser, base: str) -> None:
            "Backfill 3/11" in card_text)
         ok("fresh: ...and the motion marker is a class, never a computed style",
            page.locator("#bootCard .bdot").count() == 1)
+
+        # A launch's first seconds are a session check, not a fetch: the
+        # card used to say "Fetching bookings" under every busy action.
+        ORCH.busy_action = "Checking session"
+        ORCH.progress = ""
+        page.evaluate("async () => { await loadStatus(); }")
+        card_text = page.inner_text("#bootCard")
+        ok("fresh: a session check is called one",
+           "Checking your LSM session" in card_text)
+        ok("fresh: ...and does not claim to be fetching",
+           "Fetching bookings" not in card_text)
+
+        # Signed in to UofT, refused by LSM: the card names that, in the
+        # worker's words, instead of offering the sign-in loop again.
+        ORCH.busy = False
+        ORCH.busy_action = ""
+        ORCH.session = "no_access"
+        ORCH.session_message = "Signed in, but this UofT account can't open it."
+        page.evaluate("async () => { await loadStatus(); }")
+        card_text = page.inner_text("#bootCard")
+        ok("fresh: a refused account is told it has no access",
+           "can't open LSM's report" in card_text)
+        ok("fresh: ...in the worker's own words",
+           "this UofT account can't open it" in card_text)
+        ok("fresh: ...not that its session expired",
+           "expired" not in card_text.lower())
+        check("fresh: the sidebar says the same",
+              page.inner_text("#sessInfo"), "● No access to LSM's report")
+        ORCH.session = "ok"
+        ORCH.session_message = ""
 
         # Failed: the last scrape's error is said on the card, not left to
         # the small sidebar text. The status comes from the store's run

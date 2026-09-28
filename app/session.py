@@ -99,9 +99,55 @@ _lock = threading.RLock()
 _pw = None  # reused Playwright driver, started lazily
 
 
+# What a person whose UofT account cannot open the report is told, from every
+# surface that learns it (probe, sign-in, scrape). Before this state existed
+# such an account was sent round a sign-in loop — "session expired", or a raw
+# "P51_FR_DATE missing" every morning — with nothing saying that signing in
+# again could never help. It is a state rather than an error because only a
+# person can fix it, and the fix is outside this app.
+NO_ACCESS_MESSAGE = ("Signed in, but this UofT account can't open LSM's Rotman "
+                     "bookings report. Ask the LSM administrator for access — "
+                     "or, if you used a different UTORid, sign out and sign in "
+                     "again.")
+
+# APEX's own wording for an authorization failure ("Access denied by Page
+# security check", "... Application security check") and the generic shapes
+# around it. Read from the page's text only after the report failed to load,
+# never as a reason on its own to distrust a page that did load.
+_DENIED_RE = re.compile(
+    r"access denied|not authori[sz]ed|insufficient privileges"
+    r"|you do not have (?:the )?(?:permission|access|privileges?)",
+    re.IGNORECASE,
+)
+
+# A missing browser surfaces as Playwright's "Executable doesn't exist at
+# ...ms-playwright..." — accurate, and useless to the person reading it.
+NO_BROWSER_MESSAGE = ("The browser this app drives isn't installed. Install "
+                      "or repair Microsoft Edge, or reinstall the app with "
+                      "its browser step ticked.")
+
+
+def friendly_error(exc: BaseException) -> str:
+    text = str(exc)
+    if "Executable doesn't exist" in text or "executable doesn't exist" in text:
+        return NO_BROWSER_MESSAGE
+    return text
+
+
+def access_denied(page: Any) -> bool:
+    """Whether the page says this account is not allowed in."""
+    if "LOGIN_DESKTOP" in (page.url or "").upper():
+        return True
+    try:
+        text = page.locator("body").inner_text(timeout=5000)
+    except Exception:
+        return False
+    return bool(_DENIED_RE.search(text or ""))
+
+
 @dataclass
 class SessionState:
-    state: str                      # ok | expired | error
+    state: str                      # ok | expired | no_access | error
     session_id: str | None = None
     message: str = ""
     cookies: list[dict[str, Any]] = field(default_factory=list)
@@ -325,6 +371,14 @@ def probe(headless: bool = True) -> SessionState:
                 if is_login_url(url):
                     return SessionState("expired", message="Shibboleth session expired")
 
+                # Shibboleth let the browser through (no login URL above), and
+                # LSM's own sign-in page or an authorization error is what
+                # came back: the account is known to UofT but not to LSM.
+                if not m and access_denied(page):
+                    log.info("session reached LSM but the account has no "
+                             "access (%s)", url[:120])
+                    return SessionState("no_access", message=NO_ACCESS_MESSAGE)
+
                 if not m:
                     return SessionState(
                         "error",
@@ -336,7 +390,7 @@ def probe(headless: bool = True) -> SessionState:
                 return SessionState("ok", session_id=m.group(1))
         except Exception as exc:
             log.exception("probe failed")
-            return SessionState("error", message=str(exc))
+            return SessionState("error", message=friendly_error(exc))
 
 
 def heartbeat() -> "SessionState":
@@ -441,7 +495,7 @@ def interactive_login(on_status=None) -> SessionState:
                     _save_cookies(ctx)
         except Exception as exc:
             log.exception("interactive login failed")
-            return SessionState("error", message=str(exc))
+            return SessionState("error", message=friendly_error(exc))
 
     # The window is closed or gone. Prove the session actually works rather
     # than trusting the URL it ended on — that is what let the earlier false
@@ -450,6 +504,10 @@ def interactive_login(on_status=None) -> SessionState:
     if state.ok:
         log.info("interactive login verified by probe")
         return SessionState("ok", session_id=state.session_id, message="Signed in")
+    if state.state in ("no_access", "error"):
+        # Not "try again": the probe knows why, and for these two another
+        # sign-in cannot change the answer.
+        return state
 
     log.info("login window ended without a usable session (%s, closed_early=%s)",
              state.state, closed_early)

@@ -140,6 +140,8 @@ class Tray:
             return "● Connected to LSM"
         if sess == "expired":
             return "● Session expired"
+        if sess == "no_access":
+            return "● No access to LSM's report"
         return "● Session unknown"
 
     # ── Menu actions ─────────────────────────────────────────────────────

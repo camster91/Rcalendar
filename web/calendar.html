@@ -1020,8 +1020,19 @@ function renderBootCard(){
   else if(d.busy){
     dot='<span class="bdot" aria-hidden="true"></span>';
     title=(d.busy_action||'Working')+'…';
-    body='Fetching bookings from LSM. The first run takes a few minutes — this happens once.';
+    // The body says what the busy action is doing, not always "fetching":
+    // a first launch spends its first seconds checking the session.
+    const act=(d.busy_action||'').toLowerCase();
+    body=/scrap|backfill|history/.test(act)
+      ?'Fetching bookings from LSM. The first run takes a few minutes — this happens once.'
+      :/sign-in/.test(act)
+      ?'A browser window is open — sign in with your UTORid and approve Duo.'
+      :'Checking your LSM session.';
     extra='<div class="bprog">'+esc(d.progress||'')+'</div>';
+  }else if(d.session==='no_access'){
+    title="This account can't open LSM's report";
+    body=esc(d.session_message||'Ask the LSM administrator for access.');
+    extra='<button class="btn btn-w" onclick="doLogin()">Try again</button>';
   }else if(d.session!=='ok'){
     title='No bookings yet';
     body=(d.session==='expired'?'The LSM session has expired. ':'This app needs an LSM session. ')
@@ -2117,6 +2128,9 @@ async function loadStatus(){
     // would put an action on screen that cannot do anything.
     if(d.session==='ok'){el.className='sess ok';el.textContent='● Session active';btn.style.display='none';out.style.display='block';}
     else if(d.session==='expired'){el.className='sess bad';el.textContent='● Session expired';btn.style.display='block';out.style.display='none';}
+    // Signed in to UofT but refused by LSM: signing out is how a person who
+    // used the wrong UTORid tries another, so that control stays offered.
+    else if(d.session==='no_access'){el.className='sess bad';el.textContent='● No access to LSM\'s report';el.title=d.session_message||'';btn.style.display='block';out.style.display='block';}
     else{el.className='sess warn';el.textContent='● '+(d.session_message||'Session unknown');btn.style.display='block';out.style.display='none';}
 
     // What the last scrape did, not what is held: the two used to share a line
@@ -2504,6 +2518,7 @@ async function doLogin(){
       // one second into a sign-in that then completed successfully.
       if(!sawBusy)continue;
       if(st.session==='ok'){toast('✅ Signed in',true);setTimeout(()=>location.reload(),900);}
+      else if(st.session==='no_access'){toast("❌ Signed in, but this account can't open LSM's report");btn.disabled=false;btn.textContent='Sign in to LSM';}
       else{toast('❌ Sign-in did not complete — try again');btn.disabled=false;btn.textContent='Sign in to LSM';}
       return;
     }

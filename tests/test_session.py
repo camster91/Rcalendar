@@ -399,6 +399,72 @@ def test_install_browser_downloads_nothing_when_edge_is_there() -> None:
         subprocess.run = real["run"]  # type: ignore[assignment]
 
 
+def test_a_refused_account_is_no_access_not_expired() -> None:
+    """Shibboleth let the browser through and LSM refused it: say so."""
+    print("\nno-access probe")
+
+    from contextlib import contextmanager
+
+    from app import session
+
+    class FakeLocator:
+        def __init__(self, text):
+            self.text = text
+
+        def inner_text(self, **kw):
+            if self.text is None:
+                raise RuntimeError("detached")
+            return self.text
+
+    class FakePage:
+        def __init__(self, url, text=""):
+            self.url, self.text = url, text
+
+        def goto(self, url, **kw):
+            pass
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        def locator(self, sel):
+            return FakeLocator(self.text)
+
+    desk = "https://lsm.utoronto.ca/ords/f?p=143:LOGIN_DESKTOP:1234:::::"
+    ok("LSM's own sign-in page after Shibboleth is a refusal",
+       session.access_denied(FakePage(desk)))
+    ok("APEX's authorization error is a refusal",
+       session.access_denied(FakePage("https://lsm.utoronto.ca/ords/f?p=143:51",
+                                       "Access denied by Page security check")))
+    ok("an ordinary page is not",
+       not session.access_denied(FakePage("https://lsm.utoronto.ca/x", "Report")))
+    ok("a page whose text cannot be read is not",
+       not session.access_denied(FakePage("https://lsm.utoronto.ca/x", None)))
+    check("a missing browser gets words a person can act on",
+          session.friendly_error(RuntimeError(
+              "BrowserType.launch: Executable doesn't exist at C:\\x")),
+          session.NO_BROWSER_MESSAGE)
+
+    class FakeCtx:
+        def __init__(self, page):
+            self.pages = [page]
+
+        def cookies(self):
+            return []
+
+    real = session.browser
+    try:
+        @contextmanager
+        def fake_browser(headless=True, restore=True):
+            yield FakeCtx(FakePage(desk))
+
+        session.browser = fake_browser
+        state = session.probe()
+        check("the probe reports no_access", state.state, "no_access")
+        ok("...with the message", "LSM administrator" in state.message)
+    finally:
+        session.browser = real
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — sign-in window tests")
@@ -413,6 +479,7 @@ def main() -> int:
     test_logout_clears_and_reports()
     test_the_browser_is_edge_when_the_machine_has_it()
     test_install_browser_downloads_nothing_when_edge_is_there()
+    test_a_refused_account_is_no_access_not_expired()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

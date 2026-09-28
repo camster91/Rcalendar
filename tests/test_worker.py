@@ -254,7 +254,8 @@ class ReportPage:
                  readback: list | None = None,
                  download_path: Path | None = None,
                  render: str = "fresh",
-                 body_text: str = "") -> None:
+                 body_text: str = "",
+                 report_loads: bool = True) -> None:
         self._csv = csv_text
         self._has_download = has_download
         self._readback = readback if readback is not None else [None, None]
@@ -262,6 +263,7 @@ class ReportPage:
         self._render = render
         self._token = "token-loaded"
         self._body = body_text
+        self._report_loads = report_loads
 
     @property
     def url(self) -> str:
@@ -284,6 +286,8 @@ class ReportPage:
 
     def wait_for_function(self, script: str, **kwargs) -> None:
         """_wait_for_item: returning normally means the item exists."""
+        if not self._report_loads:
+            raise TimeoutError("P51_FR_DATE never appeared")
 
     @property
     def keyboard(self):
@@ -340,7 +344,7 @@ class _CountNothing:
     def count(self) -> int:
         return 0
 
-    def inner_text(self) -> str:
+    def inner_text(self, **kwargs) -> str:
         return self._body_text
 
 
@@ -1179,6 +1183,55 @@ def test_an_unproven_empty_month_keeps_the_fill_owed() -> None:
         _session.probe = real["probe"]
         scheduler.scrape = real["scrape"]
 
+def test_an_account_without_access_is_told_so() -> None:
+    """A UofT account LSM will not show the report to gets that answer.
+
+    Before, it got "Report page did not load (P51_FR_DATE missing)" every
+    morning, or a sign-in loop — nothing said that signing in again could
+    never help. Asserted both ways: a page that fails to load *without*
+    saying access is denied stays the error it was.
+    """
+    print("\nno access")
+
+    readback = ["01/03/2026", "31/03/2026"]
+    r = _scrape_page(ReportPage("", has_download=False, readback=readback,
+                                report_loads=False,
+                                body_text="Access denied by Page security check"))
+    check("a refused report page is no_access", r.status, "no_access")
+    ok("...with the message that says what to do",
+       "LSM administrator" in r.message)
+
+    r = _scrape_page(ReportPage("", has_download=False, readback=readback,
+                                report_loads=False, body_text="Loading..."))
+    check("a page that simply failed to load stays an error", r.status, "error")
+
+    # The worker carries it to the session state the UI reads.
+    from app import session as _session
+
+    real = {"probe": _session.probe, "scrape": scheduler.scrape}
+    try:
+        _session.probe = lambda headless=True: _session.SessionState("ok")
+        scheduler.scrape = lambda **kw: scrape.ScrapeResult(  # type: ignore[assignment]
+            "no_access", message=_session.NO_ACCESS_MESSAGE)
+        orch = scheduler.Orchestrator()
+        orch._do_scrape(trigger="manual")
+        check("the worker reports no_access as the session state",
+              orch.status()["session"], "no_access")
+        ok("...with the message", "LSM administrator"
+           in orch.status()["session_message"])
+
+        scheduler.store.init_db()
+        with scheduler.store._conn() as conn:
+            conn.execute("DELETE FROM scrape_runs WHERE trigger = 'backfill'")
+        orch._do_backfill(auto=True)
+        check("a backfill refused access stops and says so",
+              orch.status()["session"], "no_access")
+        check("...without settling the fill",
+              scheduler.store.backfill_done(), False)
+    finally:
+        _session.probe = real["probe"]
+        scheduler.scrape = real["scrape"]
+
 def test_parse_time() -> None:
     """A SCRAPE_TIME nobody can read must not mean "scrape constantly"."""
     print("\nscrape time")
@@ -1266,6 +1319,7 @@ def main() -> int:
     test_an_empty_report_has_to_be_the_report()
     test_the_no_data_probe_reads_the_message_not_the_phrase()
     test_an_unproven_empty_month_keeps_the_fill_owed()
+    test_an_account_without_access_is_told_so()
     test_exclusions()
     test_parse_time()
 

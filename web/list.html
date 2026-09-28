@@ -537,6 +537,9 @@ async function loadStatus(){
     }else if(d.session==='expired'){
       el.className='badge bg-rd';el.textContent='● Session expired';
       el.title='Sign in from the Calendar page';
+    }else if(d.session==='no_access'){
+      el.className='badge bg-rd';el.textContent="● No access to LSM's report";
+      el.title=d.session_message||'Ask the LSM administrator for access';
     }else{
       el.className='badge bg-og';el.textContent='● '+(d.session_message||'Session unknown');
       el.title='Sign in from the Calendar page';
