@@ -5,6 +5,7 @@ output/
 
 # The Chromium profile contains a live LSM session. Treat it like a password.
 profile/
+profile-edge/
 
 # Listed by name too, not just via data/: a dev checkout pointed at LSM_DATA_DIR
 # outside data/ would otherwise make the cookie snapshot and the DB committable.

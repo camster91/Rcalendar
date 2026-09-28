@@ -40,7 +40,8 @@ from typing import Any
 
 from app import session, store
 from app.config import (
-    APP_NAME, APP_VERSION, BACKFILL_MONTHS, BUNDLE_DIR, DATA_DIR, DB_PATH,
+    APP_NAME, APP_VERSION, BACKFILL_MONTHS, BROWSER_CHANNEL, BROWSER_NAME,
+    BUNDLE_DIR, DATA_DIR, DB_PATH, EDGE_EXE,
     WEB_DIR, WEB_HOST, WEB_PORT, WINDOW_TITLE, log,
 )
 from app.icon import paint as paint_icon
@@ -571,10 +572,15 @@ def run_selftest() -> int:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            # The browser the app will really drive: Edge when found.
+            browser = pw.chromium.launch(
+                headless=True,
+                **({"channel": BROWSER_CHANNEL} if BROWSER_CHANNEL else {}))
             browser.close()
         record("playwright.browser", True,
-               os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "(unset)"))
+               f"{BROWSER_NAME}: " + (str(EDGE_EXE) if EDGE_EXE else
+                                      os.environ.get("PLAYWRIGHT_BROWSERS_PATH",
+                                                     "(unset)")))
     except Exception as exc:
         record("playwright.browser", False, f"{type(exc).__name__}: {exc}")
 
@@ -648,6 +654,13 @@ def run_install_browser() -> int:
     silence.
     """
     import subprocess
+
+    if EDGE_EXE:
+        # Nothing to fetch: the app drives the machine's own Edge. The
+        # installer still runs this step, so it has to succeed quietly here.
+        print(f"Using Microsoft Edge at {EDGE_EXE}; no browser download needed")
+        log.info("install-browser: Edge found at %s, nothing to download", EDGE_EXE)
+        return 0
 
     browsers = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
     if not browsers:

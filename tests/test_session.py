@@ -305,6 +305,100 @@ def test_logout_clears_and_reports() -> None:
             session.probe = real_probe
 
 
+def test_the_browser_is_edge_when_the_machine_has_it() -> None:
+    """Edge when found, Chromium otherwise, and each in its own profile.
+
+    Every managed Windows PC has Edge, so driving it spares each new user a
+    ~150 MB Chromium download through Playwright's CDN — the install step most
+    likely to fail on a managed machine. The detection must look where
+    Playwright looks, honour LSM_BROWSER=chromium, and the launch must carry
+    the channel, or "found Edge" would still launch Chromium.
+    """
+    print("\nbrowser choice")
+
+    from app import config, session
+
+    fake_root = Path(tempfile.mkdtemp(prefix="lsm-edge-"))
+    exe = fake_root / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+
+    saved = {k: os.environ.get(k) for k in
+             ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "LSM_BROWSER")}
+    try:
+        for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LSM_BROWSER"):
+            os.environ.pop(k, None)
+        os.environ["LOCALAPPDATA"] = str(fake_root)
+        check("Edge is found where Playwright looks", config._find_edge(), exe)
+        os.environ["LSM_BROWSER"] = "chromium"
+        check("LSM_BROWSER=chromium forces the fallback", config._find_edge(), None)
+        os.environ.pop("LSM_BROWSER")
+        os.environ["LOCALAPPDATA"] = str(fake_root / "nowhere")
+        check("no Edge anywhere means Chromium", config._find_edge(), None)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # The launch itself: the channel reaches Playwright, and only when set.
+    seen: list[dict] = []
+
+    class FakeCtx:
+        pages: list = []
+
+        def cookies(self):
+            return []
+
+        def close(self):
+            pass
+
+    class FakeChromium:
+        def launch_persistent_context(self, **kw):
+            seen.append(kw)
+            return FakeCtx()
+
+    class FakeDriver:
+        chromium = FakeChromium()
+
+    real = {"driver": session._driver, "channel": session.BROWSER_CHANNEL}
+    try:
+        session._driver = lambda: FakeDriver()
+        session.BROWSER_CHANNEL = "msedge"
+        with session.browser(restore=False):
+            pass
+        check("an Edge launch names the channel", seen[-1].get("channel"), "msedge")
+        session.BROWSER_CHANNEL = None
+        with session.browser(restore=False):
+            pass
+        ok("a Chromium launch names none", "channel" not in seen[-1])
+    finally:
+        session._driver = real["driver"]
+        session.BROWSER_CHANNEL = real["channel"]
+
+
+def test_install_browser_downloads_nothing_when_edge_is_there() -> None:
+    """The installer's browser step must succeed quietly on an Edge machine."""
+    print("\ninstall-browser with Edge")
+
+    import subprocess
+
+    from app import main as app_main
+
+    ran: list = []
+    real = {"edge": app_main.EDGE_EXE, "run": subprocess.run}
+    try:
+        app_main.EDGE_EXE = Path(r"C:\fake\msedge.exe")
+        subprocess.run = lambda *a, **k: (  # type: ignore[assignment]
+            ran.append(a), type("Done", (), {"returncode": 0})())[1]
+        check("it succeeds", app_main.run_install_browser(), 0)
+        check("...without running the Playwright download", ran, [])
+    finally:
+        app_main.EDGE_EXE = real["edge"]
+        subprocess.run = real["run"]  # type: ignore[assignment]
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — sign-in window tests")
@@ -317,6 +411,8 @@ def main() -> int:
     test_snapshot_guard()
     test_the_session_cookie_is_never_written_in_cleartext()
     test_logout_clears_and_reports()
+    test_the_browser_is_edge_when_the_machine_has_it()
+    test_install_browser_downloads_nothing_when_edge_is_there()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

@@ -38,7 +38,8 @@ from typing import Any, Iterator
 from app import dpapi
 from app.config import (
     APEX_APP_ID, APEX_AUTH_URL, CALENDAR_TZ, DATA_DIR, LOGIN_URL_MARKERS,
-    LSM_HOST, LSM_PORTAL_URL, MFA_WAIT_MS, NAVIGATE_TIMEOUT_MS, PROFILE_DIR,
+    BROWSER_CHANNEL, LSM_HOST, LSM_PORTAL_URL, MFA_WAIT_MS,
+    NAVIGATE_TIMEOUT_MS, PROFILE_DIR,
     log,
 )
 
@@ -130,12 +131,18 @@ def shutdown() -> None:
 
 @contextmanager
 def browser(headless: bool = True, restore: bool = True) -> Iterator[Any]:
-    """Persistent-profile Chromium context, serialised behind a process lock."""
+    """Persistent-profile browser context, serialised behind a process lock.
+
+    Edge when config found it (BROWSER_CHANNEL), Playwright's Chromium
+    otherwise — both are driven through the chromium engine.
+    """
     from app.config import SLOW_MO_MS
 
+    extra: dict[str, Any] = {"channel": BROWSER_CHANNEL} if BROWSER_CHANNEL else {}
     with _lock:
         ctx = _driver().chromium.launch_persistent_context(
             user_data_dir=str(PROFILE_DIR),
+            **extra,
             headless=headless,
             slow_mo=SLOW_MO_MS,
             viewport={"width": 1400, "height": 950},

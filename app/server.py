@@ -47,7 +47,7 @@ from flask import (Flask, Response, jsonify, redirect, request,
                    send_from_directory)
 
 from app import avail, store, updater
-from app.config import APP_NAME, WEB_DIR, log
+from app.config import APP_NAME, BROWSER_NAME, WEB_DIR, log
 from app.icon import paint
 from app.parse import split_title
 from app.rooms import floor_sort_key
@@ -409,6 +409,7 @@ def create_app(orchestrator: Any, *, access_key: str | None = None,
             # Which launch answered: the app's own handshake insists on its
             # id, so it can never mistake another process's server for its own.
             "instance": instance_id,
+            "browser": BROWSER_NAME,
             "session": st.get("session", "unknown"),
             "session_message": st.get("session_message", ""),
             "busy": st.get("busy", False),

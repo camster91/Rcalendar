@@ -85,7 +85,36 @@ PLAYWRIGHT_BROWSERS_DIR = (
 if FROZEN:
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(PLAYWRIGHT_BROWSERS_DIR))
 
-PROFILE_DIR = DATA_DIR / "profile"      # Chromium profile — holds the session cookie
+# ── Which browser drives LSM ─────────────────────────────────────────────
+# Microsoft Edge when the machine has it — every managed Windows PC does, and
+# IT keeps it patched — so a fresh install needs no ~150 MB per-user Chromium
+# download from Playwright's CDN (the step most likely to fail on a managed
+# machine, and the one an EDR is most likely to flag). The folders are the
+# ones Playwright itself searches for channel="msedge", so "found" here means
+# "Playwright will find it". Playwright's Chromium stays the fallback, and
+# LSM_BROWSER=chromium forces it (a policy that breaks automated Edge is the
+# case it exists for).
+def _find_edge() -> Path | None:
+    if os.environ.get("LSM_BROWSER", "").strip().lower() == "chromium":
+        return None
+    for var in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+        base = os.environ.get(var)
+        if base:
+            exe = Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+            if exe.is_file():
+                return exe
+    return None
+
+
+EDGE_EXE = _find_edge()
+BROWSER_CHANNEL = "msedge" if EDGE_EXE else None
+BROWSER_NAME = "Microsoft Edge" if EDGE_EXE else "Chromium"
+
+# The browser profile — holds the live session cookie. One per browser, because
+# Edge and Chromium must not open each other's profile directory. Moving to
+# Edge costs no sign-in: the DPAPI cookie snapshot is re-injected into the new
+# profile on its first launch (session._restore_cookies).
+PROFILE_DIR = DATA_DIR / ("profile-edge" if EDGE_EXE else "profile")
 DB_PATH = DATA_DIR / "calendar.db"
 LOG_PATH = DATA_DIR / "app.log"
 GROUPS_PATH = DATA_DIR / "room_groups.json"
