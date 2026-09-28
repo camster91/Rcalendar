@@ -52,7 +52,7 @@ this app's publisher signed them.
   calendar's room and group rules, so a filter means the same thing on
   both pages.
 
-The test suite now stands at ASSERTION_COUNT assertions across eight
+The test suite now stands at 1196 assertions across eight
 suites; each fix was verified by breaking it on purpose first.
 
 ## Install (per-user, no admin)
