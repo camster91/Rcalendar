@@ -41,6 +41,17 @@ signature, the project certificate and the DigiCert timestamp were all
 present and correct, and Status still read UnknownError - the first
 release stopped on that, which is how the criterion was found wrong.)
 
+Which certificate: one whose thumbprint is pinned in app/config.py
+SIGNING_THUMBPRINTS, the list every installed copy's updater checks a
+downloaded installer against (app/updater.py judge_signature). A build
+signed by any other certificate would be refused by every install's
+updater, so this script refuses to produce one. If no pinned certificate
+is in this user's store - a new machine, a lost profile - it stops rather
+than silently minting a new one; restore the backup (see
+export-signing-cert.ps1) or, deliberately, pass -NewCert and then ship a
+transition release whose pins list both thumbprints BEFORE any release is
+signed by the new certificate alone.
+
 .EXAMPLE
 .\sign.ps1 -Path dist\RotmanLSMCalendar\RotmanLSMCalendar.exe
 #>
@@ -49,26 +60,46 @@ param(
     [Parameter(Mandatory = $true)][string]$Path,
     # Optional: where to write the .cer other machines import to trust
     # the signature. Written per build so the shipped cert is current.
-    [string]$ExportTo = ""
+    [string]$ExportTo = "",
+    # Deliberate only: create a certificate when no pinned one is present.
+    # See the header - the new thumbprint must be pinned in a transition
+    # release first, or every installed copy refuses the next update.
+    [switch]$NewCert
 )
 
 $ErrorActionPreference = "Stop"
 
 $Subject = "CN=Rotman LSM Calendar (self-signed code signing)"
 
-# Find-or-create, by subject. -CodeSigningCert filters out certificates
-# that cannot sign code, which keeps a same-named TLS cert from being
-# silently picked up if one ever appears in this store.
+# The pins, read from the one place the app reads them from.
+$configPy = Join-Path (Split-Path $PSScriptRoot -Parent) "app\config.py"
+$pinBlock = [regex]::Match((Get-Content -Raw $configPy),
+    'SIGNING_THUMBPRINTS\s*=\s*\(([^)]*)\)')
+if (-not $pinBlock.Success) { throw "SIGNING_THUMBPRINTS not found in $configPy" }
+$pins = @([regex]::Matches($pinBlock.Groups[1].Value, '[0-9A-Fa-f]{40}') |
+    ForEach-Object { $_.Value.ToUpper() })
+if (-not $pins.Count) { throw "SIGNING_THUMBPRINTS in $configPy pins nothing" }
+
+# -CodeSigningCert filters out certificates that cannot sign code.
 $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
-    Where-Object { $_.Subject -eq $Subject } |
+    Where-Object { $pins -contains $_.Thumbprint.ToUpper() -and $_.HasPrivateKey } |
+    Sort-Object NotAfter -Descending |
     Select-Object -First 1
 
 if (-not $cert) {
+    if (-not $NewCert) {
+        throw ("no pinned signing certificate (" + ($pins -join ", ") +
+               ") with its private key is in Cert:\CurrentUser\My. Restore it " +
+               "from the PFX backup (packaging\export-signing-cert.ps1 made it), " +
+               "or pass -NewCert deliberately - see this script's header.")
+    }
     Write-Host "  creating code-signing certificate (current user store)..."
     $cert = New-SelfSignedCertificate -Type CodeSigningCert `
         -Subject $Subject -HashAlgorithm SHA256 `
         -CertStoreLocation Cert:\CurrentUser\My
-    Write-Host "  created: thumbprint $($cert.Thumbprint)" -ForegroundColor Green
+    Write-Host ("  created: thumbprint $($cert.Thumbprint). Add it to " +
+                "SIGNING_THUMBPRINTS and ship a transition release before " +
+                "any release is signed by it alone.") -ForegroundColor Yellow
 }
 
 # Deliberately NOT imported anywhere for local trust. An earlier version

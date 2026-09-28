@@ -15,11 +15,10 @@ Fill in before sending — the bracketed fields are placeholders, not prose:
   these were `RotmanLSMCalendar-Setup-1.0.0.exe` and 42.3 MB. Asking for a
   filename no build produces is how this request gets a yes that fixes nothing.
 
-Send it **only if an exe is actually needed as a shipped artefact.** If it is
-not, the request is unnecessary: the venv path is now the default, it compiles
-nothing, and it triggers no detection. Saying so in the request is deliberate —
-it gives the reviewer an easy answer and makes the ask smaller, which is what
-gets it approved.
+Since v1.3.0 the installer **is** the shipped artefact: it is how colleagues
+in the office install the app on their own PCs (the source/venv path is for
+development only). Send this if their machines flag or quarantine it — and say
+how many people actually use it; a small honest number is a strong answer.
 
 Two artefacts are listed below, because there are two binaries now. If
 only one of them is ever going to leave this machine, delete the other's section
@@ -47,11 +46,10 @@ reviewed and, if you agree it is benign, excluded — keyed on **path or
 publisher rather than hash**, since every rebuild changes the hash and a
 hash-keyed exclusion would expire with the next build.
 
-To be clear, I am not asking to bypass a control. If your answer is that the exe
-should not exist, that is a workable answer: the tool runs from a Python
-virtualenv, which needs no exclusion at all, and I have made that the default
-since this came up. The request covers only the case where it has to exist as a
-shipped folder.
+To be clear, I am not asking to bypass a control. It is installed per-user by
+colleagues who need the same read-only view I do; if your answer is that it
+should not be installed that way, I would rather hear that than have it
+quietly flagged on their machines.
 
 **What the software is**
 
@@ -60,22 +58,27 @@ shipped folder.
   room-booking report (`lsm.utoronto.ca`). It reads a report I can already open
   with my own account and renders it as a calendar, so answering "is 134A free
   at 2?" does not mean re-running the report each time.
-- **Origin:** written by me, with Claude Code assistance. Source lives at
-  `C:\Users\ashleyc2\rotman-lsm-calendar`. Internal, not published, no
-  commercial purpose.
+- **Origin:** written by me, with Claude Code assistance. The source is in a
+  private GitHub repository; the installer is published at
+  <https://github.com/camster91/rotman-lsm-calendar-releases/releases>, which
+  holds nothing but release files. Internal, no commercial purpose.
 - **Users:** [N USERS]
 
 **Network behaviour — this is the whole surface**
 
-- **Inbound:** none. It binds `127.0.0.1:8765` (loopback) to serve its own UI.
-  It is not reachable from the network and has no authentication because it has
-  no network surface. There is deliberately no host override in its config.
-- **Outbound:** HTTPS to `lsm.utoronto.ca`, in a real Chromium window driven by
-  Playwright, signed in by me with Duo. Since v1.1.2 it also checks the
-  project's own GitHub releases for updates — HTTPS to `api.github.com`, and
-  the release's installer download through the same API when an update is
-  accepted (since v1.2.0 those requests name a public releases mirror
-  repository, not the private source repository). No other endpoints.
+- **Inbound:** none. It serves its own UI on loopback only (`127.0.0.1`,
+  port 8765, or a free port when another Windows user's copy already holds
+  that one), and every request must carry a per-launch key, so one user's
+  copy cannot be read by another account on a shared PC. It is not reachable
+  from the network; there is deliberately no host override in its config.
+- **Outbound:** HTTPS to `lsm.utoronto.ca`, in the machine's own Microsoft Edge
+  driven by Playwright (Playwright's Chromium only where Edge is missing),
+  signed in by the user with their own UTORid and Duo. It also checks the
+  project's GitHub releases for updates — HTTPS to `api.github.com`, and, when
+  an update is accepted, the installer download, which GitHub serves from its
+  release-asset host (`*.githubusercontent.com`) via redirect. No other
+  endpoints. A downloaded update runs only if its checksum matches the
+  release **and** its Authenticode signer is the project certificate below.
 - **Credentials:** the sign-in happens in a normal browser window with my own
   credentials. The application never sees or stores my password. It keeps the
   resulting session cookie locally so it does not have to re-authenticate daily.
@@ -85,8 +88,9 @@ shipped folder.
 - **No telemetry, no analytics, no third-party services.** The update check is
   the one thing the app fetches beyond LSM, and it fetches it from the
   project's own release page.
-- **Installs nothing.** No admin rights, no service, no driver, no scheduled
-  task. Login startup is a shortcut in my own Startup folder.
+- **Installs nothing machine-wide.** No admin rights, no service, no driver,
+  no scheduled task. Login startup is a shortcut in the user's own Startup
+  folder.
 
 **Why it is reported**
 
@@ -110,7 +114,7 @@ entries are timestamped 08:52:21 and 08:52:22, and the exe was written at
 | | |
 |---|---|
 | Name | `RotmanLSMCalendar.exe` |
-| Path | `C:\Users\ashleyc2\rotman-lsm-calendar\dist\RotmanLSMCalendar\RotmanLSMCalendar.exe` |
+| Path | installed: `%LOCALAPPDATA%\Programs\Rotman LSM Calendar\RotmanLSMCalendar.exe` (per user); built: `dist\RotmanLSMCalendar\RotmanLSMCalendar.exe` in the source checkout |
 | Size | 7,952,049 bytes |
 | SHA-256 | `5B2237E7847B97F19F5DD0F9559947EFA7EED402F83DACA1C5CED7543BE42870` |
 | Built | 2026-09-21 08:52:17 |
@@ -134,13 +138,13 @@ not.
 | Signature | Self-signed (Authenticode) since v1.1.2 — same subject and thumbprint as the exe above |
 | Packaging | Inno Setup 6.7.3, `PrivilegesRequired=lowest` — installs per-user under `%LOCALAPPDATA%\Programs`, so it raises no UAC prompt |
 
-What it installs is a per-user copy of the app plus a Desktop shortcut and one
-in the Startup folder. No service, no driver, no scheduled task, no machine-wide
+What it installs is a per-user copy of the app, a Start menu entry, a Startup
+shortcut (on by default; it starts the app in the tray) and, only if asked, a
+Desktop shortcut. No service, no driver, no scheduled task, no machine-wide
 change, and nothing written outside the user's own profile. The uninstaller asks
-separately before deleting the data directory and defaults to keeping it. Its
-only network activity on install is fetching Chromium into the per-user
-Playwright cache, which is the same download the app would otherwise do on first
-run.
+separately before deleting the data directory and defaults to keeping it. On a
+machine with Microsoft Edge it makes no network request at all; without Edge
+it fetches Playwright's Chromium into the per-user cache.
 
 **Detection record, 2026-09-21**
 
@@ -159,8 +163,8 @@ run.
 2. tell me a CA-issued certificate is required — the current self-signed one is
    deliberately not that, and I would like to know whether a certificate from
    UofT's own PKI is acceptable rather than a commercial one; **or**
-3. tell me the exe is not needed and I will drop it — the venv path is what I
-   use day to day and it triggers nothing.
+3. tell me it should not be installed on office machines this way, and I will
+   stop distributing it.
 
 I am happy to provide the source, a build log, or to unpack and run it on a
 machine you nominate while someone watches the console.

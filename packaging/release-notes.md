@@ -1,75 +1,72 @@
-# Rotman LSM Calendar v1.2.0
+# Rotman LSM Calendar v1.3.0
 
-A read-only viewer for Rotman LSM room bookings. This release makes updating
-itself effortless — tokenless, and with the download done before you click —
-and hardens the updater, the pages' accessibility and the failure honesty
-of everything in between.
+A read-only viewer for Rotman LSM room bookings. This release is the one
+for the whole office: anyone can install it on their own PC and sign in
+with their own UTORid, two people can share a PC without seeing each
+other's calendar, and updates install themselves quietly — and only if
+this app's publisher signed them.
 
 ## What's new
 
-### Updates are tokenless: a public releases mirror
+### Every office account, on every PC
 
-The app's own repository is private, and GitHub cannot serve a release
-publicly while its repo is not — which, until now, meant every machine
-needed a paste-once GitHub token just to see whether an update existed.
-Releases are now also published to a public mirror repository that holds
-nothing but release artifacts (the installer, its checksum, the signing
-certificate) — and the app reads that mirror. Checks and downloads need no
-token and no setup on any machine. A pasted token still works and is still
-stored encrypted (Windows DPAPI) for the day the mirror is ever made
-private; it is a fallback now, not a requirement.
+- **Two people, one PC.** Each Windows account's copy now has its own
+  local web address and a per-launch key. Before, a second person's copy
+  on a shared PC could open its window on the *first* person's calendar
+  and live LSM session. Now each copy answers only its own window.
+- **Uses the PC's own Microsoft Edge.** No more ~150 MB browser download
+  per person at install time — the step most likely to fail on a managed
+  PC. Where Edge is missing, the app still fetches Chromium as before.
+  Existing installs move to Edge without signing in again.
+- **"No access" is said plainly.** A UTORid that signs in to UofT but has
+  no access to LSM's Rotman report used to loop through "session expired"
+  or show a raw error every morning. It now says what is wrong and what to
+  do (ask the LSM administrator), and starts working by itself the day
+  access is granted.
 
-### The update is downloaded before you click
+### Updates install themselves, and only trusted ones
 
-A check that finds a newer release now downloads the installer and verifies
-it against the checksum the release itself published, right then. When you
-click **Install update**, the installer starts — no 42 MB wait. A
-pre-download that fails (offline, a flaky link) changes nothing: the offer
-still stands, the sidebar says why the click will take longer, and the
-click downloads the old way.
+- An update is now checked against the release's checksum **and** its
+  code-signing signature — the signer must be this project's pinned
+  certificate — before anything runs.
+- It then installs **silently** (a progress bar, no wizard pages, your
+  previous choices kept) and starts the app again when it is done.
 
-### The updater survived a review round
+### Installer
 
-A proxy-truncated download used to kill the update worker with a raw
-traceback; it is now the honest "could not reach GitHub" sentence, like
-every other network fault. A skipped version is withdrawn from the sidebar
-the moment you skip it, not at the next poll. A failed check with a known
-newer release offers **Try again**; a failed install relabels the button
-immediately; the sidebar says whether a GitHub token is already saved and
-only offers to clear one that exists.
+- Starts the app **in the tray** at sign-in by default (the 06:00 refresh
+  only happens while the app runs); the desktop shortcut is now opt-in.
+- Add/Remove Programs links to the public releases page instead of a
+  private repository nobody else can open.
 
-### The pages' controls are real controls
+### Also fixed
 
-The search dropdown no longer closes while you are still using it. Preset
-chips are real buttons. Week-view bars are buttons reachable by keyboard,
-with names a screen reader can speak; all-day blocks open their details
-with Enter and close them with Escape; the update toast and the sidebar
-announce themselves politely. A dead status fetch no longer leaves the last
-session reading standing as if it were live — the line retracts to
-"Session unknown" and says the app is unreachable.
+- An empty report is only believed when the report itself says so: a
+  "no data found" phrase elsewhere on the page, or an error page saved as
+  the download, can no longer turn a day's bookings into "nothing booked".
+- The first-run card names what it is doing ("Checking your LSM session"
+  vs "Fetching bookings"); a missing browser gets a sentence a person can
+  act on.
+- The calendar's filters apply through one path (editing a group's rooms
+  now re-filters the calendar straight away), and the list page shares the
+  calendar's room and group rules, so a filter means the same thing on
+  both pages.
 
-### The list page follows the data
+The test suite now stands at ASSERTION_COUNT assertions across eight
+suites; each fix was verified by breaking it on purpose first.
 
-The list view now refreshes itself when the 06:00 scrape lands behind its
-back, so an overnight cancellation does not wait for a reload to be
-respected.
+## Install (per-user, no admin)
 
-The test suite now stands at 1080 assertions across eight suites; each
-fix was verified by breaking it on purpose first.
-
-## Install (per-user, no UAC)
-
-1. Download `RotmanLSMCalendar-Setup-1.2.0.exe` and run it. The binaries
-   are Authenticode-signed with the project's self-signed code-signing
-   certificate, so a machine that has never seen it still says "unknown
-   publisher" — "More info → Run anyway" is the way past it, and the
-   prompt stops for good once you import the shipped certificate (step
-   3, optional, per-user, no admin).
-2. First launch: use the tray item **Sign in to LSM** for the UofT SSO +
-   Duo sign-in. The app never stores a password; the browser profile holds
-   the session.
-3. Optional, to stop the "unknown publisher" prompts: download
-   `RotmanLSMCalendar-CodeSigning.cer` from the same release and import it
+1. Download `RotmanLSMCalendar-Setup-1.3.0.exe` and run it. Windows
+   SmartScreen says **"Windows protected your PC"**, because the installer
+   is signed with the project's own self-signed certificate rather than a
+   purchased one: choose **More info → Run anyway**. On a managed PC the
+   endpoint agent may also report it; nothing is removed.
+2. The app opens: click **Sign in to LSM**, sign in with **your own
+   UTORid** and approve Duo. The app never stores a password; the browser
+   profile holds the session. The first fetch takes a few minutes.
+3. Optional, to stop the "unknown publisher" prompt: download
+   `RotmanLSMCalendar-CodeSigning.cer` from this release and import it
    into your own Trusted Root and Trusted Publishers stores, per-user and
    with no admin rights, in PowerShell:
 
@@ -79,33 +76,18 @@ fix was verified by breaking it on purpose first.
          -CertStoreLocation Cert:\CurrentUser\TrustedPublisher
 
    Windows asks for confirmation on the Root import, and it should: that
-   is the real trust decision — "treat this certificate as a root I trust",
-   for your user account only. Trusted Root alone is what makes Windows
-   validate the signature; Trusted Publishers is what stops the run
-   prompt. (An earlier draft of this step named Trusted People instead;
-   that store does not do it — measured: the signature still reads as
-   untrusted with the certificate in Trusted People, which is why this
-   step names the two stores above.)
+   is the real trust decision, for your user account only. A managed PC's
+   policy may block it; skipping it changes nothing but the prompt.
 
-Your data folder (bookings database, groups, saved filters) carries over
-from 1.1.1 and 1.1.2 untouched — the installer does not touch it. Machines
-running v1.1.2 can update from the app itself: **Check for updates** in the
-tray (that version needs a saved GitHub token; from this release on, none
-is needed).
+Your data folder (bookings, groups, saved filters) carries over untouched.
+Copies on v1.2.0 update from the app itself (**Check for updates** in the
+tray); that one update still shows the installer's pages, because it is
+v1.2.0's updater that runs it. From v1.3.0 on, updates are silent.
 
 This release was built, signed and self-tested locally — signing needs the
 project's code-signing certificate, which lives in the build machine's user
-store; a cloud runner cannot hold it. `sha256.txt` beside the installer
-carries the hash below, and it is the hash of the *signed* installer: the
-app verifies what it downloads against this file, which is why it is taken
-after signing.
-
-Note for managed machines: signing with a self-signed certificate gives
-the binaries a stable publisher identity — one an endpoint agent can be
-told to trust by certificate rather than by file path — but it is not
-the reputation a CA-issued certificate carries. Whether this build
-avoids the endpoint detections the unsigned builds collected is
-re-measured, not assumed; check the quarantine count, not the threat
-history.
+store. `sha256.txt` beside the installer carries the hash below, taken
+*after* signing: the app verifies what it downloads against this file, then
+checks the signature itself.
 
 SHA-256: `SHA256_PLACEHOLDER`

@@ -25,10 +25,45 @@ cancels anything.
          Check for updates · Open Data Folder · Open in Browser · Quit
 ```
 
+## Installing it (office)
+
+Anyone in the office can install it on their own PC — no admin rights, no
+checkout, no Python. The download link to hand out is the **public releases
+page**, <https://github.com/camster91/rotman-lsm-calendar-releases/releases/latest>
+(this repository is private, so its own releases are invisible to colleagues).
+
+1. Download `RotmanLSMCalendar-Setup-<version>.exe` and run it.
+2. Windows SmartScreen says **"Windows protected your PC"** because the
+   installer is signed with the project's own (self-signed) certificate, not
+   a purchased one. Choose **More info → Run anyway**. The endpoint agent on a
+   managed PC may also report it; that is expected and nothing is removed.
+3. The installer is **per-user**: it installs to
+   `%LOCALAPPDATA%\Programs\Rotman LSM Calendar`, never asks for admin,
+   and by default starts the app **in the tray** when you sign in to Windows
+   (so the 06:00 refresh keeps happening). A desktop shortcut is optional.
+4. The app opens. Click **Sign in to LSM**, sign in with **your own UTORid**
+   and approve Duo. It then fetches about a year of bookings on its own — the
+   first run takes a few minutes.
+
+It drives the PC's own **Microsoft Edge** (every managed PC has it), so there
+is no separate browser download. Where Edge is missing, the installer fetches
+Playwright's Chromium (~150 MB) instead.
+
+**"This account can't open LSM's report"** means you signed in to UofT fine,
+but your UTORid has no access to LSM's Rotman bookings report. Signing in
+again will not change that — ask the LSM administrator for access (or, if you
+used the wrong UTORid, **Sign out** in the sidebar and sign in again). The app
+checks once a day, so it starts working on its own once access is granted.
+
+Updates arrive by themselves: see [Staying up to date](#staying-up-to-date).
+Two people can share one PC — each Windows account gets its own copy, its own
+sign-in and its own calendar, and neither can see the other's.
+
 ## How the session works
 
 LSM is behind UofT Shibboleth SSO with Duo MFA. Rather than storing your
-UTORid and password, the app keeps a **Chromium profile** on disk:
+UTORid and password, the app keeps a **browser profile** on disk — Microsoft
+Edge's, where Edge is installed, or Playwright's Chromium's otherwise:
 
 | When | What happens |
 |---|---|
@@ -36,6 +71,7 @@ UTORid and password, the app keeps a **Chromium profile** on disk:
 | Every morning | The 6 AM scrape reuses that profile. Headless, no prompts. |
 | Every 4 hours | A heartbeat re-pings LSM so the Shibboleth idle-timeout doesn't lapse. |
 | Session dies | The sidebar shows **Session expired** and a **Sign in to LSM** button appears. One click, one Duo tap. |
+| No access | The UTORid signed in but LSM will not show it the report: the app says **No access to LSM's report** and why, instead of asking for sign-in again. |
 
 The cookie snapshot is also written to `session.bin`, encrypted with
 Windows DPAPI — readable only by your Windows account on this machine.
@@ -47,7 +83,7 @@ not "snapshot anyone can read". The cost of refusing is signing in again
 on the next launch. No password is ever stored, and the app never types
 credentials for you: MFA stays a human decision.
 
-## Running it
+## Running it from source (developers)
 
 ```powershell
 # one-time setup
@@ -57,17 +93,17 @@ credentials for you: MFA stays a human decision.
 .\.venv\Scripts\python.exe -m app.main
 ```
 
-**This is the way to run the app.** It is what `install-autostart.ps1` points
-at, and it has a property the packaged build does not: it compiles nothing. A
+**This is the developer's way to run the app**, and office users should use
+the installer ([Installing it (office)](#installing-it-office)). Running from
+source has one property the packaged build does not: it compiles nothing. A
 signed `python.exe` running source is not a binary the endpoint agents have to
 form an opinion about, so nothing here appears in the security console.
+`install-autostart.ps1` points at this path; the installer's own autostart
+option points at the installed exe.
 
-There used to be a second documented path — a PyInstaller folder build. It is
-still possible and the record of it is kept under [Not the supported
-path](#not-the-supported-path-building-an-exe) below, but it is not how the app
-is run, nothing points at it, and building it writes an unsigned binary the
-endpoint agents report. If you find yourself reading that section, read the
-cost paragraph first.
+Building the installer does write binaries the endpoint agents report — see
+[Building and releasing the installer](#building-and-releasing-the-installer),
+and read its cost paragraph before running a build.
 
 Command-line modes:
 
@@ -80,16 +116,17 @@ python -m app.main --backfill       # redo the one-time history fill and exit
 python -m app.main --backfill --months 6   # ...or a shorter reach
 python -m app.main --probe          # report session state and exit
 python -m app.main --selftest       # health-check this install end to end, and exit
-python -m app.main --install-browser   # fetch Chromium into the per-user cache, and exit
+python -m app.main --install-browser   # fetch Chromium if Edge is missing, and exit
 ```
 
-`--install-browser` is the one you want on a machine that has never run the app.
-Everything else it needs is in its own folder; the browser deliberately is not
-(see [Not the supported path](#not-the-supported-path-building-an-exe)), so a
-fresh machine has an empty `%LOCALAPPDATA%\ms-playwright`, and the app would
-start, serve the calendar, and fail every scrape. The installer runs this for
-you; this is how you run it by hand, and how you retry it if that download
-failed at install time.
+The app drives the machine's own Microsoft Edge when it is installed (it looks
+where Playwright looks for `channel="msedge"`), and `--install-browser` then
+succeeds without downloading anything. Only a machine without Edge needs
+Playwright's Chromium in `%LOCALAPPDATA%\ms-playwright`; without it the app
+would start, serve the calendar, and fail every scrape. The installer runs this
+for you; this is how you run it by hand, and how you retry it if that download
+failed at install time. `LSM_BROWSER=chromium` forces Chromium even where Edge
+exists — the escape hatch for a policy that breaks automated Edge.
 
 ## Starting automatically at login
 
@@ -115,9 +152,14 @@ then, so **Install update** starts it instead of a 42 MB wait (a pre-download
 that fails changes nothing — the offer stands and the click downloads the old
 way). An amber banner appears in the toolbar and the sidebar offers
 **Install update**: the app checks the downloaded installer against the
-`sha256.txt` the release itself published and only then runs it — a download
-that does not match is never run. The installer asks the app to close when it
-is ready to copy files; your data folder is untouched throughout. *Skip this
+`sha256.txt` the release itself published, then checks its **Authenticode
+signature** is the project's own (signer thumbprint pinned in
+`app/config.py` `SIGNING_THUMBPRINTS`, timestamp present), and only then runs
+it — a download that fails either check is never run. The checksum proves the
+file is what was published; the signature proves who published it. The
+installer runs **silently** — a progress bar, no wizard pages, your previous
+shortcut/autostart choices kept — and starts the app again when it is done;
+your data folder is untouched throughout. *Skip this
 version* hides a release you declined until something strictly newer ships.
 
 Releases are read from a **public mirror repository**
@@ -142,23 +184,28 @@ never has to survive one.
 
 ## Where the data lives
 
-Everything writable is under **`.\data`**, beside the checkout. Override it with
-the `LSM_DATA_DIR` environment variable. `LSM_PORT` does the same job for the
-web UI's port (default 8765), which is how a test runs alongside an instance
-already holding it. There is deliberately no *matching host* override — the
-process holds a live LSM session and binds loopback only.
+The installed app keeps everything writable in
+**`%LOCALAPPDATA%\RotmanLSMCalendar`** — per Windows account, so two people on
+one PC never share a session or a calendar. Running from source uses
+**`.\data`** beside the checkout instead. `LSM_DATA_DIR` overrides either.
+The two are separate stores: each has its own `calendar.db` and its own
+browser profile, so **do not delete one assuming it is the other**.
 
-The packaged build used a different location, `%LOCALAPPDATA%\RotmanLSMCalendar`,
-and that directory may still exist from the exe era. **Do not delete it** until
-you have looked: it holds a separate `calendar.db` and a separate Chromium
-profile, so if it is where your sign-in and history actually live, deleting it
-loses both. `LSM_DATA_DIR` is how you point the app at it if it is the one you
-want. The venv path never reads it, so nothing breaks by leaving it alone.
+The web UI is served on loopback only — there is deliberately no host
+override, because the process holds a live LSM session. It prefers port 8765
+(`LSM_PORT` changes that) and, when that port is taken — another Windows
+user's copy on a shared PC, most often — takes a free one instead. Each launch
+also mints a **key**: the window and the tray open the UI through a URL
+carrying it, and without it every page and API answers 401. Loopback is shared
+by every account on a machine, so the port alone cannot say whose app it is;
+the key can. Open the calendar from the tray (or the Start menu), not from a
+bookmark.
 
 | File | Purpose |
 |---|---|
 | `calendar.db` | SQLite: bookings, scrape history, room metadata |
-| `profile/` | Chromium profile — **holds a live session; treat as a password** |
+| `profile-edge/` | Edge profile — **holds a live session; treat as a password** |
+| `profile/` | Chromium profile (used only where Edge is missing) — same warning |
 | `session.bin` | DPAPI-encrypted cookie snapshot |
 | `github-token.bin` | DPAPI-encrypted optional GitHub token (updater) |
 | `update-staged/` | Half-downloaded installers; cleared on every check |
@@ -704,11 +751,15 @@ to date](#staying-up-to-date)).
 Since v1.1.2 **both shipped binaries are Authenticode-signed** with the
 project's self-signed code-signing certificate. `packaging/sign.ps1` —
 called twice from `build.ps1`, on the inner exe before the installer is
-compiled and on the Setup exe after — finds the certificate by its fixed
-subject or creates it once, and reuses it for every build after that:
-every machine that imported the shipped `.cer` trusts that certificate and
-no other, so regenerating it per build would strand each of them back at
-"unknown publisher" with no way to notice. What a self-signed certificate
+compiled and on the Setup exe after — signs only with a certificate whose
+thumbprint is pinned in `app/config.py` `SIGNING_THUMBPRINTS`, the same list
+every installed copy's updater checks a downloaded installer against. It
+**refuses** to mint a new certificate unless told to with `-NewCert`: a new
+one would be refused by every installed updater, so a renewal (the current
+certificate expires 2027-09-25) must first ship a transition release pinning
+both. The private key exists only in the release machine's user store —
+`packaging/export-signing-cert.ps1` backs it up to a password-protected `.pfx`
+(keep it somewhere backed up, and the password somewhere else). What a self-signed certificate
 buys is a **stable publisher identity** — an endpoint agent can be told to
 trust it by certificate rather than by path — and local trust; it does
 not buy the reputation a CA-issued certificate carries, so a managed
@@ -744,14 +795,14 @@ one that ships. The Actions workflow stays as a manual/diagnostic path
 until signing moves onto the runner (a CA-issued certificate, or a pfx
 held in secrets — a decision not made here).
 
-## Not the supported path: building an .exe
+## Building and releasing the installer
 
-**This is not how the app is run.** The venv in [Running it](#running-it) is the
-supported path, `install-autostart.ps1` points at it, and it compiles nothing.
-Nothing in this repository points at the build below any more — the `-UseExe`
-autostart switch that used to is gone. Build only when you specifically need a
-self-contained folder, to hand the app to someone with no checkout, and read the
-cost first.
+The installer is how the app reaches the office ([Installing it
+(office)](#installing-it-office)); `packaging\release-local.ps1` is the only
+path that builds one for release (see [Versions and
+releases](#versions-and-releases)). Development runs from source, which
+compiles nothing. Read the cost first — it is why builds happen once per
+release, not as routine work.
 
 **Making the exe puts an entry in the security console.** The 2026-09-21 build
 produced two of them, one second apart — `RotmanLSMCalendar.exe` under `build\`
@@ -850,18 +901,22 @@ compiler, so Add/Remove Programs, the wizard and the app's own startup log
 cannot claim different versions. `installer.iss` derives the four-part
 `FileVersion` resource from it rather than keeping a second copy.
 
-Three tasks, and the middle one is why this is not just a file copy:
+Three tasks:
 
 | task | default | what it does |
 |---|---|---|
 | desktop shortcut | off | `{autodesktop}` |
-| start at sign-in | off | a `{userstartup}` shortcut |
-| download Chromium | on | runs the app's own `--install-browser` |
+| start in the tray at sign-in | **on** | a `{userstartup}` shortcut with `--tray` — the 06:00 refresh only happens while the app runs |
+| set up the browser | on | runs the app's own `--install-browser`: nothing to do where Edge exists, a Chromium download where it does not |
 
-That last one closes the gap a fresh machine would otherwise fall into. The
-browser is deliberately not in the build, so without it the app would install,
-start, serve the calendar, and fail every scrape — and say nothing until someone
-tried to sign in. Measured: the installed app's log gained exactly two lines,
+The last one closes the gap a machine without Edge would otherwise fall into:
+the browser is deliberately not in the build, so without it the app would
+install, start, serve the calendar, and fail every scrape.
+
+An **update** runs the same installer with `/SILENT /SUPPRESSMSGBOXES
+/NORESTART /RELAUNCH=1` (`app/updater.py` `INSTALLER_ARGS`): previous task
+choices are kept, and the project's own `/RELAUNCH=1` switch starts the app
+again at the end, since a silent install has no finish page. Measured: the installed app's log gained exactly two lines,
 both about the browser, and the fetch was a no-op because
 `%LOCALAPPDATA%\ms-playwright` already held the revision the bundled Playwright
 expects. Nothing was sent to LSM — the install path touches no session, no
@@ -918,8 +973,9 @@ reported and taken. That was the position until now: *usable, but noisy*.
 **The conclusion changed.** Reported-and-left-alone is one notch more permissive
 than this is worth. The app runs from the venv, which writes no binary at all, so
 there is nothing for an agent to score and no console line naming this account.
-That is the supported path, and building the exe is not — nothing points at it
-any more.
+That stayed the development path. For the office, v1.3.0 changed the answer:
+colleagues need an installer, so the installer is built — once per release, by
+`release-local.ps1`, signed — and never as routine work on this machine.
 
 The detections already in the console stay there. They are a record of past
 builds, not a live problem, and nothing here can or should remove them.
@@ -948,9 +1004,11 @@ shape rules out the *dropper* pattern, not the first impression:
 
 None of the three is testable from this box, so none of them should be
 promised. Worth naming in an allow-list request is the network surface, which
-for this app is small and entirely one-directional: it binds **`127.0.0.1:8765`
-only** (loopback, no authentication, no host override), and its outbound
-traffic is HTTPS to `lsm.utoronto.ca` in a Playwright-driven Chromium, plus —
+for this app is small and entirely one-directional: it binds **loopback
+only** (`127.0.0.1`, port 8765 or a free one per Windows user, a per-launch
+key on every request, no host override), and its outbound traffic is HTTPS to
+`lsm.utoronto.ca` in Playwright-driven Microsoft Edge (Chromium where Edge is
+missing), plus —
 since v1.1.2 — HTTPS to `api.github.com` for the update check and, when an
 update is accepted, the release's installer download (`app/updater.py`; the
 Bearer token, when one is set, travels only on those requests; since v1.2.0
