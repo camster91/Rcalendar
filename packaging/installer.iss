@@ -154,7 +154,19 @@ Filename: "{app}\{#AppExeName}"; Parameters: "--install-browser"; Tasks: browser
 
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: postinstall nowait skipifsilent
 
+; The in-app updater runs this installer with /SILENT ... /RELAUNCH=1 (see
+; app/updater.py INSTALLER_ARGS). A silent install has no finish page and so
+; no "Launch" checkbox, and the app has already quit to let its files be
+; replaced — without this entry an update would leave the person with no app
+; running at all.
+Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: WantRelaunch
+
 [Code]
+
+function WantRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
 
 const
   { The WebView2 runtime, as Microsoft documents it: a per-machine or per-user

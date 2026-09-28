@@ -496,6 +496,11 @@ class Orchestrator:
                 "The downloaded installer did not match the "
                 "release's checksum — it will not be run. Try again."
             )
+        # The checksum proves the file is what was published; the signature
+        # proves who published it. Both, before anything is staged.
+        problem = updater.verify_signature(path)
+        if problem:
+            raise updater.UpdateError(problem)
         return str(path)
 
     def _do_install_update(self) -> None:

@@ -35,7 +35,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from app.config import APP_VERSION, DATA_DIR, UPDATES_REPO, log
+from app.config import (APP_VERSION, DATA_DIR, SIGNING_THUMBPRINTS,
+                        UPDATES_REPO, log)
 from app import dpapi
 
 GITHUB_API = "https://api.github.com"
@@ -333,6 +334,15 @@ def verify_sha256(path: Path, expected: str) -> bool:
     return digest.hexdigest() == expected.lower()
 
 
+# How an update runs its installer. /SILENT is a progress bar and nothing
+# else — the person already chose to update, so the wizard's pages (and its
+# re-offer of the desktop shortcut) are noise; the task choices of the
+# previous install are kept (Inno's UsePreviousTasks). /RELAUNCH=1 is this
+# project's own switch: installer.iss starts the app again when it sees it,
+# because a silent install shows no "Launch" checkbox to tick.
+INSTALLER_ARGS = ("/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/RELAUNCH=1")
+
+
 def launch_installer(path: Path) -> None:
     """Start the installer detached and return immediately.
 
@@ -343,7 +353,73 @@ def launch_installer(path: Path) -> None:
     that launched it is about to exit — the installer must survive that.
     """
     flags = getattr(subprocess, "DETACHED_PROCESS", 0)
-    subprocess.Popen([str(path)], creationflags=flags, close_fds=True)
+    subprocess.Popen([str(path), *INSTALLER_ARGS], creationflags=flags,
+                     close_fds=True)
+
+
+# Read back with Windows' own Authenticode reader rather than parsed by hand.
+# The path travels in an environment variable, never in the command text, so
+# no file name can be read as PowerShell.
+_SIGNATURE_PS = (
+    "$s = Get-AuthenticodeSignature -LiteralPath $env:LSM_SIGNED_FILE; "
+    "[pscustomobject]@{ status = [string]$s.Status; "
+    "thumbprint = [string]$s.SignerCertificate.Thumbprint; "
+    "timestamped = [bool]$s.TimeStamperCertificate } | ConvertTo-Json -Compress"
+)
+
+
+def _signature_facts(path: Path) -> dict[str, Any]:
+    env = dict(os.environ, LSM_SIGNED_FILE=str(path))
+    out = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         _SIGNATURE_PS],
+        capture_output=True, text=True, timeout=60, env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return json.loads(out.stdout.strip() or "{}")
+
+
+def judge_signature(facts: dict[str, Any]) -> str | None:
+    """None when the signature is one this app trusts, else why not.
+
+    The gate is the one packaging/sign.ps1 applies to its own output, for
+    the reason recorded there: Status is *not* the test. This certificate is
+    self-signed, so its chain ends in itself and reads UnknownError on every
+    machine that has not chosen to trust it — on purpose. What must hold is
+    that the signature is intact (not HashMismatch, not NotSigned), that its
+    signer is a pinned project certificate, and that it carries a timestamp
+    (without one the signature dies with the certificate).
+    """
+    status = str(facts.get("status") or "")
+    if status not in ("Valid", "UnknownError"):
+        return (f"The downloaded installer's signature is {status or 'missing'}"
+                f" — it will not be run.")
+    thumb = str(facts.get("thumbprint") or "").upper()
+    if thumb not in SIGNING_THUMBPRINTS:
+        return ("The downloaded installer is not signed by this app's "
+                "publisher — it will not be run.")
+    if not facts.get("timestamped"):
+        return ("The downloaded installer's signature has no timestamp — "
+                "it will not be run.")
+    return None
+
+
+def verify_signature(path: Path) -> str | None:
+    """Check a staged installer's Authenticode signature; None means trusted.
+
+    Fails closed: a check that cannot run is a refusal, because the one thing
+    this exists to stop is running an installer nobody vouched for.
+    """
+    try:
+        facts = _signature_facts(path)
+    except Exception as exc:
+        log.error("could not read the installer's signature: %s", exc)
+        return ("The installer's signature could not be checked — it will "
+                "not be run.")
+    problem = judge_signature(facts)
+    if problem:
+        log.error("installer signature refused: %s (%s)", problem, facts)
+    return problem
 
 
 def purge_staging() -> None:

@@ -703,6 +703,16 @@ def test_install() -> None:
     ok("...and the installer was not launched", launched == [])
     ok("...and the process was not quit", quits == [])
 
+    # The signature is asked after the checksum, and its refusal is as final:
+    # an installer this app's publisher did not sign is never run.
+    refusal = "not signed by this app's publisher"
+    with patched(updater, verify_signature=lambda p: refusal):
+        orch, st = run_install()
+    check("an unsigned installer is 'failed'", st["state"], "failed")
+    ok("...saying why", refusal in st["message"])
+    ok("...and it was not launched", launched == [])
+    ok("...and the process was not quit", quits == [])
+
     # The click answered an offer, not "whatever is latest right now": a
     # release published between the check and the click is offered again
     # under its own name, never installed past the user's consent.
@@ -1013,6 +1023,67 @@ def test_endpoints() -> None:
     ok("...and the file is gone", not updater.TOKEN_FILE.exists())
 
 
+def test_signature() -> None:
+    """The installer an update runs must be signed by this app's publisher.
+
+    sha256.txt proves the download is the file that was published; it comes
+    from the same release, so it cannot prove who published it. The signer
+    thumbprint can. judge_signature is pure, so its gate is asserted case by
+    case; verify_signature is then run for real, through Windows' own
+    Authenticode reader, on a file nobody signed.
+    """
+    print("\ninstaller signature")
+
+    pin = updater.SIGNING_THUMBPRINTS[0]
+    good = {"status": "UnknownError", "thumbprint": pin, "timestamped": True}
+    check("self-signed, pinned, timestamped: trusted",
+          updater.judge_signature(good), None)
+    check("a chain the machine trusts is fine too",
+          updater.judge_signature({**good, "status": "Valid"}), None)
+    check("the thumbprint's case does not matter",
+          updater.judge_signature({**good, "thumbprint": pin.lower()}), None)
+    ok("a tampered file is refused",
+       updater.judge_signature({**good, "status": "HashMismatch"}))
+    ok("an unsigned file is refused",
+       updater.judge_signature({**good, "status": "NotSigned"}))
+    ok("another publisher's signature is refused",
+       updater.judge_signature({**good, "thumbprint": "AB" * 20}))
+    ok("an untimestamped signature is refused",
+       updater.judge_signature({**good, "timestamped": False}))
+
+    stray = Path(tempfile.mkdtemp()) / "Setup.exe"
+    stray.write_bytes(b"MZ nobody signed this")
+    ok("a real unsigned file, read by Windows, is refused",
+       _REAL_VERIFY_SIGNATURE(stray))
+
+    def broken(path):
+        raise OSError("no PowerShell here")
+
+    with patched(updater, _signature_facts=broken):
+        ok("a check that cannot run refuses rather than waves through",
+           _REAL_VERIFY_SIGNATURE(stray))
+
+    # The launch: silent, and asking the installer to bring the app back.
+    seen: list = []
+
+    class FakePopen:
+        def __init__(self, argv, **kw):
+            seen.append(argv)
+
+    import subprocess as _sp
+    with patched(_sp, Popen=FakePopen):
+        updater.launch_installer(stray)
+    check("the installer runs silently and relaunches the app",
+          seen[-1][1:], list(updater.INSTALLER_ARGS))
+    ok(".../SILENT and /RELAUNCH=1 among them",
+       "/SILENT" in seen[-1] and "/RELAUNCH=1" in seen[-1])
+
+
+_REAL_VERIFY_SIGNATURE = updater.verify_signature
+# The flow tests stage bytes nobody signed, so they run with the gate open;
+# test_signature runs the real one, and test_install's refusal leg shuts it.
+updater.verify_signature = lambda path: None
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — updater tests")
@@ -1030,6 +1101,7 @@ def main() -> int:
     test_install()
     test_pre_stage()
     test_endpoints()
+    test_signature()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

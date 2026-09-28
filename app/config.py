@@ -41,6 +41,14 @@ UPDATES_REPO = "camster91/rotman-lsm-calendar-releases"
 # place to read it from, exactly like the version.
 GITHUB_REPO = "camster91/rotman-lsm-calendar"
 
+# The code-signing certificates an update's installer may be signed by, as
+# SHA-1 thumbprints. The release's sha256.txt proves the download is the file
+# that was published; this proves it was published by whoever holds the
+# signing key, which a compromised GitHub account alone does not. A tuple so
+# the certificate's renewal (the current one expires 2027-09-25) can ship one
+# transition release that trusts both, before the old one is dropped.
+SIGNING_THUMBPRINTS = ("E3806812DB2DD17AAE80283E6353C5ACEA157124",)
+
 # ── Paths ────────────────────────────────────────────────────────────────
 FROZEN = getattr(sys, "frozen", False)
 PROJECT_DIR = Path(__file__).resolve().parent.parent
