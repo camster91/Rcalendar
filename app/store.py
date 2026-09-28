@@ -777,18 +777,38 @@ def _row_to_event(r: sqlite3.Row) -> dict[str, Any]:
 
 
 def stats() -> dict[str, Any]:
+    """Counts and date range of the stored events, recomputed only on change.
+
+    /api/status calls this on every poll — every 60 s per open page, every
+    few seconds while the worker is busy — and the answer only moves when the
+    events table does. So the answer is kept per connection (connections are
+    per thread) with a key that moves on any write: `total_changes` counts
+    this connection's own writes, and `PRAGMA data_version` moves when any
+    *other* connection commits (measured: it does not move for our own). A
+    write made through another connection — the scheduler's thread, or a
+    test's raw sqlite3 handle — therefore invalidates it too, which a cache
+    cleared only by this module's writers would miss.
+    """
     conn = _conn()
+    key = (conn.total_changes,
+           conn.execute("PRAGMA data_version").fetchone()[0])
+    cached = getattr(_local, "stats", None)
+    if cached and cached[0] is conn and cached[1] == key:
+        return dict(cached[2])
+
     total = conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
     rooms = conn.execute("SELECT COUNT(DISTINCT room) c FROM events").fetchone()["c"]
     rng = conn.execute(
         "SELECT MIN(date) a, MAX(date) b FROM events WHERE date IS NOT NULL"
     ).fetchone()
-    return {
+    result = {
         "total_events": total,
         "rooms": rooms,
         "date_from": rng["a"],
         "date_to": rng["b"],
     }
+    _local.stats = (conn, key, result)
+    return dict(result)
 
 
 # ── Key/value ────────────────────────────────────────────────────────────

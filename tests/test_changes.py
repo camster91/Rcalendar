@@ -297,6 +297,44 @@ def test_empty_report_does_not_wipe() -> None:
                if r["room"] == "L1030"]), 0)
 
 
+def test_stats_are_recomputed_only_when_the_events_change() -> None:
+    """stats() answers every status poll, so it caches — but never stale."""
+    print("\nstats cache")
+
+    import sqlite3
+
+    first = store.stats()
+    queries: list[str] = []
+    conn = store._conn()
+    conn.set_trace_callback(queries.append)
+    try:
+        again = store.stats()
+        check("an unchanged store answers the same", again, first)
+        ok("...without scanning the events table again",
+           not any("FROM events" in q for q in queries))
+
+        # A write through this connection.
+        store.replace_events(
+            [{"title": "Stats probe", "room": "STATS1",
+              "start": "2026-05-04T09:00:00", "end": "2026-05-04T10:00:00",
+              "description": "", "class_code": "A", "cancelled": False}],
+            "04/05/2026", "04/05/2026", run_id=None, record_changes=False)
+        check("a write through the store is seen",
+              store.stats()["total_events"], first["total_events"] + 1)
+
+        # A write through another connection, as the worker thread's or a
+        # raw sqlite3 handle's would be.
+        other = sqlite3.connect(store.DB_PATH)
+        try:
+            other.execute("DELETE FROM events WHERE room = 'STATS1'")
+            other.commit()
+        finally:
+            other.close()
+        check("a write through another connection is seen",
+              store.stats()["total_events"], first["total_events"])
+    finally:
+        conn.set_trace_callback(None)
+
 def test_runs_and_retention() -> None:
     print("\nruns and retention")
     rid = store.start_run("backfill")
@@ -718,6 +756,7 @@ def main() -> int:
     test_backfill_logs_no_changes()
     test_partial_report_adds_but_never_deletes()
     test_empty_report_does_not_wipe()
+    test_stats_are_recomputed_only_when_the_events_change()
     test_runs_and_retention()
     test_prune()
     test_backfill_windows()

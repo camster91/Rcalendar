@@ -1053,7 +1053,7 @@ def _excluded_rooms(seen: Iterable[str] = ()) -> set[str]:
     """
     import re
 
-    from app.config import EXCLUDED_PATTERNS, EXCLUDED_ROOMS
+    from app.config import EXCLUDED_PATTERNS
     from app.parse import normalise_room
 
     # Case-insensitive: a room's letter is a letter and its case means nothing
@@ -1066,11 +1066,6 @@ def _excluded_rooms(seen: Iterable[str] = ()) -> set[str]:
         return any(p.match(room) for p in patterns)
 
     excluded: set[str] = set()
-    # A literal entry in EXCLUDED_ROOMS is a room someone named by hand, and
-    # they may well have written it the way the report does.
-    for room in EXCLUDED_ROOMS:
-        excluded.add(room)
-        excluded.add(normalise_room(room))
     for room in seen:
         normalised = normalise_room(room)
         if matches(room) or matches(normalised):

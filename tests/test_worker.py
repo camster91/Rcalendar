@@ -1288,18 +1288,6 @@ def test_exclusions() -> None:
     check("no seen rooms, nothing patterned",
           _excluded_rooms([]), set())
 
-    # A hand-written literal is honoured in either spelling, since whoever
-    # wrote it may have copied the name out of the report.
-    import app.config as config
-    was = config.EXCLUDED_ROOMS
-    try:
-        config.EXCLUDED_ROOMS = {"RT 900"}
-        ex = _excluded_rooms([])
-        ok("a literal entry is excluded as written", "RT 900" in ex)
-        ok("...and as the events spell it", "900" in ex)
-    finally:
-        config.EXCLUDED_ROOMS = was
-
 
 def main() -> int:
     print("=" * 60)

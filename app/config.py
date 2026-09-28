@@ -199,7 +199,9 @@ WINDOW_TITLE = APP_NAME
 # ── Room exclusions ──────────────────────────────────────────────────────
 # Rooms that are bookable study space rather than teachable/AV space.
 # Kept as patterns so new 134-series breakout rooms are caught automatically.
-EXCLUDED_ROOMS: set[str] = set()
+# (A literal-name set used to sit beside this. It was empty from the first
+# commit and nothing could set it but an edit, so it was removed; a room to
+# exclude by name is a pattern anchored at both ends.)
 EXCLUDED_PATTERNS = (r"^134[A-Z]$",)
 
 ROOM_GROUPS: dict[str, list[str]] = {
