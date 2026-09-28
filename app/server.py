@@ -24,15 +24,27 @@ of them reaches the LSM *data* (this app is read-only), and the refusal is
 what keeps all of them out of reach of a page the user merely has open.
 The update endpoints belong in that list too: without the guard, a page
 open anywhere could offer the app a real installer and end its process.
+
+And one *is* authentication, because loopback is shared by every account on
+the machine. On a PC two people sign in to, the first person's instance holds
+their LSM session and their calendar on 127.0.0.1, and nothing about the port
+says whose it is: a second person's app used to open its window on the first
+person's server. So the running app mints a per-launch key; the window and
+the tray open the UI through a URL carrying it, the server trades it for an
+HttpOnly cookie, and without that cookie (or the key as a header, for the
+app's own handshake) every route but the favicon answers 401. See
+_require_key. create_app without a key — the test clients — serves openly.
 """
 
 from __future__ import annotations
 
+import hmac
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import (Flask, Response, jsonify, redirect, request,
+                   send_from_directory)
 
 from app import avail, store, updater
 from app.config import APP_NAME, WEB_DIR, log
@@ -49,10 +61,65 @@ _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 # it. Module scope so it is built once instead of per request.
 _FAVICON: bytes | None = None
 
+# The query parameter and header that carry the per-launch key. The cookie it
+# is traded for is named per port, because cookies are scoped to the host and
+# not the port: two instances one person runs side by side (LSM_PORT) must not
+# overwrite each other's.
+KEY_PARAM = "k"
+KEY_HEADER = "X-LSM-Key"
 
-def create_app(orchestrator: Any) -> Flask:
+
+def key_cookie_name(port: int | None) -> str:
+    return f"lsm_key_{port}" if port else "lsm_key"
+
+
+def create_app(orchestrator: Any, *, access_key: str | None = None,
+               instance_id: str | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["JSON_SORT_KEYS"] = False
+
+    def _same(given: str | None) -> bool:
+        return bool(given) and hmac.compare_digest(given, access_key or "")
+
+    @app.before_request
+    def _require_key() -> Any:
+        """
+        Serve only the person whose app this is. See the module docstring.
+
+        The key arrives three ways: as ?k= on the URL the window or tray
+        opened (traded here for the cookie, then redirected to the clean URL
+        so the key does not sit in the address bar or the page's history), as
+        the cookie on every request after that, and as a header on the app's
+        own handshake. Anything else is refused — including a bookmark of the
+        bare address, which gets a page saying where to open it from.
+        """
+        if access_key is None or request.path == "/favicon.ico":
+            return None
+        # Named from the port this request arrived on, which is the port
+        # actually bound — a fallback bind is not known until after it.
+        cookie = key_cookie_name(urlsplit(request.host_url).port)
+        if _same(request.args.get(KEY_PARAM)):
+            rest = {k: v for k, v in request.args.items(multi=True)
+                    if k != KEY_PARAM}
+            target = request.path + (("?" + urlencode(rest)) if rest else "")
+            resp = redirect(target, code=303)
+            resp.set_cookie(cookie, access_key, httponly=True,
+                            samesite="Strict", path="/")
+            return resp
+        if _same(request.cookies.get(cookie)) or _same(
+                request.headers.get(KEY_HEADER)):
+            return None
+        if request.path.startswith("/api/"):
+            return jsonify({"status": "unauthorized",
+                            "message": "Open the calendar from the app's "
+                                       "tray icon"}), 401
+        return Response(
+            f"<!doctype html><title>{APP_NAME}</title>"
+            f"<p style='font:16px system-ui;margin:3em'>This address belongs "
+            f"to a running {APP_NAME}, but not to this window.<br>Open the "
+            f"calendar from the app's icon in the notification area "
+            f"(or the Start menu).</p>",
+            status=401, mimetype="text/html")
 
     @app.before_request
     def _refuse_cross_site_writes() -> Any:
@@ -339,6 +406,9 @@ def create_app(orchestrator: Any) -> Flask:
         last = store.last_run()
 
         return jsonify({
+            # Which launch answered: the app's own handshake insists on its
+            # id, so it can never mistake another process's server for its own.
+            "instance": instance_id,
             "session": st.get("session", "unknown"),
             "session_message": st.get("session_message", ""),
             "busy": st.get("busy", False),

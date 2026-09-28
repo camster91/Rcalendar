@@ -11,6 +11,7 @@ session is involved. Run directly:
 from __future__ import annotations
 
 import sys
+from urllib.parse import urlsplit
 import sqlite3
 import threading
 import tempfile
@@ -751,6 +752,112 @@ def test_tray_update_item() -> None:
        "Check for updates" in labels)
 
 
+def test_the_ui_answers_only_its_own_launch() -> None:
+    """A running app serves only the person whose app it is.
+
+    Loopback is shared by every account on a PC. Before the key, a second
+    person's app on a shared machine failed to bind 8765 and its window opened
+    on the *first* person's server — their calendar, their live LSM session.
+    Now each launch mints a key: pages opened through the key URL get a
+    cookie, and nothing else gets anything but 401.
+    """
+    print("\nper-launch key")
+
+    key = "k" * 43
+    client = create_app(StubOrch(), access_key=key,
+                        instance_id="inst-1").test_client()
+
+    check("the page without the key is refused", client.get("/").status_code, 401)
+    ok("...with a page that says where to open it",
+       b"notification area" in client.get("/").data)
+    check("the API without the key is refused",
+          client.get("/api/status").status_code, 401)
+    check("a wrong key is refused",
+          client.get("/api/status", headers={"X-LSM-Key": "nope"}).status_code,
+          401)
+    check("the favicon needs no key", client.get("/favicon.ico").status_code, 200)
+
+    entry = client.get(f"/list?rooms=142&k={key}")
+    check("the key URL redirects", entry.status_code, 303)
+    check("...to the clean URL, other parameters kept",
+          urlsplit(entry.headers["Location"]).path + "?"
+          + urlsplit(entry.headers["Location"]).query, "/list?rooms=142")
+    cookie = entry.headers.get("Set-Cookie", "")
+    ok("...setting an HttpOnly, SameSite=Strict cookie",
+       "HttpOnly" in cookie and "SameSite=Strict" in cookie and key in cookie)
+    check("with the cookie the page is served", client.get("/").status_code, 200)
+    status = client.get("/api/status")
+    check("...and the API", status.status_code, 200)
+    check("...which names the launch", status.get_json().get("instance"),
+          "inst-1")
+
+    header = create_app(StubOrch(), access_key=key,
+                        instance_id="inst-1").test_client()
+    check("the key as a header is the handshake's way in",
+          header.get("/api/status", headers={"X-LSM-Key": key}).status_code, 200)
+
+    # And the test clients the other suites build stay open: no key, no gate.
+    check("an app built without a key serves openly",
+          create_app(StubOrch()).test_client().get("/api/status").status_code, 200)
+
+
+def test_a_second_launch_gets_its_own_server() -> None:
+    """Two people on one PC: the second bind falls back, and the handshake
+    will not accept the first person's server as its own."""
+    print("\nsecond launch on a shared PC")
+
+    import socket
+
+    from app import main as app_main
+
+    saved_port, saved_web = app_main.WEB_PORT, dict(app_main._WEB)
+    held = socket.socket()
+    held.bind(("127.0.0.1", 0))
+    held.listen(1)
+    first_state = None
+    try:
+        # The first person's app on its port.
+        ok("the first launch binds", app_main._start_server(StubOrch()))
+        first_state = dict(app_main._WEB)
+        ok("...and its handshake passes", app_main._wait_for_server(timeout=5))
+
+        # The second person's app asks for the same port.
+        app_main.WEB_PORT = first_state["port"]
+        ok("the second launch still binds", app_main._start_server(StubOrch()))
+        second = dict(app_main._WEB)
+        ok("...on a different port", second["port"] != first_state["port"])
+        ok("...and its handshake passes on its own server",
+           app_main._wait_for_server(timeout=5))
+        ok("...with a key of its own", second["key"] != first_state["key"])
+
+        # Pointed at the first person's server, the second launch's handshake
+        # must refuse it — that is the shape of the old defect.
+        app_main._WEB.update(port=first_state["port"])
+        check("the handshake refuses another launch's server",
+              app_main._wait_for_server(timeout=1.5), False)
+
+        # A keyless server — an older version of this app, still on 8765 for
+        # someone else — answers /api/status to anybody. Only the instance id
+        # tells it apart, so this is the leg that pins that check.
+        from werkzeug.serving import make_server
+        old = make_server("127.0.0.1", 0, create_app(StubOrch()), threaded=True)
+        threading.Thread(target=old.serve_forever, daemon=True).start()
+        try:
+            app_main._WEB.update(port=old.port)
+            check("the handshake refuses a keyless older version's server",
+                  app_main._wait_for_server(timeout=1.5), False)
+        finally:
+            old.shutdown()
+        app_main._WEB.update(second)
+    finally:
+        for st in (first_state, dict(app_main._WEB)):
+            if st and st.get("server"):
+                st["server"].shutdown()
+        held.close()
+        app_main.WEB_PORT = saved_port
+        app_main._WEB.clear()
+        app_main._WEB.update(saved_web)
+
 def test_single_instance() -> None:
     """A second instance must not share the data directory.
 
@@ -895,6 +1002,8 @@ def main() -> int:
     test_login_detection()
     test_quit_can_actually_end_the_process()
     test_tray_update_item()
+    test_the_ui_answers_only_its_own_launch()
+    test_a_second_launch_gets_its_own_server()
     test_single_instance()
     test_tray_flag()
     test_icon()

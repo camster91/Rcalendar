@@ -610,6 +610,7 @@ def test_backfill_progress_label() -> None:
 
     class FakeResult:
         status = "ok"
+        complete = True
         events: list = []
         rooms: list = []
         date_from, date_to = windows[0]

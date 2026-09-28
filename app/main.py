@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import sys
 import threading
 import time
@@ -44,9 +45,25 @@ from app.config import (
 )
 from app.icon import paint as paint_icon
 from app.scheduler import Orchestrator
-from app.server import create_app
+from app.server import KEY_HEADER, KEY_PARAM, create_app
 
-BASE_URL = f"http://{WEB_HOST}:{WEB_PORT}"
+# The server this launch is running, filled in by _start_server. Runtime
+# state rather than constants because the port is only known after the bind
+# (a busy WEB_PORT falls back to one the OS picks), and the key and instance
+# id are minted per launch. See server.py's module docstring for why a key.
+_WEB: dict[str, Any] = {"port": WEB_PORT, "key": None, "instance": None,
+                        "server": None}
+
+
+def base_url() -> str:
+    return f"http://{WEB_HOST}:{_WEB['port']}"
+
+
+def entry_url(path: str = "/") -> str:
+    """A URL that opens the UI: it carries the launch key, which the server
+    trades for a cookie. Used for every page this app opens itself."""
+    key = _WEB["key"]
+    return f"{base_url()}{path}" + (f"?{KEY_PARAM}={key}" if key else "")
 
 
 # ── Tray icon ────────────────────────────────────────────────────────────
@@ -131,17 +148,17 @@ class Tray:
             self.window.show()
             self.window.restore()
         except Exception:
-            webbrowser.open(BASE_URL)
+            webbrowser.open(entry_url())
 
     def _open_list(self) -> None:
         try:
-            self.window.load_url(f"{BASE_URL}/list")
+            self.window.load_url(entry_url("/list"))
             self.window.show()
         except Exception:
-            webbrowser.open(f"{BASE_URL}/list")
+            webbrowser.open(entry_url("/list"))
 
     def _open_browser(self) -> None:
-        webbrowser.open(BASE_URL)
+        webbrowser.open(entry_url())
 
     def _open_data(self) -> None:
         import subprocess
@@ -214,19 +231,71 @@ class Tray:
 
 # ── Server ───────────────────────────────────────────────────────────────
 
-def _serve(orch: Orchestrator) -> None:
-    app = create_app(orch)
+def _bind_exclusive(host: str, port: int):
+    """A listening socket that is really this process's own.
+
+    Python's HTTP servers set SO_REUSEADDR, and on Windows that does not mean
+    what it means elsewhere: it lets a second socket bind a port another
+    process is *already listening on*, and the connections keep going to the
+    first. Measured here: with the dev instance on 8765, a second bind
+    "succeeded" and every request reached the dev instance. SO_EXCLUSIVEADDRUSE
+    makes a held port a bind failure, which is the one answer the fallback
+    below can act on.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        # threaded=True so a slow scrape never blocks the UI's status polling.
-        app.run(host=WEB_HOST, port=WEB_PORT, threaded=True,
-                use_reloader=False, debug=False)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        sock.bind((host, port))
+        sock.listen(128)
     except OSError:
-        # This thread is a daemon with nobody joining it, so an unhandled
-        # exception here was invisible: the thread died, and _wait_for_server
-        # then *succeeded* by connecting to whatever already held the port.
-        # A windowed build has no stdout either, so the traceback went nowhere.
-        log.exception("web UI could not bind %s — another process holds the "
-                      "port, or it is in TIME_WAIT", BASE_URL)
+        sock.close()
+        raise
+    return sock
+
+
+def _start_server(orch: Orchestrator) -> bool:
+    """Bind the web UI on this thread, then serve it from a daemon thread.
+
+    The bind happens here, before any thread, so its failure is this
+    function's return value rather than an exception dying unseen inside a
+    daemon (which is how a failed bind used to go invisible). WEB_PORT is
+    tried first so the address is stable for one person; when it is taken —
+    another Windows user's instance on a shared PC, most often — the OS picks
+    a free loopback port instead. Nothing depends on the number: every page
+    the app opens carries it, and the key.
+    """
+    from werkzeug.serving import make_server
+
+    key = secrets.token_urlsafe(32)
+    instance = secrets.token_hex(8)
+    app = create_app(orch, access_key=key, instance_id=instance)
+    sock = None
+    for port in dict.fromkeys((WEB_PORT, 0)):
+        try:
+            sock = _bind_exclusive(WEB_HOST, port)
+            break
+        except OSError as exc:
+            log.info("web UI could not bind %s:%s (%s)%s", WEB_HOST, port,
+                     exc, " — trying a free port" if port else "")
+    if sock is None:
+        log.error("web UI could not bind any loopback port")
+        return False
+    try:
+        # threaded=True so a slow scrape never blocks the UI's polling. The
+        # socket is handed over bound: werkzeug's own bind answers "address
+        # in use" with sys.exit(1), which no caller can catch.
+        server = make_server(WEB_HOST, sock.getsockname()[1], app,
+                             threaded=True, fd=sock.fileno())
+    finally:
+        sock.close()   # make_server holds its own duplicate of the handle
+    _WEB.update(port=server.port, key=key, instance=instance,
+                server=server)
+    threading.Thread(target=server.serve_forever, name="web",
+                     daemon=True).start()
+    return True
 
 
 # ── Single instance ──────────────────────────────────────────────────────
@@ -320,10 +389,11 @@ def _wait_for_server(timeout: float = 20.0) -> bool:
     """Wait until *this app's* server answers — not until the port does.
 
     A bare TCP connect succeeds against whatever already holds the port, so
-    on its own it proves the wrong thing: when the bind fails, the web
-    thread dies, and something else owns the port, the connect "succeeds"
-    and the window opens on that other process's content. What only our
-    server does is answer /api/status with the session key, so that is the
+    on its own it proves the wrong thing: the window would open on that
+    other process's content. Answering /api/status is not enough either —
+    every instance of this app does that, including another Windows user's
+    on a shared PC. What only *this launch's* server does is accept this
+    launch's key and answer with this launch's instance id, so that is the
     handshake.
     """
     import json
@@ -332,11 +402,12 @@ def _wait_for_server(timeout: float = 20.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(
-                f"{BASE_URL}/api/status", timeout=2
-            ) as resp:
+            req = urllib.request.Request(
+                f"{base_url()}/api/status",
+                headers={KEY_HEADER: _WEB["key"] or ""})
+            with urllib.request.urlopen(req, timeout=2) as resp:
                 body = json.loads(resp.read().decode("utf-8", "replace"))
-            if "session" in body:
+            if _WEB["instance"] and body.get("instance") == _WEB["instance"]:
                 return True
         except Exception:
             pass
@@ -354,13 +425,13 @@ def _startup_failure_notice(gui: bool = False) -> None:
     """
     message = (
         f"{APP_NAME} could not start its window.\n\n"
-        f"Another program may be using port {WEB_PORT}, or the app could "
-        f"not create the UI.\n\n"
+        f"The app could not start its local web server or create the "
+        f"window.\n\n"
         f"Details are in the log at:\n{DATA_DIR}\\app.log\n\n"
         f"If {APP_NAME} is already running, look for its icon in the "
         f"notification area (it may be under the hidden-icons arrow)."
     )
-    log.error("web UI failed to start on %s", BASE_URL)
+    log.error("web UI failed to start on %s", base_url())
     print(message)
     if not gui:
         return
@@ -519,16 +590,20 @@ def run_selftest() -> int:
     # actually reachable.
     try:
         orch = Orchestrator()   # unstarted — status() reads defaults, no worker
-        threading.Thread(
-            target=_serve, args=(orch,), name="selftest-web", daemon=True
-        ).start()
-        if _wait_for_server():
-            with urllib.request.urlopen(f"{BASE_URL}/", timeout=15) as resp:
+        if _start_server(orch) and _wait_for_server():
+            # Through the key URL, as the window opens it: the redirect that
+            # trades the key for a cookie is part of what must work.
+            import http.cookiejar
+
+            opener = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+            with opener.open(entry_url(), timeout=15) as resp:
                 body = resp.read().decode("utf-8", "replace")
             record("http.get_root", "Rotman Room Bookings" in body,
-                   f"{len(body)} bytes from {BASE_URL}/")
+                   f"{len(body)} bytes from {base_url()}/")
         else:
-            record("http.get_root", False, f"nothing listening on {BASE_URL}")
+            record("http.get_root", False,
+                   f"nothing listening on {base_url()}")
     except Exception as exc:
         record("http.get_root", False, f"{type(exc).__name__}: {exc}")
 
@@ -543,7 +618,7 @@ def run_selftest() -> int:
         "data_dir": str(DATA_DIR),
         "bundle_dir": str(BUNDLE_DIR),
         "web_dir": str(WEB_DIR),
-        "web_port": WEB_PORT,
+        "web_port": _WEB["port"],
     }
     (Path(DATA_DIR) / "selftest.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"
@@ -638,16 +713,14 @@ def run_app(show_window: bool = True, start_hidden: bool = False) -> int:
     orch = Orchestrator()
     orch.start()
 
-    threading.Thread(target=_serve, args=(orch,), name="web", daemon=True).start()
-
-    if not _wait_for_server():
+    if not _start_server(orch) or not _wait_for_server():
         # The bind may have failed against a port held by something else —
         # in which case no window should open on that process's content —
         # or the server died for another reason. Either way the user gets
         # one clear message instead of a silent no-op.
         _startup_failure_notice(gui=show_window)
         return 1
-    log.info("web UI ready at %s", BASE_URL)
+    log.info("web UI ready at %s", base_url())
 
     if not show_window:
         # Headless: the web UI is up, keep serving until interrupted — or
@@ -689,7 +762,7 @@ def run_app(show_window: bool = True, start_hidden: bool = False) -> int:
 
     window = webview.create_window(
         WINDOW_TITLE,
-        BASE_URL,
+        entry_url(),
         width=1400,
         height=920,
         min_size=(900, 600),
