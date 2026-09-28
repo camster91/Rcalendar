@@ -15,17 +15,19 @@
 ; keeps the installer out of the elevation path in a managed environment, where
 ; an unsigned exe asking for admin is the pattern that gets reported.
 ;
-; What this deliberately does NOT do: bundle Chromium. The app's browser is
-; ~150 MB and deliberately lives in the per-user Playwright cache rather than
-; in the build (see the spec), so a machine that has never run this app has an
-; empty cache — the app would install, start, serve the UI, and fail every
-; scrape. The "browser" task below closes that gap by running the app's own
-; --install-browser, and it is why the installer is not just a file copy.
+; What this deliberately does NOT do: bundle a browser. The app drives the
+; machine's own Microsoft Edge (app/config.py _find_edge), which every managed
+; Windows PC has. Only a machine without Edge needs Playwright's ~150 MB
+; Chromium, in the per-user cache; the "browser" task runs the app's own
+; --install-browser, which downloads it there — or, when Edge is present,
+; succeeds without downloading anything.
 
 #define AppName "Rotman LSM Calendar"
 #define AppExeName "RotmanLSMCalendar.exe"
-#define AppPublisher "camster91"
-#define AppURL "https://github.com/camster91/rotman-lsm-calendar"
+; What Add/Remove Programs shows. The URL is the PUBLIC releases mirror: the
+; source repo is private, so a link to it is a 404 for everyone but its owner.
+#define AppPublisher "Rotman LSM Calendar"
+#define AppURL "https://github.com/camster91/rotman-lsm-calendar-releases"
 
 ; build.ps1 reads APP_VERSION out of app/config.py and passes it here, so
 ; Add/Remove Programs shows the app's own version rather than a second one that
@@ -96,6 +98,7 @@ AppVerName={#AppName} {#AppVersion}
 VersionInfoVersion={#AppVersionQuad}
 AppPublisher={#AppPublisher}
 AppSupportURL={#AppURL}
+AppUpdatesURL={#AppURL}/releases/latest
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -128,9 +131,13 @@ RestartApplications=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
-Name: "autostart"; Description: "Start {#AppName} when I sign in"; GroupDescription: "Options:"; Flags: unchecked
-Name: "browser"; Description: "Download Chromium now (about 150 MB, needs internet)"; GroupDescription: "Options:"; Flags: checkedonce
+; The desktop shortcut is opt-in (the Start menu entry always exists).
+; Autostart is on by default: the 06:00 refresh only happens while the app is
+; running, and a per-user Startup shortcut needs no admin. It starts in the
+; tray (--tray), so signing in to Windows does not put a window on screen.
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
+Name: "autostart"; Description: "Start {#AppName} in the tray when I sign in (keeps the morning refresh running)"; GroupDescription: "Options:"
+Name: "browser"; Description: "Set up the browser (uses Microsoft Edge; downloads Chromium, about 150 MB, only if Edge is missing)"; GroupDescription: "Options:"; Flags: checkedonce
 
 [Files]
 ; The whole onedir build. _internal\ must travel with the exe — the exe alone
@@ -141,7 +148,7 @@ Source: "..\dist\RotmanLSMCalendar\*"; DestDir: "{app}"; Flags: ignoreversion re
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
-Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: autostart
+Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--tray"; Tasks: autostart
 
 [Run]
 ; The app's own browser fetch, so the download uses the Playwright driver that
@@ -150,7 +157,7 @@ Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: autost
 ; own status line is the better progress indicator; waituntilterminated so the
 ; finish page is not shown while it is still running. A failure here is not a
 ; failed install — the app is on disk and --install-browser can be run again.
-Filename: "{app}\{#AppExeName}"; Parameters: "--install-browser"; Tasks: browser; Flags: runhidden waituntilterminated; StatusMsg: "Downloading Chromium (about 150 MB)..."
+Filename: "{app}\{#AppExeName}"; Parameters: "--install-browser"; Tasks: browser; Flags: runhidden waituntilterminated; StatusMsg: "Setting up the browser..."
 
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: postinstall nowait skipifsilent
 
