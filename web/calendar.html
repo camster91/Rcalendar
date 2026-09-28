@@ -638,11 +638,7 @@ function buildGroupBtns(){
 // The rooms a group selection implies. toggleGroup and readURL both need this,
 // and a URL that set activeGroups without it lit the group's button while the
 // room list stayed at every room — a filter that looked applied and was not.
-function roomsForGroups(){
-  const rs=[];
-  activeGroups.forEach(grp=>rs.push(...(GROUPS[grp]||[])));
-  return new Set(rs.filter(r=>ROOMS.includes(r)));
-}
+function roomsForGroups(){return groupRooms(activeGroups,GROUPS,ROOMS);}
 // The state half of a group click, for callers that commit themselves (the
 // Active row's ✕, which would otherwise render twice).
 function flipGroup(g){

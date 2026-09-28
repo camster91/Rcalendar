@@ -1897,25 +1897,25 @@ def test_list_reads_the_calendars_link(browser, base: str) -> None:
 def test_a_link_with_rooms_and_groups_means_one_thing(browser, base: str) -> None:
     """rooms= and groups= together used to mean something different per page.
 
-    The list ANDs a group with the room selection; the calendar takes rooms=
+    The list ANDed a group with the room selection; the calendar takes rooms=
     as the more specific statement and shows it, group or no group. A link
     this page wrote -- 157 picked with North (142 only) active -- showed
     nothing here and 157's booking on the calendar, and a link the calendar
     wrote -- North, then a room outside it added -- showed 142's two
-    bookings here and three there. Both directions now agree: writeURL
-    materializes this page's AND into rooms=, and readURL gives rooms= the
-    same precedence the calendar does, restoring the group wherever that
-    cannot change the answer.
+    bookings here and three there. The first fix translated between the two
+    models in readURL/writeURL; since finding 27 there is one model (a group
+    is shorthand for its rooms, on both pages), so the state *is* the link
+    and the read-back legs below hold without any translation.
 
     The reload legs also caught an older bug on the way past: this page
     passed Object.keys(GROUPS) where parseFilters expects the groups object
     and keys it itself, so every group a URL carried was validated against
     array indices, dropped, and groups= had never worked here at all.
     """
-    # The shape the URL cannot carry: a picked room the live group excludes.
-    # The intersection is empty, and an empty rooms= is "no opinion", not
-    # "no rooms" -- so the link falls back to the group, the nearest state
-    # the shared vocabulary can say.
+    # North, then 157 picked from the room list. Under the old AND model the
+    # list showed nothing (157 is outside North) and the link fell back to the
+    # group; under the shared model the pick is the selection -- what the
+    # calendar does for the same clicks -- and the link says exactly that.
     page = open_page(browser, base, "/list")
     try:
         page.evaluate(
@@ -1923,16 +1923,16 @@ def test_a_link_with_rooms_and_groups_means_one_thing(browser, base: str) -> Non
                  .find(b => b.textContent === 'North').click()"""
         )
         page.select_option("#roomFilter", "157")
-        check("list: a room the group excludes is filtered out",
-              events_shown(page), 0)
+        check("list: the picked room is what is shown, group or no group",
+              events_shown(page), 1)
         query = page.evaluate(
             "() => Object.fromEntries(new URLSearchParams(location.search))")
         check("list: the link names the group", query.get("groups"), "North")
-        check("list: the link does not name the excluded room",
-              query.get("rooms"), None)
+        check("list: the link names the picked room",
+              query.get("rooms"), "157")
         check("list: the calendar tab carries that same query",
               page.eval_on_selector("#tab-cal", "el => el.getAttribute('href')"),
-              "/?groups=North")
+              "/?rooms=157&groups=North")
     finally:
         page.close()
 
@@ -1996,8 +1996,11 @@ def test_a_link_with_rooms_and_groups_means_one_thing(browser, base: str) -> Non
     check("list: a group its rooms lie inside comes back live",
           group_pressed("/list?rooms=157&groups=Dean%27s%20Suite",
                         "Dean's Suite"), "true")
-    check("list: a group its rooms leave comes back off",
-          group_pressed("/list?rooms=142,157&groups=North", "North"), "false")
+    # The calendar lights a named group even when the rooms go past it (the
+    # group is remembered; rooms= decides what is shown), and so does the
+    # list now: one model, one reading of the same link.
+    check("list: a group named beside wider rooms is lit, as on the calendar",
+          group_pressed("/list?rooms=142,157&groups=North", "North"), "true")
 
     # The shape the calendar itself writes when its rooms go outside its
     # group -- North selected, then a room outside North added, which its

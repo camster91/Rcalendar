@@ -139,3 +139,12 @@ function parseFilters(raw, ctx){
     mins:Math.min(1440,Math.max(1,+src.mins||60)),
   };
 }
+
+// The rooms a group selection stands for, limited to rooms the data has.
+// Both pages use this one: a group is shorthand for its rooms everywhere,
+// so a link naming a group means the same bookings on either page.
+function groupRooms(groups, groupMap, rooms){
+  const out=new Set();
+  groups.forEach(g=>(groupMap[g]||[]).forEach(r=>{if(rooms.includes(r))out.add(r);}));
+  return out;
+}
