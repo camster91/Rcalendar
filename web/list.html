@@ -239,7 +239,13 @@ document.addEventListener('click',e=>{
 function toggleGroup(g){
   if(!g)activeGroups.clear();
   else{if(activeGroups.has(g))activeGroups.delete(g);else activeGroups.add(g);}
-  syncGroupBtns();renderTags();page=0;render();
+  commitFilterChange();
+}
+// One exit for every filter change, as on the calendar: change the state, then
+// call this. The controls are synced from the state and the list goes back to
+// its first page, because a narrower filter can leave the old page empty.
+function commitFilterChange(){
+  syncGroupBtns();syncRoomSelect();renderTags();page=0;render();
 }
 function syncGroupBtns(){
   document.querySelectorAll('#gbar .gb').forEach(b=>{
@@ -260,7 +266,7 @@ function onRoomSelect(v){
   // change, so it must not clear the selection it describes.
   if(v==='__multi__')return;
   activeRooms=v==='all'?new Set():new Set([v]);
-  syncRoomSelect();renderTags();page=0;render();
+  commitFilterChange();
 }
 function syncRoomSelect(){
   const sel=document.getElementById('roomFilter');
@@ -325,13 +331,13 @@ function addTag(type,value){
     // would leave the list filtered by text no longer anywhere on screen.
     searchQ='';document.getElementById('search').value='';
   }
-  closeDrop();syncRoomSelect();renderTags();page=0;render();
+  closeDrop();commitFilterChange();
 }
 function removeTag(type,value){
   if(type==='room')activeRooms.delete(value);
-  else if(type==='group'){activeGroups.delete(value);syncGroupBtns();}
+  else if(type==='group')activeGroups.delete(value);
   else{document.getElementById('search').value='';searchQ='';}
-  syncRoomSelect();renderTags();page=0;render();
+  commitFilterChange();
 }
 // A view of the selection, rebuilt from it — never the store. Built as DOM
 // nodes with listeners rather than interpolated markup: a group name or an

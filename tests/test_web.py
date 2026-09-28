@@ -516,6 +516,35 @@ def test_scalar_floors_does_not_blank_the_calendar(browser, base: str) -> None:
 
 # ── R5: a room with no floor can be selected ─────────────────────────────
 
+def test_saving_a_group_refilters_the_calendar(browser, base: str) -> None:
+    """Editing an active group's rooms must re-filter by the new membership.
+
+    A group is expanded into the room selection when it is picked, so saving
+    new members used to leave the calendar filtered by the old ones — the
+    group button lit, the new room missing, until something else touched the
+    filter. The control: a link naming the same rooms shows the same count.
+    """
+    page = open_page(browser, base, f"/?view=month&date={D}")
+    both = open_page(browser, base, f"/?view=month&date={D}&rooms=142,157")
+    try:
+        want = events_shown(both)
+        page.evaluate("() => toggleGroup('North')")
+        north = events_shown(page)
+        ok("group save: North alone shows fewer than North plus 157",
+           north < want)
+        open_presets(page)
+        page.evaluate(
+            "async () => { GEDIT['North'] = ['142', '157']; await saveGroups(); }")
+        check("group save: the saved membership is the selection",
+              page.evaluate("() => [...activeRooms].sort().join(',')"),
+              "142,157")
+        check("group save: ...and the calendar shows it without a reload",
+              events_shown(page), want)
+    finally:
+        store.save_groups({"North": ["142"], "Dean's Suite": ["157"]})
+        both.close()
+        page.close()
+
 def test_no_floor_is_selectable(browser, base: str) -> None:
     """The floor filter hid unfloored rooms and offered no way to ask for them.
 
@@ -551,6 +580,13 @@ def test_no_floor_is_selectable(browser, base: str) -> None:
         )
         check("floor: selecting it shows exactly the unfloored bookings",
               events_shown(page), 1)
+        # The panel is rebuilt from the state after its own click, so the
+        # chip says it is on. A panel left as it was would show it off.
+        check("floor: ...and the panel's chip says it is pressed",
+              page.evaluate(
+                  """() => [...document.querySelectorAll('#filterBody button')]
+                       .find(b => b.textContent === 'No floor')
+                       .getAttribute('aria-pressed')"""), "true")
         # The sentinel is a label rather than an empty string precisely so this
         # survives: an empty member of a comma-joined list is dropped on the way
         # back in, and the chip would silently unselect itself on reload.
@@ -3160,6 +3196,7 @@ TESTS = [
     test_chips_do_not_outlive_the_filters_they_name,
     test_room_list_clicks_select_one_room_at_a_time,
     test_a_renamed_group_does_not_eat_its_neighbour,
+    test_saving_a_group_refilters_the_calendar,
     test_history_fill_toast_reports_the_fill_not_the_edge,
     test_a_fresh_install_says_what_it_is_doing,
     test_every_control_has_an_accessible_name,

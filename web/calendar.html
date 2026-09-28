@@ -576,7 +576,7 @@ function roomClick(r,ev){
   if(ev&&(ev.ctrlKey||ev.metaKey||ev.shiftKey)){toggleRoom(r);return;}
   if(activeRooms.size===1&&activeRooms.has(r)){activeRooms=new Set(ROOMS);}
   else activeRooms=new Set([r]);
-  syncChips();applyFilters();
+  commitFilterChange();
 }
 // The accumulate path can delete its way to nothing — Ctrl-clicking the last
 // selected room out — and an empty selection is the blank calendar with no way
@@ -585,7 +585,7 @@ function roomClick(r,ev){
 function toggleRoom(r){
   if(activeRooms.has(r)){activeRooms.delete(r);if(!activeRooms.size)activeRooms=new Set(ROOMS);}
   else activeRooms.add(r);
-  syncChips();applyFilters();
+  commitFilterChange();
 }
 // Scoped to #rchips. The filter panel's group editor also draws room toggles,
 // and a global .rc selector would repaint those from the room filter — which is
@@ -597,7 +597,24 @@ function syncChips(){document.querySelectorAll('#rchips .rc').forEach(c=>{const 
 function roomClear(){
   activeRooms.clear();
   activeRooms=activeGroups.size?roomsForGroups():new Set(ROOMS);
-  syncChips();applyFilters();
+  commitFilterChange();
+}
+
+// ── ONE EXIT FOR EVERY FILTER CHANGE ──
+// Change the state, then call this. It used to be about twenty hand-rolled
+// sequences of syncChips / syncGroupBtns / buildFilterBody / writeURL /
+// applyFilters, and they drifted: the Active-row ✕ never re-lit the group
+// buttons, addTag rendered twice, the panel's controls wrote the URL that
+// render() writes anyway, and saving the group editor re-filtered nothing.
+// The controls on screen are synced from the state here — the ⚙ panel only
+// when it is open, since it is rebuilt from scratch — and applyFilters renders,
+// which writes the URL. The free-at controls refetch instead of rendering:
+// loadFreeRooms re-applies the filters when its answer lands.
+function syncFilterControls(){syncGroupBtns();syncChips();syncFilterBody();}
+function commitFilterChange(opts){
+  syncFilterControls();
+  if(opts&&opts.refetchFree){writeURL();loadFreeRooms();}
+  else applyFilters();
 }
 
 // ── MULTI-SELECT GROUP FILTER ──
@@ -626,7 +643,9 @@ function roomsForGroups(){
   activeGroups.forEach(grp=>rs.push(...(GROUPS[grp]||[])));
   return new Set(rs.filter(r=>ROOMS.includes(r)));
 }
-function toggleGroup(g){
+// The state half of a group click, for callers that commit themselves (the
+// Active row's ✕, which would otherwise render twice).
+function flipGroup(g){
   if(!g){activeGroups.clear();activeRooms=new Set(ROOMS);}
   else{
     if(activeGroups.has(g))activeGroups.delete(g);else activeGroups.add(g);
@@ -637,8 +656,8 @@ function toggleGroup(g){
     // screen saying so the whole time.
     activeRooms=activeGroups.size?roomsForGroups():new Set(ROOMS);
   }
-  syncGroupBtns();syncChips();applyFilters();
 }
+function toggleGroup(g){flipGroup(g);commitFilterChange();}
 function syncGroupBtns(){
   document.querySelectorAll('#gbar .gb').forEach(b=>{
     const g=b.dataset.g;
@@ -713,13 +732,14 @@ function pickRoom(room){
   if(!ROOMS.includes(room))return;
   if(activeRooms.size===ROOMS.length)activeRooms=new Set([room]);
   else activeRooms.add(room);
-  syncChips();applyFilters();
+  commitFilterChange();
 }
 function addTag(type,value){
+  // Each branch commits once: toggleGroup and pickRoom already do.
   if(type==='group')toggleGroup(value);
   else if(type==='room')pickRoom(value);
-  else{searchQ=value.toLowerCase();document.getElementById('q').value='';}
-  closeDrop();applyFilters();
+  else{searchQ=value.toLowerCase();document.getElementById('q').value='';commitFilterChange();}
+  closeDrop();
 }
 
 // ── ACTIVE FILTERS ──
@@ -740,11 +760,11 @@ function activeChipList(){
   if(term)out.push({cls:'tag-q',label:'“'+term+'”',
     clear:()=>{searchQ='';if(q)q.value='';}});
   activeGroups.forEach(g=>out.push({cls:'tag-grp',label:'📁 '+g,
-    clear:()=>toggleGroup(g)}));
+    clear:()=>flipGroup(g)}));
   if(activeRooms.size<ROOMS.length){
     const rs=[...activeRooms].sort();
     out.push({cls:'tag-rm',label:rs.length===1?'Room '+rs[0]:rs.length+' rooms',
-      clear:()=>{activeRooms=new Set(ROOMS);syncChips();}});
+      clear:()=>{activeRooms=new Set(ROOMS);}});
   }
   if(advFloors.size){
     const fs=[...advFloors].sort();
@@ -782,7 +802,7 @@ function renderActiveChips(){
     // Clearing runs the filter's own off-path, then re-renders the panel: the
     // modal's chips carry their own on/off state and would otherwise still show
     // the filter this just removed.
-    x.onclick=()=>{c.clear();buildFilterBody();applyFilters();};
+    x.onclick=()=>{c.clear();commitFilterChange();};
     t.appendChild(x);
     box.appendChild(t);
   });
@@ -1340,7 +1360,7 @@ function buildFilterBody(){
       const b=el('button',null,f===NO_FLOOR?'No floor':f);
       b.classList.toggle('on',advFloors.has(f));
       b.setAttribute('aria-pressed',advFloors.has(f)?'true':'false');
-      b.onclick=()=>{if(advFloors.has(f))advFloors.delete(f);else advFloors.add(f);buildFilterBody();writeURL();applyFilters();};
+      b.onclick=()=>{if(advFloors.has(f))advFloors.delete(f);else advFloors.add(f);commitFilterChange();};
       fbar.appendChild(b);
     });
     // "Any floor" belongs in the same row as the floors, the way "All" does in
@@ -1349,7 +1369,7 @@ function buildFilterBody(){
     const any=el('button','gb','Any floor');
     any.classList.toggle('on',!advFloors.size);
     any.setAttribute('aria-pressed',advFloors.size?'false':'true');
-    any.onclick=()=>{advFloors.clear();buildFilterBody();writeURL();applyFilters();};
+    any.onclick=()=>{advFloors.clear();commitFilterChange();};
     fbar.appendChild(any);
     fs.appendChild(fbar);
     // Stated, not silent, and stated only when there is something to state.
@@ -1378,7 +1398,7 @@ function buildFilterBody(){
     const o=el('option',null,n?'at least '+n:'any size');
     o.value=String(n);o.selected=(n===advSeats);sel.appendChild(o);
   });
-  sel.onchange=()=>{advSeats=+sel.value;buildFilterBody();writeURL();applyFilters();};
+  sel.onchange=()=>{advSeats=+sel.value;commitFilterChange();};
   crow.appendChild(sel);
   cs.appendChild(crow);
   // Stated, not silent. Almost half the rooms have no recorded capacity, and the
@@ -1395,7 +1415,7 @@ function buildFilterBody(){
   const pb=el('button',null,'🎥 Panopto');
   pb.classList.toggle('on',advPanopto);
   pb.setAttribute('aria-pressed',advPanopto?'true':'false');
-  pb.onclick=()=>{advPanopto=!advPanopto;buildFilterBody();writeURL();applyFilters();};
+  pb.onclick=()=>{advPanopto=!advPanopto;commitFilterChange();};
   ebar.appendChild(pb);
   es.appendChild(ebar);
   body.appendChild(es);
@@ -1408,7 +1428,7 @@ function buildFilterBody(){
   const fromLbl=el('label',null,'Free from');fromLbl.htmlFor='freeFrom';
   trow.appendChild(fromLbl);
   const time=el('input');time.type='time';time.value=advFreeAt;time.id='freeFrom';
-  time.onchange=()=>{advFreeAt=time.value;FREE_KEY='';buildFilterBody();writeURL();loadFreeRooms();};
+  time.onchange=()=>{advFreeAt=time.value;FREE_KEY='';commitFilterChange({refetchFree:true});};
   trow.appendChild(time);
   // "for" is the connective in "free from 14:00 for 60 min", not a label for
   // this control, so it stays decorative and the select is named for what it
@@ -1417,11 +1437,11 @@ function buildFilterBody(){
   const mins=el('select');
   mins.setAttribute('aria-label','For how long');
   MINUTE_STEPS.forEach(n=>{const o=el('option',null,n+' min');o.value=String(n);o.selected=(n===advFreeMins);mins.appendChild(o);});
-  mins.onchange=()=>{advFreeMins=+mins.value;FREE_KEY='';buildFilterBody();writeURL();loadFreeRooms();};
+  mins.onchange=()=>{advFreeMins=+mins.value;FREE_KEY='';commitFilterChange({refetchFree:true});};
   trow.appendChild(mins);
   if(advFreeAt){
     const off=el('button',null,'Turn off');off.className='gb';
-    off.onclick=()=>{advFreeAt='';FREE_DAYS=null;FREE_KEY='';buildFilterBody();writeURL();applyFilters();};
+    off.onclick=()=>{advFreeAt='';FREE_DAYS=null;FREE_KEY='';commitFilterChange();};
     trow.appendChild(off);
   }
   tms.appendChild(trow);
@@ -1559,10 +1579,18 @@ async function saveGroups(){
     const r=await fetch('/api/room-groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(clean)});
     const d=await r.json();
     if(!r.ok){toast('⚠️ '+(d.error||'Could not save groups'));return;}
+    const before=GROUPS;
     GROUPS=clean;
-    // A group that was just deleted may still be in the active set.
+    // An active group whose rooms just changed (or that was just deleted)
+    // leaves the calendar filtered by what it *used* to hold, since a group
+    // is expanded into activeRooms when it is selected. Re-expand — but only
+    // then, so saving an unrelated group cannot undo a room selection the
+    // user refined by hand.
+    const touched=[...activeGroups].some(
+      g=>JSON.stringify(before[g])!==JSON.stringify(GROUPS[g]));
     activeGroups=new Set([...activeGroups].filter(g=>GROUPS[g]));
-    buildGroupBtns();buildChips();buildFilterBody();
+    if(touched)activeRooms=activeGroups.size?roomsForGroups():new Set(ROOMS);
+    buildGroupBtns();buildChips();commitFilterChange();
     toast('Groups saved',true);
   }catch(e){toast('⚠️ '+e.message);}
 }
@@ -1741,7 +1769,7 @@ function applyPreset(p){
   FREE_KEY='';FREE_DAYS=null;
   // No chip clearing here any more: the Active row is derived from the state
   // set above, so it was never holding the previous filter's chips to clear.
-  syncGroupBtns();syncChips();buildFilterBody();applyFilters();
+  commitFilterChange();
   toast('Applied “'+((p&&p.name)||'filter')+'”',true);
 }
 async function savePreset(rawName){
@@ -1771,8 +1799,7 @@ function clearAllFilters(){
   searchQ='';document.getElementById('q').value='';
   advFloors.clear();advSeats=0;advPanopto=false;advFreeAt='';advFreeMins=60;
   FREE_DAYS=null;FREE_KEY='';
-  syncGroupBtns();syncChips();buildFilterBody();
-  applyFilters();
+  commitFilterChange();
   toast('Filters cleared',true);
 }
 
@@ -1830,7 +1857,8 @@ function readURL(){
   document.querySelectorAll('button.vtab').forEach(b=>{b.classList.remove('on');b.setAttribute('aria-pressed','false');});
   const tab=document.getElementById('v-'+viewMode);
   if(tab){tab.classList.add('on');tab.setAttribute('aria-pressed','true');}
-  syncGroupBtns();syncChips();
+  // Synced, not rendered: boot renders once, after this.
+  syncFilterControls();
   return p.toString().length>0;
 }
 
@@ -2360,7 +2388,7 @@ function buildQuickChips(){
     b.setAttribute('aria-label','Filter by floor: '+(f===NO_FLOOR?'no floor stated':f));
     b.onclick=()=>{
       if(advFloors.has(f))advFloors.delete(f);else advFloors.add(f);
-      buildQuickChips();syncFilterBody();writeURL();applyFilters();loadFree();
+      commitFilterChange();buildQuickChips();loadFree();
     };
     fb.appendChild(b);
   });
