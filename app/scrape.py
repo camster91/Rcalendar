@@ -600,11 +600,13 @@ def _download_csv(page: Any, downloads: list[Any]) -> str | None:
     return text
 
 
-# The report's own "no data" message, as an element whose whole text is
-# the message — not the phrase anywhere on the page, where help text or a
-# second region saying it would turn a real report into an empty one.
+# The report's own "no data" message, as an element whose own text *is*
+# the message — it opens with the phrase, so a customised "No data found
+# for the selected rooms" still counts — and not the phrase anywhere on
+# the page, where help text or a second region mentioning it would turn a
+# real report into an empty one.
 _NO_DATA_JS = r"""() => {
-    const want = /^\s*no data found\.?\s*$/i;
+    const want = /^\s*no data found\b/i;
     for (const el of document.querySelectorAll('body *')) {
         if (el.children.length === 0 && want.test(el.textContent || '')
                 && el.getClientRects().length > 0) {

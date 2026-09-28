@@ -324,7 +324,7 @@ class ReportPage:
             # message, as _NO_DATA_JS decides it for an element. The real
             # script is driven in Chromium by
             # test_the_no_data_probe_reads_the_message_not_the_phrase.
-            return any(re.fullmatch(r"\s*no data found\.?\s*", line, re.I)
+            return any(re.match(r"\s*no data found\b", line, re.I)
                        for line in self._body.splitlines())
         if "querySelectorAll('table')" in script:
             return self._csv
@@ -1099,6 +1099,9 @@ def test_the_no_data_probe_reads_the_message_not_the_phrase() -> None:
          '<div class="a-IRR-noDataMsg"><span class="a-IRR-noDataMsg-icon">'
          '</span><span class="a-IRR-noDataMsg-text">No data found</span></div>',
          True),
+        ("a customised message that opens with the phrase",
+         '<div class="t-Report-noDataMsg">No data found for the selected '
+         'rooms.</div>', True),
         ("the phrase in help text",
          "<p>If the report says no data found, widen the window.</p>"
          "<table><tr><td>142</td></tr></table>", False),
