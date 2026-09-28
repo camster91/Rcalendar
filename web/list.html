@@ -274,7 +274,7 @@ function onRoomSelect(v){
   if(v==='__multi__')return;
   // "All rooms" with groups active means the groups' rooms — the calendar's
   // clear does the same — rather than silently dropping the groups' effect.
-  activeRooms=v!=='all'?new Set([v])
+  activeRooms=v!=='all'?nextRooms(activeRooms,v,'only',ROOMS)
     :activeGroups.size?groupRooms(activeGroups,GROUPS,ROOMS):new Set(ROOMS);
   commitFilterChange();
 }
@@ -335,21 +335,16 @@ function dropBlur(){
 function addTag(type,value){
   if(type==='group'){if(!activeGroups.has(value))toggleGroup(value);return;}
   if(type==='query'){searchQ=value.toLowerCase();document.getElementById('search').value=value;}
-  else{
-    activeRooms=new Set([value]);
-    // The text that found the room is a search aid, not a filter, so it clears
-    // with the pick — and clears from the state too. Emptying the box alone
-    // would leave the list filtered by text no longer anywhere on screen.
-    searchQ='';document.getElementById('search').value='';
-  }
+  // A room suggestion is picked by the calendar's rule (filters.js
+  // nextRooms): with every room on it narrows, otherwise it adds. The search
+  // text is left alone, as on the calendar — it is a filter of its own, shown
+  // as its own tag, and a pick is not a reason to drop it.
+  else activeRooms=nextRooms(activeRooms,value,'pick',ROOMS);
   closeDrop();commitFilterChange();
 }
 function removeTag(type,value){
   if(type==='group'){toggleGroup(value);return;}
-  if(type==='room'){
-    activeRooms.delete(value);
-    if(!activeRooms.size)activeRooms=new Set(ROOMS);
-  }
+  if(type==='room')activeRooms=nextRooms(activeRooms,value,'remove',ROOMS);
   else{document.getElementById('search').value='';searchQ='';}
   commitFilterChange();
 }

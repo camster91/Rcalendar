@@ -148,3 +148,36 @@ function groupRooms(groups, groupMap, rooms){
   groups.forEach(g=>(groupMap[g]||[]).forEach(r=>{if(rooms.includes(r))out.add(r);}));
   return out;
 }
+
+// What choosing a room does to the room selection — one set of rules for both
+// pages, so a click means the same thing wherever it lands. "Every room" is
+// the full set, and no rule ever returns an empty one: an empty selection is
+// a blank calendar with no way back, so each path that could empty it falls
+// back to every room instead.
+//   click  — select just this room; clicking the room that already is the
+//            whole selection undoes that, back to every room.
+//   toggle — add or remove this one room (Ctrl/⌘/Shift-click).
+//   pick   — from a search suggestion or a free-room row: with every room
+//            on, narrow to this one; with a narrower selection, add it.
+//   only   — exactly this room (a room dropdown).
+//   remove — drop this room (a tag's ✕).
+//   clear  — every room.
+// A room the data does not have changes nothing.
+function nextRooms(current, room, mode, rooms){
+  const all=()=>new Set(rooms);
+  if(mode==='clear')return all();
+  const cur=new Set(current);
+  if(!rooms.includes(room))return cur;
+  if(mode==='only')return new Set([room]);
+  if(mode==='click')return cur.size===1&&cur.has(room)?all():new Set([room]);
+  if(mode==='pick'){
+    if(cur.size>=rooms.length)return new Set([room]);
+    cur.add(room);return cur;
+  }
+  if(mode==='toggle'&&!cur.has(room)){cur.add(room);return cur;}
+  if(mode==='toggle'||mode==='remove'){
+    cur.delete(room);
+    return cur.size?cur:all();
+  }
+  return cur;
+}

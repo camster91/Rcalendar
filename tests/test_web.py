@@ -1515,11 +1515,24 @@ def test_list_select_and_tags_are_one_filter(browser, base: str) -> None:
         page.select_option("#roomFilter", "142")
         check("list: the dropdown narrows to that room", events_shown(page), 2)
 
+        # A search pick follows the calendar's rule (filters.js nextRooms,
+        # finding 29): with a narrower selection already made it *adds* the
+        # room. Before the shared rule this page replaced the selection with
+        # the pick (1 event) while the calendar added it — two answers to one
+        # click. Either way, never the old AND's zero.
         page.evaluate("() => addTag('room','157')")
-        check("list: picking another room moves the selection, not ANDs it",
-              events_shown(page), 1)
-        check("list: the dropdown follows the tag",
-              page.eval_on_selector("#roomFilter", "el => el.value"), "157")
+        check("list: picking another room adds it, as on the calendar",
+              events_shown(page), 3)
+        check("list: the dropdown says two rooms rather than naming one",
+              page.eval_on_selector("#roomFilter", "el => el.value"),
+              "__multi__")
+
+        # The search text is a filter of its own, and a pick leaves it be —
+        # the list used to clear it, the calendar never did.
+        page.evaluate("""() => { searchQ = 'zz'; document.getElementById('search').value = 'zz';
+                                 addTag('room', '142'); }""")
+        check("list: a room pick keeps the search text",
+              page.evaluate("() => searchQ"), "zz")
     finally:
         page.close()
 

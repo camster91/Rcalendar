@@ -574,8 +574,7 @@ function buildChips(){
 // a blank calendar with no way back.
 function roomClick(r,ev){
   if(ev&&(ev.ctrlKey||ev.metaKey||ev.shiftKey)){toggleRoom(r);return;}
-  if(activeRooms.size===1&&activeRooms.has(r)){activeRooms=new Set(ROOMS);}
-  else activeRooms=new Set([r]);
+  activeRooms=nextRooms(activeRooms,r,'click',ROOMS);
   commitFilterChange();
 }
 // The accumulate path can delete its way to nothing — Ctrl-clicking the last
@@ -583,8 +582,7 @@ function roomClick(r,ev){
 // back, so it falls back to every room, the same undo the click path above it
 // lands on.
 function toggleRoom(r){
-  if(activeRooms.has(r)){activeRooms.delete(r);if(!activeRooms.size)activeRooms=new Set(ROOMS);}
-  else activeRooms.add(r);
+  activeRooms=nextRooms(activeRooms,r,'toggle',ROOMS);
   commitFilterChange();
 }
 // Scoped to #rchips. The filter panel's group editor also draws room toggles,
@@ -726,8 +724,7 @@ function dropBlur(){
 // would be two answers to "what does picking a room do".
 function pickRoom(room){
   if(!ROOMS.includes(room))return;
-  if(activeRooms.size===ROOMS.length)activeRooms=new Set([room]);
-  else activeRooms.add(room);
+  activeRooms=nextRooms(activeRooms,room,'pick',ROOMS);
   commitFilterChange();
 }
 function addTag(type,value){

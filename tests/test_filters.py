@@ -638,6 +638,55 @@ def test_presets() -> None:
     check("the oldest is dropped", kept[0]["name"], "p5")
 
 
+def test_next_rooms_is_one_rule_for_both_pages() -> None:
+    """web/filters.js nextRooms: what choosing a room does, on either page.
+
+    Run in a real Chromium, because the rule is JavaScript both pages load
+    and a Python mirror of it would prove nothing about the one they run. A
+    missing browser fails the suite, as it does in test_web: a skipped rule
+    is no rule.
+    """
+    print("\nroom selection rule (filters.js)")
+    from playwright.sync_api import sync_playwright
+
+    js = (ROOT / "web" / "filters.js").read_text(encoding="utf-8")
+    rooms = ["142", "157", "L1030"]
+    cases = [
+        # (label, current, room, mode, expected)
+        ("click narrows to one room", rooms, "157", "click", ["157"]),
+        ("click on the whole selection undoes it", ["157"], "157", "click", rooms),
+        ("click moves a one-room selection", ["142"], "157", "click", ["157"]),
+        ("toggle adds", ["142"], "157", "toggle", ["142", "157"]),
+        ("toggle removes", ["142", "157"], "157", "toggle", ["142"]),
+        ("toggle never empties: the last room off is every room", ["142"], "142", "toggle", rooms),
+        ("pick with every room on narrows", rooms, "157", "pick", ["157"]),
+        ("pick with a narrower selection adds", ["142"], "157", "pick", ["142", "157"]),
+        ("only is exactly the room", ["142", "157"], "L1030", "only", ["L1030"]),
+        ("remove drops the room", ["142", "157"], "142", "remove", ["157"]),
+        ("remove never empties", ["142"], "142", "remove", rooms),
+        ("clear is every room", ["142"], "", "clear", rooms),
+        ("an unknown room changes nothing", ["142"], "999", "pick", ["142"]),
+    ]
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.set_content("<html><body></body></html>")
+            page.add_script_tag(content=js)
+            for label, current, room, mode, want in cases:
+                got = page.evaluate(
+                    """([cur, room, mode, rooms]) =>
+                         [...nextRooms(new Set(cur), room, mode, rooms)].sort()""",
+                    [current, room, mode, rooms])
+                check(label, got, sorted(want))
+            check("the current selection is never mutated in place",
+                  page.evaluate("""(rooms) => { const cur = new Set(['142']);
+                                     nextRooms(cur, '157', 'pick', rooms);
+                                     return [...cur]; }""", rooms), ["142"])
+        finally:
+            browser.close()
+
+
 def main() -> int:
     print("=" * 60)
     print("  filters")
@@ -656,6 +705,7 @@ def main() -> int:
     test_search_wildcards_are_literal()
     test_groups()
     test_presets()
+    test_next_rooms_is_one_rule_for_both_pages()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")
