@@ -15,7 +15,7 @@
 # that added this file created no runs and the suites had been run on one
 # machine, by hand. The enable was:
 #
-#   gh api -X PUT repos/camster91/rotman-lsm-calendar/actions/permissions \
+#   gh api -X PUT repos/camster91/lsm-calendar/actions/permissions \
 #     -F enabled=true
 #
 # (-F, not -f: the field is a boolean, and -f sends a string, which the

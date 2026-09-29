@@ -137,7 +137,7 @@ def test_sha256() -> None:
 RELEASE = {
     "tag": "v1.2.0",
     "name": "v1.2.0",
-    "notes_url": "https://github.com/camster91/rotman-lsm-calendar/releases/tag/v1.2.0",
+    "notes_url": "https://github.com/camster91/lsm-calendar/releases/tag/v1.2.0",
     "assets": [
         {"id": 101, "name": "sha256.txt", "size": 90},
         {"id": 102, "name": "RotmanLSMCalendar-Setup-1.2.0.exe", "size": 4},

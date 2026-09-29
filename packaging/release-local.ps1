@@ -52,7 +52,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $VenvPy = Join-Path $Root ".venv\Scripts\python.exe"
-$Repo = "camster91/rotman-lsm-calendar"
+$Repo = "camster91/lsm-calendar"
 $Mirror = "camster91/rotman-lsm-calendar-releases"
 
 if (-not (Test-Path $VenvPy)) {

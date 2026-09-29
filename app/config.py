@@ -39,7 +39,7 @@ APP_SLUG = "RotmanLSMCalendar"
 UPDATES_REPO = "camster91/rotman-lsm-calendar-releases"
 # The private source repo — named here only so docs and scripts have one
 # place to read it from, exactly like the version.
-GITHUB_REPO = "camster91/rotman-lsm-calendar"
+GITHUB_REPO = "camster91/lsm-calendar"
 
 # The code-signing certificates an update's installer may be signed by, as
 # SHA-1 thumbprints. The release's sha256.txt proves the download is the file
