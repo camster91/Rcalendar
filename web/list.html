@@ -295,7 +295,10 @@ function syncRoomSelect(){
 
 // Search
 let debounce;
-function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('search').value.trim();searchQ=v.toLowerCase();if(v.length<1){closeDrop();render();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));render();},200);}
+// A new term goes back to the first page, as every other filter change does
+// (commitFilterChange): page 7 of the old search can be past the end of the
+// new one. Only a change, because focusing the box runs this too.
+function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('search').value.trim();const q=v.toLowerCase();if(q!==searchQ){searchQ=q;page=0;renderTags();}if(v.length<1){closeDrop();render();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));render();},200);}
 function showDrop(d){
   const box=document.getElementById('sdrop');
   box.innerHTML='';
@@ -339,15 +342,19 @@ function addTag(type,value){
   // nextRooms): with every room on it narrows, otherwise it adds. The search
   // text is left alone, as on the calendar — it is a filter of its own, shown
   // as its own tag, and a pick is not a reason to drop it.
-  else activeRooms=nextRooms(activeRooms,value,'pick',ROOMS);
+  else{activeRooms=nextRooms(activeRooms,value,'pick',ROOMS);allRoomsDropsGroups();}
   closeDrop();commitFilterChange();
 }
 function removeTag(type,value){
   if(type==='group'){toggleGroup(value);return;}
-  if(type==='room')activeRooms=nextRooms(activeRooms,value,'remove',ROOMS);
+  if(type==='room'){activeRooms=nextRooms(activeRooms,value,'remove',ROOMS);allRoomsDropsGroups();}
   else{document.getElementById('search').value='';searchQ='';}
   commitFilterChange();
 }
+// A room path that lands on every room has undone the group too, as on the
+// calendar. Left lit, the group was a state writeURL cannot say: groups= with
+// no rooms=, which the reload and the Calendar tab narrowed back to.
+function allRoomsDropsGroups(){if(activeRooms.size>=ROOMS.length)activeGroups.clear();}
 // A view of the selection, rebuilt from it — never the store. Built as DOM
 // nodes with listeners rather than interpolated markup: a group name or an
 // event title is user-controlled, and concatenating one into an onclick
@@ -509,7 +516,14 @@ function syncLinks(qs){
 async function loadStatus(){
   const el=document.getElementById('sessBadge');
   try{
-    const d=await (await fetch('/api/status')).json();
+    // A stale tab stops asking — every answer from here on is the same 401 —
+    // but the badge still says so.
+    const r=TAB_STALE?null:await fetch('/api/status');
+    if(staleTab(r)){
+      el.className='badge bg-rd';el.textContent='● This tab is out of date';el.title=STALE_MSG;
+      return;
+    }
+    const d=await r.json();
     if(d.session==='ok'){
       el.className='badge bg-gn';el.textContent='● Session active';
       el.title='LSM session is signed in';
@@ -553,14 +567,26 @@ async function loadStatus(){
 }
 
 // Fetched once at boot, so a scrape that lands while the page is open has
-// to be pulled in deliberately. Only the events are re-read: a scrape
-// writes events, not room metadata or groupings, and re-running the
-// filter builders would flash a rebuilt page to say nothing new.
+// to be pulled in deliberately. The events and the room list are re-read —
+// the room list is built from the bookings, so a scrape can add a room —
+// and the groups are not: a scrape does not write them. calendar.html's
+// refreshEvents, which this follows: a failed read keeps the list on screen
+// (it used to become EVENTS=[] and "No events match"), and a selection of
+// every room grows to take in a new room rather than hiding it under "All
+// Rooms"; a deliberate narrowing is kept.
 async function refreshBookings(){
   try{
-    const d=await (await fetch('/api/bootstrap')).json();
-    EVENTS=d.events||[];
+    const r=await fetch('/api/bootstrap');
+    if(staleTab(r)||!r.ok)return;
+    const d=await r.json();
+    const prev=activeRooms,hadAll=prev.size>=ROOMS.length;
+    EVENTS=d.events||[];ROOMS=d.rooms||[];
+    activeRooms=hadAll?new Set(ROOMS):new Set([...prev].filter(rm=>ROOMS.includes(rm)));
+    // Every selected room gone is every room, not a blank list.
+    if(!activeRooms.size)activeRooms=new Set(ROOMS);
+    buildRoomFilter();
     renderStats();
+    renderTags();
     render();
   }catch(e){
     // Deliberately quiet: the list on screen is still true as of its last
@@ -575,7 +601,7 @@ async function refreshBookings(){
   // call it does not need.
   loadStatus();
   try{
-    const r=await fetch('/api/bootstrap');
+    const r=keyed(await fetch('/api/bootstrap'));
     if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
     EVENTS=d.events||[];ROOMS=d.rooms||[];GROUPS=d.groups||{};
@@ -591,7 +617,12 @@ async function refreshBookings(){
     syncRoomSelect();
     renderTags();
   }catch(e){
-    document.getElementById('list').innerHTML='<div class="empty">Could not load bookings: '+esc(e.message)+'</div>';
+    // A Retry, as on the calendar, unless the tab is stale: reloading cannot
+    // mend a key cookie, and the message already names what does.
+    document.getElementById('list').innerHTML=TAB_STALE
+      ?'<div class="empty">'+esc(STALE_MSG)+'</div>'
+      :'<div class="empty">Could not load bookings: '+esc(e.message)
+        +'<br><br><button class="btn" onclick="location.reload()">Retry</button></div>';
     return;
   }
   render();

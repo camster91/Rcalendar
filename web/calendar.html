@@ -369,7 +369,7 @@ a.vtab{display:inline-flex;align-items:center}
     <div class="stit">Search</div>
     <div class="sbox">
       <span class="si">🔍</span>
-      <input type="text" id="q" placeholder="Room, group, event..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch()" onfocus="onSearch()" onblur="dropBlur()">
+      <input type="text" id="q" placeholder="Room, group, event..." aria-label="Search bookings by room, group or event" autocomplete="off" oninput="onSearch(true)" onfocus="onSearch()" onblur="dropBlur()">
       <div class="sdrop" id="sdrop"></div>
     </div>
     <!-- Opens the filter panel. Floor, seats, Panopto and free-at need more
@@ -577,14 +577,21 @@ function buildChips(){
 function roomClick(r,ev){
   if(ev&&(ev.ctrlKey||ev.metaKey||ev.shiftKey)){toggleRoom(r);return;}
   activeRooms=nextRooms(activeRooms,r,'click',ROOMS);
+  allRoomsDropsGroups();
   commitFilterChange();
 }
+// A room path that lands on every room has undone the group too. Left lit, the
+// group was a state writeURL cannot say: it writes groups= with no rooms=, so
+// the reload — and the List tab — narrowed back to the group the screen had
+// stopped showing. roomClear and flipGroup('') get there by their own route.
+function allRoomsDropsGroups(){if(activeRooms.size>=ROOMS.length)activeGroups.clear();}
 // The accumulate path can delete its way to nothing — Ctrl-clicking the last
 // selected room out — and an empty selection is the blank calendar with no way
 // back, so it falls back to every room, the same undo the click path above it
 // lands on.
 function toggleRoom(r){
   activeRooms=nextRooms(activeRooms,r,'toggle',ROOMS);
+  allRoomsDropsGroups();
   commitFilterChange();
 }
 // Scoped to #rchips. The filter panel's group editor also draws room toggles,
@@ -668,7 +675,11 @@ function syncGroupBtns(){
 
 // ── SEARCH ──
 let debounce;
-function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('q').value.trim();if(v.length<1){closeDrop();applyFilters();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));searchQ=v.toLowerCase();applyFilters();},200);}
+// typed: an edit, not a focus. Emptying the box used to leave searchQ set, so
+// the calendar, the URL's q= and the List link stayed filtered by a box that
+// read empty. Only an edit clears it: a picked event title empties the box and
+// keeps the term as a chip, and focusing the box again must not drop that.
+function onSearch(typed){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('q').value.trim();if(v.length<1){if(typed)searchQ='';closeDrop();applyFilters();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));searchQ=v.toLowerCase();applyFilters();},200);}
 // Built as elements with textContent. The old version interpolated each value
 // straight into an onmousedown attribute, so a group name or event title
 // containing an apostrophe broke out of the string and injected markup — and
@@ -727,6 +738,7 @@ function dropBlur(){
 function pickRoom(room){
   if(!ROOMS.includes(room))return;
   activeRooms=nextRooms(activeRooms,room,'pick',ROOMS);
+  allRoomsDropsGroups();
   commitFilterChange();
 }
 function addTag(type,value){
@@ -759,7 +771,7 @@ function activeChipList(){
   if(activeRooms.size<ROOMS.length){
     const rs=[...activeRooms].sort();
     out.push({cls:'tag-rm',label:rs.length===1?'Room '+rs[0]:rs.length+' rooms',
-      clear:()=>{activeRooms=new Set(ROOMS);}});
+      clear:()=>{activeRooms=new Set(ROOMS);allRoomsDropsGroups();}});
   }
   if(advFloors.size){
     const fs=[...advFloors].sort();
@@ -867,7 +879,11 @@ document.addEventListener('click',e=>{
 // with the calendar's old filter. maybeRefreshFree is a no-op unless the
 // free-at filter is on, and it is keyed on date+time+length, so the extra
 // call from applyFilters' own render cannot loop.
-function render(){syncListLink();writeURL();maybeRefreshFree();
+function render(){
+  // A boot that failed has nothing to draw and no filters it read, so it must
+  // not write the URL either: Retry reloads the link the user came in on.
+  if(BOOT_ERR){renderBootCard();return;}
+  syncListLink();writeURL();maybeRefreshFree();
   // The first-run card (see .bcard above for why it exists). With no
   // bookings in the store there is no calendar to draw, and an empty grid
   // reads as broken — so the card states what the app is doing instead.
@@ -875,7 +891,9 @@ function render(){syncListLink();writeURL();maybeRefreshFree();
   // bookings and a filter that hides them all is explained by the chips,
   // not by a card that would then lie about the app having no data.
   if(!EVENTS.length&&(STATUS===null||!STATUS.total_events)){renderBootCard();return;}
-  if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else if(viewMode==='changes')renderChanges();else renderToday();}
+  if(viewMode==='month')renderMonth();else if(viewMode==='week')renderWeek();else if(viewMode==='changes')renderChanges();else renderToday();
+  // Drawn under an open overlay (a change made in the ⚙ panel): see suppressBehind.
+  if(document.querySelector('.mover.show'))suppressBehind();}
 
 function renderMonth(){
   const y=curDate.getFullYear(),m=curDate.getMonth(),first=new Date(y,m,1),last=new Date(y,m+1,0),so=first.getDay(),td=last.getDate(),now=new Date();
@@ -1063,7 +1081,15 @@ function adaptPoll(){
 // an empty grid is the one thing it must never show here.
 function renderBootCard(){
   const d=STATUS;let title,body,extra='',dot='';
-  if(!d){title='Loading…';body='Reading the calendar.';}
+  // Before the session states: with the tab stale, every one of them is
+  // wrong — signing in to LSM cannot fix a key cookie.
+  if(TAB_STALE){title='This tab is out of date';body='The app has restarted since this tab was opened. Reopen the calendar from the tray icon or Start menu.';}
+  else if(BOOT_ERR){
+    title="Couldn't load the calendar";
+    body=esc(BOOT_ERR)+'<br>Check that the app is still running, then retry.';
+    extra='<button class="btn btn-w" onclick="location.reload()">Retry</button>';
+  }
+  else if(!d){title='Loading…';body='Reading the calendar.';}
   else if(d.busy){
     dot='<span class="bdot" aria-hidden="true"></span>';
     title=(d.busy_action||'Working')+'…';
@@ -1239,18 +1265,28 @@ function goToday(){curDate=new Date();render();}
 // These used to be single-instance, bound to #dayModal: one module-level
 // `modalOpener` and one suppression pass. A second overlay would have clobbered
 // the first one's focus restore, so both now go through trapFocus/releaseFocus.
-const SUPPRESS='.bar a,.bar button,.side button,.side [role="button"],.cday';
+// Everything behind an overlay that Tab can reach. It used to miss the search
+// box, the sidebar's links and every button in .main, so Tab out of the panel
+// walked straight into the page behind it.
+const SUPPRESS='.bar a,.bar button,.side a,.side button,.side input,.side [role="button"],.main button,.main [role="button"],.drawer button';
 let overlayOpener=null;
+// Idempotent, because it runs again after each render while an overlay is
+// open: a filter change in the panel redraws .main and the Active row, and
+// the controls that redraw creates were tabbable again. An element already
+// suppressed keeps the tabindex it had before the first pass.
+function suppressBehind(){
+  document.querySelectorAll(SUPPRESS).forEach(el=>{if(el.dataset.tab===undefined){el.dataset.tab=el.tabIndex;el.tabIndex=-1;}});
+}
 function trapFocus(modal){
   overlayOpener=document.activeElement;
   modal.classList.add('show');
   // Move focus into the dialog so the keyboard follows the eye, and keep the
   // page behind it from being tabbed into while it is open. Both openers are
   // inside .side, so they are suppressed too — the panel's own controls are not,
-  // because the panel sits outside .bar and .side.
+  // because the panel sits outside .bar, .side and .main.
   const first=modal.querySelector('.mcl');
   if(first)first.focus();
-  document.querySelectorAll(SUPPRESS).forEach(el=>{el.dataset.tab=el.tabIndex;el.tabIndex=-1;});
+  suppressBehind();
 }
 function releaseFocus(modal){
   modal.classList.remove('show');
@@ -1361,7 +1397,22 @@ function secGroup(title){
 
 function buildFilterBody(){
   const body=document.getElementById('filterBody');
+  // Every change rebuilds the panel, and innerHTML='' took the focused control
+  // with it: focus fell to <body>, so the next Tab started from the top of the
+  // page behind the modal. The control is found again by its key — its id, or
+  // data-fkey where it has none — and one that is gone (a deleted group, the
+  // free-at Turn off) hands focus to the panel's ✕, which keeps it inside.
+  const a=document.activeElement;
+  const fkey=a&&a!==body&&body.contains(a)?(a.dataset.fkey||a.id||'-'):'';
   body.innerHTML='';
+  buildFilterControls(body);
+  if(fkey){
+    const t=body.querySelector('[data-fkey="'+CSS.escape(fkey)+'"]')||(fkey!=='-'&&document.getElementById(fkey))
+      ||document.querySelector('#filterModal .mcl');
+    t.focus();
+  }
+}
+function buildFilterControls(body){
 
   // Stated, not silently ignored. A change row describes a booking that was
   // added or removed in the past, so "free at 2pm" and "seats ≥ 20" have
@@ -1385,6 +1436,7 @@ function buildFilterBody(){
   else{
     floors.forEach(f=>{
       const b=el('button',null,f===NO_FLOOR?'No floor':f);
+      b.dataset.fkey='floor:'+f;
       b.classList.toggle('on',advFloors.has(f));
       b.setAttribute('aria-pressed',advFloors.has(f)?'true':'false');
       b.onclick=()=>{if(advFloors.has(f))advFloors.delete(f);else advFloors.add(f);commitFilterChange();};
@@ -1394,6 +1446,7 @@ function buildFilterBody(){
     // the sidebar's group bar — appended to the section instead it wrapped onto
     // a line of its own and read as a separate control.
     const any=el('button','gb','Any floor');
+    any.dataset.fkey='floor:*';
     any.classList.toggle('on',!advFloors.size);
     any.setAttribute('aria-pressed',advFloors.size?'false':'true');
     any.onclick=()=>{advFloors.clear();commitFilterChange();};
@@ -1440,6 +1493,7 @@ function buildFilterBody(){
   const es=sec('Equipment');
   const ebar=el('div','gbar');
   const pb=el('button',null,'🎥 Panopto');
+  pb.dataset.fkey='panopto';
   pb.classList.toggle('on',advPanopto);
   pb.setAttribute('aria-pressed',advPanopto?'true':'false');
   pb.onclick=()=>{advPanopto=!advPanopto;commitFilterChange();};
@@ -1461,7 +1515,7 @@ function buildFilterBody(){
   // this control, so it stays decorative and the select is named for what it
   // chooses instead.
   trow.appendChild(el('label',null,'for'));
-  const mins=el('select');
+  const mins=el('select');mins.id='freeMins';
   mins.setAttribute('aria-label','For how long');
   MINUTE_STEPS.forEach(n=>{const o=el('option',null,n+' min');o.value=String(n);o.selected=(n===advFreeMins);mins.appendChild(o);});
   mins.onchange=()=>{advFreeMins=+mins.value;FREE_KEY='';commitFilterChange({refetchFree:true});};
@@ -1484,7 +1538,7 @@ function buildFilterBody(){
   const gs=sec('Groups');
   Object.keys(GEDIT).forEach(name=>gs.appendChild(groupEditorRow(name)));
   const addb=el('button',null,'+ Add group');
-  addb.className='btn';
+  addb.className='btn';addb.dataset.fkey='addGroup';
   addb.onclick=()=>{
     let n='New group',i=2;
     while(GEDIT[n])n='New group '+(i++);
@@ -1529,7 +1583,7 @@ function buildFilterBody(){
   const acts=el('div','facts');
   const copy=el('button',null,'🔗 Copy link');copy.className='btn';
   copy.onclick=()=>copyLink();
-  const clear=el('button',null,'Clear all');clear.className='btn';
+  const clear=el('button',null,'Clear all');clear.className='btn';clear.dataset.fkey='clearAll';
   clear.onclick=clearAllFilters;
   acts.append(copy,clear);
   body.appendChild(acts);
@@ -1929,7 +1983,9 @@ async function triggerScrape(){
   if(btn.disabled)return;
   btn.textContent='⏳';btn.disabled=true;
   try{
-    const r=await fetch('/api/scrape',{method:'POST'});
+    // keyed(): a stale tab throws to the catch below rather than spinning
+    // for fifteen minutes on a status it can never read.
+    const r=keyed(await fetch('/api/scrape',{method:'POST'}));
     const d=await r.json();
     if(r.status===409){toast('⚠️ '+(d.message||'Already running'));btn.textContent='⟳';btn.disabled=false;return;}
     // The worker scrapes on its own thread; poll until it reports done. As in
@@ -1939,7 +1995,7 @@ async function triggerScrape(){
     let sawBusy=false;
     while(Date.now()-t0<15*60*1000){
       await new Promise(s=>setTimeout(s,2000));
-      const st=await (await fetch('/api/status')).json();
+      const st=await keyed(await fetch('/api/status')).json();
       if(st.busy){sawBusy=true;continue;}
       if(!sawBusy)continue;
       if(st.session==='expired'){toast('❌ Session expired — use “Sign in to LSM”');}
@@ -2036,7 +2092,7 @@ async function doInstallUpdate(){
   // of an error for exactly that reason.
   let sawInstalling=false;
   try{
-    const r=await fetch('/api/update/install',{method:'POST'});
+    const r=keyed(await fetch('/api/update/install',{method:'POST'}));
     const d=await r.json();
     if(r.status===409){toast('⚠️ '+(d.message||'Something else is running'));btn.disabled=false;return;}
     // POST-then-poll, like the scrape button: the reply means "started",
@@ -2047,7 +2103,7 @@ async function doInstallUpdate(){
     while(Date.now()-t0<20*60*1000){
       await new Promise(s=>setTimeout(s,2000));
       let st;
-      try{st=await (await fetch('/api/status')).json();}
+      try{st=await keyed(await fetch('/api/status')).json();}
       catch(e){if(sawInstalling)return;throw e;}
       renderUpdate(st);
       const u=st.update||{};
@@ -2157,7 +2213,19 @@ document.addEventListener('keydown',e=>{
 async function loadStatus(){
   let d;
   try{
-    const r=await fetch('/api/status');d=await r.json();
+    // A stale tab stops asking — every answer from here on is the same 401 —
+    // but still says so here, where the session is reported.
+    const r=TAB_STALE?null:await fetch('/api/status');
+    if(staleTab(r)){
+      // The sign-in button would be the wrong fix, so neither control stays.
+      const el=document.getElementById('sessInfo');
+      el.className='sess bad';el.textContent='● This tab is out of date';el.title=STALE_MSG;
+      document.getElementById('loginBtn').style.display='none';
+      document.getElementById('logoutLink').style.display='none';
+      if(!EVENTS.length)renderBootCard();
+      return;
+    }
+    d=await r.json();
   }catch(e){
     // The fetch itself died, so the last good reading is now a stale claim,
     // and "Session active" is the worst of those to leave standing. Back to
@@ -2277,7 +2345,9 @@ async function loadFree(){
   if(!box)return;
   const as=document.getElementById('freeAs');
   try{
-    const d=await (await fetch('/api/today')).json();
+    // A 401's body has no rooms, which read as "Every room is booked". A tab
+    // already known to be stale does not ask.
+    const d=await keyed(TAB_STALE?null:await fetch('/api/today')).json();
     const rooms=d.rooms||[];
     const allFree=rooms.filter(r=>r.status==='free');
     // The drawer's one rule: the list answers with the same filters the
@@ -2470,7 +2540,7 @@ let EVENTS_AT=null;
 async function refreshEvents(){
   try{
     const r=await fetch('/api/bootstrap');
-    if(!r.ok)return;
+    if(staleTab(r)||!r.ok)return;
     const d=await r.json();
     const prev=new Set(activeRooms),hadAll=prev.size>=ROOMS.length;
     EVENTS=d.events||[];GROUPS=d.groups||{};ROOM_META=d.room_meta||{};
@@ -2482,9 +2552,12 @@ async function refreshEvents(){
   }catch(e){}
 }
 
+// Why boot could not load the bookings, or null. A failed boot used to toast
+// and fall through to the "Loading…" card, which then never moved.
+let BOOT_ERR=null;
 async function boot(){
   try{
-    const r=await fetch('/api/bootstrap');
+    const r=keyed(await fetch('/api/bootstrap'));
     if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
     EVENTS=d.events||[];ROOMS=d.rooms||[];GROUPS=d.groups||{};ROOM_META=d.room_meta||{};
@@ -2500,7 +2573,13 @@ async function boot(){
     // After ROOMS and GROUPS are populated and before the first applyFilters:
     // readURL validates its room and group names against both.
     readURL();
-  }catch(e){toast('Could not load bookings: '+e.message);}
+  }catch(e){
+    // The card says so and offers Retry. No applyFilters: its writeURL
+    // would swap the link's filters for empty defaults, and Retry reloads
+    // the URL as it then stands.
+    BOOT_ERR=e.message;renderBootCard();loadStatus();
+    return;
+  }
   applyFilters();
   loadStatus();
   loadFree();
@@ -2519,7 +2598,7 @@ async function doLogout(){
 
   const done=()=>{link.textContent='Sign out of LSM';link.removeAttribute('aria-busy');loadStatus();};
   try{
-    const r=await fetch('/api/logout',{method:'POST'});
+    const r=keyed(await fetch('/api/logout',{method:'POST'}));
     const d=await r.json();
     if(r.status===409){toast('⚠️ '+(d.message||'Busy'));done();return;}
 
@@ -2531,7 +2610,7 @@ async function doLogout(){
     let sawBusy=false;
     while(Date.now()-t0<60000){
       await new Promise(s=>setTimeout(s,1200));
-      const st=await (await fetch('/api/status')).json();
+      const st=await keyed(await fetch('/api/status')).json();
       if(st.busy){sawBusy=true;continue;}
       // A logout that has already finished looks exactly like one that has not
       // started when the only thing you read is `busy`, so the session is the
@@ -2556,7 +2635,9 @@ async function doLogin(){
   const btn=document.getElementById('loginBtn');
   btn.disabled=true;btn.textContent='Opening window…';
   try{
-    const r=await fetch('/api/login',{method:'POST'});
+    // keyed(): a stale tab is told why, rather than that a browser window
+    // opened, and the six-minute wait below never starts.
+    const r=keyed(await fetch('/api/login',{method:'POST'}));
     const d=await r.json();
     if(r.status===409){toast('⚠️ '+(d.message||'Busy'));btn.disabled=false;btn.textContent='Sign in to LSM';return;}
     toast('A browser window opened — sign in and approve Duo',true);
@@ -2564,7 +2645,7 @@ async function doLogin(){
     let sawBusy=false;
     while(Date.now()-t0<6*60*1000){
       await new Promise(s=>setTimeout(s,2500));
-      const st=await (await fetch('/api/status')).json();
+      const st=await keyed(await fetch('/api/status')).json();
       if(st.progress)btn.textContent=st.progress.slice(0,30);
       if(st.busy){sawBusy=true;continue;}
       // The POST returns as soon as the command is queued, and `busy` is false

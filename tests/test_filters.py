@@ -718,6 +718,24 @@ def test_next_rooms_is_one_rule_for_both_pages() -> None:
                   page.evaluate("""(rooms) => { const cur = new Set(['142']);
                                      nextRooms(cur, '157', 'pick', rooms);
                                      return [...cur]; }""", rooms), ["142"])
+
+            # parseFilters: a list that names only rooms or groups the data
+            # no longer has is no opinion (null), not a selection of nothing.
+            # The emptiness check used to run before the intersection, so a
+            # stale link came back rooms: [] and blanked the page.
+            ctx = {"rooms": rooms, "groups": {"North": ["142"]}}
+            pf = lambda raw: page.evaluate(  # noqa: E731
+                "([raw, ctx]) => { const f = parseFilters(raw, ctx);"
+                " return [f.rooms, f.groups]; }", [raw, ctx])
+            check("parseFilters: only stale rooms is no opinion",
+                  pf({"rooms": "999"}), [None, None])
+            check("parseFilters: ...as an array too",
+                  pf({"rooms": ["999", "998"]}), [None, None])
+            check("parseFilters: only a stale group is no opinion",
+                  pf({"groups": "Gone"}), [None, None])
+            check("parseFilters: a stale room beside a real one keeps the real one",
+                  pf({"rooms": "999,157", "groups": "Gone,North"}),
+                  [["157"], ["North"]])
         finally:
             browser.close()
 
