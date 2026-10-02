@@ -83,6 +83,12 @@ class Orchestrator:
             },
         }
         self._last_daily: date | None = None
+        # The day a scheduled-window scrape last *succeeded*. _last_daily is
+        # only "attempted" (the retry-storm guard), so on its own a daily that
+        # failed — a laptop waking before its network, LSM down at 06:00 —
+        # left the calendar a day old until tomorrow. The heartbeat reads this
+        # to retry at its own pace (see _do_heartbeat).
+        self._daily_ok: date | None = None
         self._last_heartbeat: datetime | None = None
         # UI hooks for the updater (main.py wires the tray in): a check that
         # finds something announces it, an install that has staged and
@@ -260,7 +266,8 @@ class Orchestrator:
             # Mark the day as attempted *before* scraping. If we only marked
             # it on success, a dead session would make every 20s tick launch
             # another browser against LSM — a retry storm. A failed daily
-            # waits for the heartbeat or a manual retry instead.
+            # waits for the heartbeat (which retries it once the session
+            # answers again) or a manual retry instead.
             self._last_daily = now.date()
             self._do_scrape(trigger="schedule")
             return
@@ -316,6 +323,12 @@ class Orchestrator:
                 # A scrape cannot succeed without a session, so do not burn
                 # a browser launch on it now. Signing in triggers one.
                 self._last_daily = datetime.now().date()
+                # But do arm the heartbeat. Left at None it never fires, and a
+                # probe that failed only because the network was not up yet
+                # (autostart at Windows sign-in) would cost the whole day's
+                # refresh and every keep-alive after it. The heartbeat re-probes
+                # in HEARTBEAT_HOURS and runs the owed daily if it answers.
+                self._last_heartbeat = datetime.now()
                 return
 
             self._last_heartbeat = datetime.now()
@@ -373,6 +386,17 @@ class Orchestrator:
         self._last_heartbeat = datetime.now()
         self._set(last_heartbeat=datetime.now().isoformat())
         self._set_session(state)
+        # The retry for a daily that failed. Paced by the heartbeat rather
+        # than the tick, so a session that stays dead costs one headless probe
+        # per HEARTBEAT_HOURS, never a browser launch every twenty seconds.
+        if state.ok and self._owes_daily(datetime.now()):
+            log.info("today's scheduled scrape has not succeeded — retrying")
+            self._do_scrape(trigger="schedule")
+
+    def _owes_daily(self, now: datetime) -> bool:
+        """True once SCRAPE_TIME has passed today without a scrape succeeding."""
+        return (self._daily_ok != now.date()
+                and now.time() >= _parse_time(SCRAPE_TIME))
 
     # ── Update check / install (worker thread only) ──────────────────────
 
@@ -710,6 +734,7 @@ class Orchestrator:
                     session="ok",
                 )
                 self._last_daily = started_date
+                self._daily_ok = started_date
                 self._last_heartbeat = datetime.now()
                 log.info("scrape complete — %d bookings stored", len(kept))
             else:
@@ -1010,6 +1035,12 @@ class Orchestrator:
 
     def _set_session(self, state: session.SessionState) -> None:
         self._set(session=state.state, session_message=state.message)
+        # Any probe that found the session alive has just kept it warm, and
+        # arms the heartbeat if nothing had yet. Before this only a finished
+        # scrape armed it, so a sign-in or a "Check session" that succeeded
+        # left a worker with no keep-alive until a scrape happened to land.
+        if state.ok:
+            self._last_heartbeat = datetime.now()
 
     def _set(self, **kwargs: Any) -> None:
         with self._status_lock:

@@ -215,7 +215,9 @@ a.vtab{display:inline-flex;align-items:center}
 /* Week */
 .wkgrid{display:grid;grid-template-columns:64px repeat(7,1fr)}
 .wkt{padding:4px 8px;font-size:.78rem;font-family:'JetBrains Mono',monospace;color:var(--tx3);text-align:right;border-top:1px solid var(--bd);height:56px;display:flex;align-items:flex-start;justify-content:flex-end}
-.wkc{border-top:1px solid var(--bd);border-left:1px solid var(--bd);position:relative;height:56px;min-width:0;overflow:hidden}
+/* No overflow:hidden. A bar is anchored in its start hour's cell and spans
+   the hours below it; clipping the cell cut every booking to its first hour. */
+.wkc{border-top:1px solid var(--bd);border-left:1px solid var(--bd);position:relative;height:56px;min-width:0}
 .wkc:hover{background:rgba(59,130,246,.03)}
 .wkdh{text-align:center;padding:8px 4px;font-size:.88rem;font-weight:600;background:var(--sf2);border-left:1px solid var(--bd);border-bottom:1px solid var(--bd)}
 .wkdh.tdy{color:var(--ac);background:var(--acg)}.wkdh .wn{font-size:.78rem;color:var(--tx3);font-weight:400}
@@ -961,7 +963,39 @@ function renderWeek(){
   const hours=[];for(let hr=H0;hr<=H1;hr++)hours.push(hr);
   hours.forEach(hr=>{const lb=hr>12?(hr-12)+' PM':hr===12?'12 PM':hr+' AM';h+='<div class="wkt">'+lb+'</div>';for(let d=0;d<7;d++){h+='<div class="wkc" data-date="'+fmtISO(new Date(sow.getFullYear(),sow.getMonth(),sow.getDate()+d))+'" data-hour="'+hr+'"></div>';}});
   h+='</div>';document.getElementById('mainArea').innerHTML=h;
-  weekEvts.forEach(ev=>{const st=new Date(ev.start),en=ev.end?new Date(ev.end):new Date(ev.start);const ds=fmtISO(st),sh=st.getHours()+st.getMinutes()/60,eh=en.getHours()+en.getMinutes()/60;if(sh<H0||sh>H1)return;const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('button');d.type='button';d.className='wkev';const top=(sh-Math.floor(sh))*56,dur=Math.max(eh-sh,.5),ht=Math.min(dur*56,(Math.floor(eh)-Math.floor(sh)+1)*56-top);d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;background:'+rcol(ev.room, ROOMS)+';';d.textContent=fmtT(ev.start)+' '+ev.title;
+  // Each bar's span in hours on its own day: at least half an hour (the
+  // minimal bar an end-less booking gets), never past the grid's last row, and
+  // to the bottom of the grid for one that ends on a later day. The filter is
+  // on the start *hour*: H1 is the last row, so a 23:30 start belongs to it —
+  // comparing the fractional hour against H1 dropped every such booking.
+  const byDay=new Map();
+  weekEvts.forEach(ev=>{
+    const st=new Date(ev.start),en=ev.end?new Date(ev.end):st;
+    const sh=st.getHours()+st.getMinutes()/60;
+    if(Math.floor(sh)<H0||Math.floor(sh)>H1)return;
+    let eh=fmtISO(en)===fmtISO(st)?en.getHours()+en.getMinutes()/60:H1+1;
+    eh=Math.min(Math.max(eh,sh+.5),H1+1);
+    const ds=fmtISO(st);let b=byDay.get(ds);if(!b){b=[];byDay.set(ds,b);}
+    b.push({ev,sh,eh});
+  });
+  // Bookings that overlap share their day's column side by side. Every bar
+  // used to span the full column, so all the bookings starting in one hour sat
+  // exactly on top of each other and only the last was visible. Each run of
+  // overlapping bars (a group) is split into lanes: a bar takes the first lane
+  // free by its start, and every bar in the group is 1/lanes wide.
+  byDay.forEach(items=>{
+    items.sort((a,b)=>a.sh-b.sh||b.eh-a.eh);
+    let group=[],lanes=[],groupEnd=-Infinity;
+    const close=()=>{group.forEach(it=>{it.n=lanes.length;});group=[];lanes=[];groupEnd=-Infinity;};
+    items.forEach(it=>{
+      if(group.length&&it.sh>=groupEnd)close();
+      let lane=lanes.findIndex(end=>end<=it.sh);
+      if(lane<0){lane=lanes.length;lanes.push(it.eh);}else lanes[lane]=it.eh;
+      it.lane=lane;group.push(it);groupEnd=Math.max(groupEnd,it.eh);
+    });
+    close();
+  });
+  byDay.forEach((items,ds)=>items.forEach(({ev,sh,eh,lane,n})=>{const cell=document.querySelector('.wkc[data-date="'+ds+'"][data-hour="'+Math.floor(sh)+'"]');if(!cell)return;const d=document.createElement('button');d.type='button';d.className='wkev';const top=(sh-Math.floor(sh))*56,ht=(eh-sh)*56;d.style.cssText='top:'+top+'px;height:'+Math.max(ht,18)+'px;left:calc((100% - 4px) * '+(lane/n)+' + 2px);right:auto;width:calc((100% - 4px) * '+(1/n)+' - 1px);background:'+rcol(ev.room, ROOMS)+';';d.textContent=fmtT(ev.start)+' '+ev.title;
     // The month grid gives the keyboard one focusable cell per day; the
     // week grid's equivalent is the event bars, which are few enough to
     // tab through individually. So each is a real button with a spoken
@@ -971,7 +1005,7 @@ function renderWeek(){
     d.setAttribute('aria-label',fmtT(ev.start)+(ev.end?' to '+fmtT(ev.end):'')+' — '+(ev.title||'')+' — Room '+(ev.room||'?'));
     d.onclick=e=>{e.stopPropagation();showTip(e,ev);};
     d.onkeydown=e=>{if(e.key!=='Enter'&&e.key!==' ')return;e.preventDefault();const r=d.getBoundingClientRect();showTip({clientX:r.left,clientY:r.bottom},ev);};
-    cell.appendChild(d);});
+    cell.appendChild(d);}));
 }
 
 function renderToday(){

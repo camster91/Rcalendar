@@ -264,6 +264,34 @@ def test_csv() -> None:
     check("empty input safe", empty, [])
 
 
+def test_a_single_quoted_comment_does_not_change_the_quoting() -> None:
+    """One 'TBC' near the top must not make every "a, b" field split.
+
+    csv.Sniffer guessed the quote character from the data, and a comment
+    written in single quotes made it pick '. Every later row with a comma
+    inside a double-quoted field then split into the wrong columns and was
+    skipped — while the export still read as complete, so the reconcile
+    deleted those real bookings and logged them as cancelled.
+    """
+    print("\nquoting is not guessed from the data")
+    header = ("Room,Event/Course,Date,Start Time,End Time,Duration,Building,"
+              "Class Code,Comment\n")
+    # The sniffer read only the first 4 KB, so the shape that broke it is a
+    # single-quoted comment there and the double-quoted fields after it.
+    rows = ["RT 142,Planning,15-April-26,900,1000,1h,RT,A,'TBC'\n"]
+    rows += [f"RT 133,Seminar {i},15-April-26,900,1000,1h,RT,A,plain\n"
+             for i in range(80)]
+    rows += [f'RT 147,"208/LUNCH, DEAN/X{i}",16-April-26,1200,1300,1h,RT,B,'
+             f'"room set, catering"\n' for i in range(20)]
+    events = parse_csv(header + "".join(rows))
+    check("every row parsed", len(events), 101)
+    check("a comma inside double quotes stays in its field",
+          sum(1 for e in events if e["room"] == "147"), 20)
+    check("semicolon exports still read", len(parse_csv(
+        header.replace(",", ";")
+        + 'RT 142;"Lunch; dean";15-April-26;900;1000;1h;RT;A;x\n')), 1)
+
+
 def _one(comment: str) -> dict:
     csv_text = (
         "Room,Event/Course,Date,Start Time,End Time,Duration,Building,"
@@ -410,6 +438,7 @@ def main() -> int:
     test_cleanup()
     test_split_title()
     test_csv()
+    test_a_single_quoted_comment_does_not_change_the_quoting()
     test_is_report_csv()
     test_cancelled_spellings()
     test_a_mentioned_cancellation_does_not_drop_the_booking()

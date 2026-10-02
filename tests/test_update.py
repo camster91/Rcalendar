@@ -1035,11 +1035,20 @@ def test_signature() -> None:
     print("\ninstaller signature")
 
     pin = updater.SIGNING_THUMBPRINTS[0]
-    good = {"status": "UnknownError", "thumbprint": pin, "timestamped": True}
+    good = {"status": "UnknownError", "thumbprint": pin, "timestamped": True,
+            "trust": updater.CERT_E_UNTRUSTEDROOT}
     check("self-signed, pinned, timestamped: trusted",
           updater.judge_signature(good), None)
     check("a chain the machine trusts is fine too",
-          updater.judge_signature({**good, "status": "Valid"}), None)
+          updater.judge_signature(
+              {**good, "status": "Valid", "trust": updater.TRUST_OK}), None)
+    # UnknownError is PowerShell's name for every code it has no name for.
+    # A signer signature that does not verify (NTE_BAD_SIGNATURE) is one, and
+    # it must not pass on the strength of a thumbprint anyone can embed.
+    ok("UnknownError with a signature that does not verify is refused",
+       updater.judge_signature({**good, "trust": 0x80090006}))
+    ok("a missing trust verdict is refused",
+       updater.judge_signature({k: v for k, v in good.items() if k != "trust"}))
     check("the thumbprint's case does not matter",
           updater.judge_signature({**good, "thumbprint": pin.lower()}), None)
     ok("a tampered file is refused",
@@ -1055,6 +1064,27 @@ def test_signature() -> None:
     stray.write_bytes(b"MZ nobody signed this")
     ok("a real unsigned file, read by Windows, is refused",
        _REAL_VERIFY_SIGNATURE(stray))
+
+    # WinVerifyTrust itself, on Windows: the call has to reach the API and
+    # read the answers judge_signature depends on, or every update would be
+    # refused (or, worse, waved through) on the strength of a bad struct.
+    if sys.platform == "win32":
+        check("WinVerifyTrust reads an unsigned file as unsigned",
+              updater.win_verify_trust(stray), 0x800B0100)  # TRUST_E_NOSIGNATURE
+        signed = Path(sys.executable)
+        if updater.win_verify_trust(signed) == updater.TRUST_OK:
+            # A file Windows trusts, then the same bytes with one changed: the
+            # tamper has to come back as neither of the codes the gate accepts.
+            body = bytearray(signed.read_bytes())
+            body[len(body) // 3] ^= 0xFF
+            tampered = stray.with_name("tampered.exe")
+            tampered.write_bytes(bytes(body))
+            ok("a signed file with one byte changed does not verify",
+               updater.win_verify_trust(tampered)
+               not in (updater.TRUST_OK, updater.CERT_E_UNTRUSTEDROOT))
+        else:
+            print("  (skip) this Python is not Authenticode-signed; "
+                  "no tamper check")
 
     def broken(path):
         raise OSError("no PowerShell here")

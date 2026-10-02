@@ -619,6 +619,75 @@ def test_no_retry_storm() -> None:
               datetime(2026, 9, 21, 6, 0) + timedelta(hours=4)), True)
 
 
+def test_a_failed_daily_is_retried_by_the_heartbeat() -> None:
+    """A daily that failed is run again once the session answers.
+
+    The tick marks the day attempted before scraping (the retry-storm guard),
+    and the heartbeat only probed. So a laptop that woke at 09:00 before its
+    network did, or a startup probe that ran before Wi-Fi at Windows sign-in,
+    cost the whole day's refresh. And a failed startup probe left the
+    heartbeat unarmed for good, so nothing kept the session warm either.
+    """
+    print("\na failed daily is retried")
+    real_datetime = scheduler.datetime
+    real_probe = scheduler.session.probe
+    real_heartbeat = scheduler.session.heartbeat
+    scheduler.datetime = FrozenDatetime
+    alive = scheduler.session.SessionState("ok", session_id="1")
+    down = scheduler.session.SessionState("error", message="offline")
+    try:
+        # Startup with no network: the day is skipped, but the heartbeat is
+        # armed rather than left at None, where it would never fire.
+        orch = scheduler.Orchestrator()
+        scheduler.session.probe = lambda headless=True: down
+        orch._bootstrap_session()
+        ok("a failed startup probe arms the heartbeat",
+           orch._last_heartbeat is not None)
+        check("...and today's daily is not run straight away",
+              orch._due_for_daily(FrozenDatetime.fixed), False)
+
+        scrapes: list[str] = []
+
+        def stub_scrape(trigger: str = "manual", interactive: bool = False):
+            scrapes.append(trigger)
+            orch._daily_ok = FrozenDatetime.fixed.date()
+
+        orch._do_scrape = stub_scrape             # type: ignore[method-assign]
+
+        # Heartbeat with LSM still unreachable: no scrape.
+        scheduler.session.heartbeat = lambda: down
+        orch._do_heartbeat()
+        check("a heartbeat that cannot reach LSM does not scrape", scrapes, [])
+
+        # Heartbeat once it answers: the owed daily runs, once.
+        scheduler.session.heartbeat = lambda: alive
+        orch._do_heartbeat()
+        check("a heartbeat that finds the session runs the owed daily",
+              scrapes, ["schedule"])
+        orch._do_heartbeat()
+        check("...and only until it has succeeded", scrapes, ["schedule"])
+
+        # Before SCRAPE_TIME nothing is owed, so a heartbeat is just a ping.
+        early = scheduler.Orchestrator()
+        early._do_scrape = lambda **kw: scrapes.append("early")  # type: ignore[method-assign]
+        FrozenDatetime.fixed = datetime(2026, 9, 21, 5, 0)
+        early._do_heartbeat()
+        check("before the scrape time a heartbeat does not scrape",
+              scrapes, ["schedule"])
+
+        # A successful probe arms the heartbeat, so a sign-in or Check
+        # Session is enough to start the keep-alive.
+        fresh = scheduler.Orchestrator()
+        fresh._set_session(alive)
+        ok("a probe that finds the session arms the heartbeat",
+           fresh._last_heartbeat is not None)
+    finally:
+        FrozenDatetime.fixed = datetime(2026, 9, 21, 9, 0, 0)
+        scheduler.datetime = real_datetime
+        scheduler.session.probe = real_probe
+        scheduler.session.heartbeat = real_heartbeat
+
+
 def test_logout_reports_what_the_probe_found() -> None:
     """The logout command has to reach the session layer, and be reported honestly.
 
@@ -1297,6 +1366,7 @@ def main() -> int:
 
     test_window_guard()
     test_no_retry_storm()
+    test_a_failed_daily_is_retried_by_the_heartbeat()
     test_an_export_outside_the_window_is_refused()
     test_a_generate_that_produced_no_render_is_not_trusted()
     test_logout_reports_what_the_probe_found()

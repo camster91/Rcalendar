@@ -69,7 +69,7 @@ Edge's, where Edge is installed, or Playwright's Chromium's otherwise:
 |---|---|
 | First run | Click **Sign in to LSM**. A browser window opens; you sign in and approve Duo **once**. The session cookie lands in the profile. |
 | Every morning | The 6 AM scrape reuses that profile. Headless, no prompts. |
-| Every 4 hours | A heartbeat re-pings LSM so the Shibboleth idle-timeout doesn't lapse. |
+| Every 4 hours | A heartbeat re-pings LSM so the Shibboleth idle-timeout doesn't lapse. If that morning's scrape failed (no network yet, LSM down), the first heartbeat that finds the session alive runs it again. |
 | Session dies | The sidebar shows **Session expired** and a **Sign in to LSM** button appears. One click, one Duo tap. |
 | No access | The UTORid signed in but LSM will not show it the report: the app says **No access to LSM's report** and why, instead of asking for sign-in again. |
 
@@ -153,8 +153,10 @@ that fails changes nothing — the offer stands and the click downloads the old
 way). An amber banner appears in the toolbar and the sidebar offers
 **Install update**: the app checks the downloaded installer against the
 `sha256.txt` the release itself published, then checks its **Authenticode
-signature** is the project's own (signer thumbprint pinned in
-`app/config.py` `SIGNING_THUMBPRINTS`, timestamp present), and only then runs
+signature** is the project's own (Windows' `WinVerifyTrust` finds the
+signature intact, with at most an untrusted self-signed root to complain of;
+signer thumbprint pinned in `app/config.py` `SIGNING_THUMBPRINTS`; timestamp
+present), and only then runs
 it — a download that fails either check is never run. The checksum proves the
 file is what was published; the signature proves who published it. The
 installer runs **silently** — a progress bar, no wizard pages, your previous

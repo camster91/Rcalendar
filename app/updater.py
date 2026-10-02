@@ -376,7 +376,78 @@ def _signature_facts(path: Path) -> dict[str, Any]:
         capture_output=True, text=True, timeout=60, env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    return json.loads(out.stdout.strip() or "{}")
+    facts = json.loads(out.stdout.strip() or "{}")
+    facts["trust"] = win_verify_trust(path)
+    return facts
+
+
+# WinVerifyTrust's answers that judge_signature accepts. S_OK is a chain the
+# machine trusts. CERT_E_UNTRUSTEDROOT is the designed state of this app's
+# self-signed certificate: the signature verifies, and the only complaint is
+# that its root is in no trusted store. Get-AuthenticodeSignature folds that
+# answer into UnknownError together with every other code it has no name for
+# — a signer signature that does not verify among them — so the Status alone
+# cannot tell "self-signed" from "forged". This code can.
+TRUST_OK = 0
+CERT_E_UNTRUSTEDROOT = 0x800B0109
+
+
+def win_verify_trust(path: Path) -> int:
+    """WinVerifyTrust's Authenticode verdict on a file, as an unsigned HRESULT.
+
+    The generic-verify policy, no UI, no revocation check (a self-signed
+    certificate has no CRL to ask). Raises off Windows; verify_signature
+    reads that as a check that could not run, and refuses.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+    class WINTRUST_FILE_INFO(ctypes.Structure):
+        _fields_ = [("cbStruct", wintypes.DWORD),
+                    ("pcwszFilePath", wintypes.LPCWSTR),
+                    ("hFile", wintypes.HANDLE),
+                    ("pgKnownSubject", ctypes.POINTER(GUID))]
+
+    class WINTRUST_DATA(ctypes.Structure):
+        _fields_ = [("cbStruct", wintypes.DWORD),
+                    ("pPolicyCallbackData", ctypes.c_void_p),
+                    ("pSIPClientData", ctypes.c_void_p),
+                    ("dwUIChoice", wintypes.DWORD),
+                    ("fdwRevocationChecks", wintypes.DWORD),
+                    ("dwUnionChoice", wintypes.DWORD),
+                    ("pFile", ctypes.POINTER(WINTRUST_FILE_INFO)),
+                    ("dwStateAction", wintypes.DWORD),
+                    ("hWVTStateData", wintypes.HANDLE),
+                    ("pwszURLReference", wintypes.LPWSTR),
+                    ("dwProvFlags", wintypes.DWORD),
+                    ("dwUIContext", wintypes.DWORD),
+                    ("pSignatureSettings", ctypes.c_void_p)]
+
+    # WINTRUST_ACTION_GENERIC_VERIFY_V2 {00AAC56B-CD44-11d0-8CC2-00C04FC295EE}
+    action = GUID(0x00AAC56B, 0xCD44, 0x11D0,
+                  (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0,
+                                       0x4F, 0xC2, 0x95, 0xEE))
+    file_info = WINTRUST_FILE_INFO(ctypes.sizeof(WINTRUST_FILE_INFO),
+                                   str(path), None, None)
+    data = WINTRUST_DATA()
+    data.cbStruct = ctypes.sizeof(WINTRUST_DATA)
+    data.dwUIChoice = 2            # WTD_UI_NONE
+    data.fdwRevocationChecks = 0   # WTD_REVOKE_NONE
+    data.dwUnionChoice = 1         # WTD_CHOICE_FILE
+    data.pFile = ctypes.pointer(file_info)
+    data.dwStateAction = 0         # WTD_STATEACTION_IGNORE: nothing to close
+
+    wintrust = ctypes.WinDLL("wintrust")
+    wintrust.WinVerifyTrust.argtypes = [wintypes.HWND, ctypes.POINTER(GUID),
+                                        ctypes.POINTER(WINTRUST_DATA)]
+    wintrust.WinVerifyTrust.restype = wintypes.LONG
+    result = wintrust.WinVerifyTrust(None, ctypes.byref(action),
+                                     ctypes.byref(data))
+    return result & 0xFFFFFFFF
 
 
 def judge_signature(facts: dict[str, Any]) -> str | None:
@@ -389,11 +460,19 @@ def judge_signature(facts: dict[str, Any]) -> str | None:
     that the signature is intact (not HashMismatch, not NotSigned), that its
     signer is a pinned project certificate, and that it carries a timestamp
     (without one the signature dies with the certificate).
+
+    "Intact" is WinVerifyTrust's own code (facts["trust"]), not the Status:
+    UnknownError also covers a signer signature that does not verify, and a
+    forged blob that merely embeds the public pinned certificate and a copied
+    timestamp would show the right thumbprint and a timestamper all the same.
     """
     status = str(facts.get("status") or "")
     if status not in ("Valid", "UnknownError"):
         return (f"The downloaded installer's signature is {status or 'missing'}"
                 f" — it will not be run.")
+    if facts.get("trust") not in (TRUST_OK, CERT_E_UNTRUSTEDROOT):
+        return ("The downloaded installer's signature does not verify — "
+                "it will not be run.")
     thumb = str(facts.get("thumbprint") or "").upper()
     if thumb not in SIGNING_THUMBPRINTS:
         return ("The downloaded installer is not signed by this app's "

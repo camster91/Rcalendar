@@ -1763,6 +1763,60 @@ def test_week_view_owns_all_seven_of_its_days(browser, base: str) -> None:
         page.close()
 
 
+def test_week_view_bars_show_length_and_overlap(browser, base: str) -> None:
+    """A week bar is as long as its booking, and overlapping bars both show.
+
+    Each hour cell clipped its contents (overflow:hidden on a 56px cell), so a
+    09:00-12:00 class drew as 09:00-10:00. Every bar also spanned the full day
+    column, so bookings starting in the same hour sat exactly on top of each
+    other and only the last was visible. And a booking starting at 23:30 was
+    dropped: the last row is hour 23, and the filter compared 23.5 against it.
+    """
+    print("\nweek: bar length, overlap, and the last hour")
+    store.replace_events(
+        [
+            booking("142", D1, "09:00", "12:00", "Three hour class"),
+            booking("147", D1, "09:00", "10:00", "Same hour meeting"),
+            booking("157", D1, "23:30", "23:59", "Late night"),
+        ],
+        SOW, D2,
+    )
+    try:
+        page = open_page(browser, base, f"/?view=week&date={D1}")
+        try:
+            bars = page.evaluate(
+                """(d) => [...document.querySelectorAll(
+                     '.wkc[data-date="' + d + '"] .wkev')].map(b => {
+                     const r = b.getBoundingClientRect();
+                     return {t: b.textContent, top: r.top, left: r.left,
+                             right: r.right, height: r.height};
+                   })""", D1)
+            three = next((b for b in bars if "Three hour" in b["t"]), None)
+            same = next((b for b in bars if "Same hour" in b["t"]), None)
+            ok("week: the three-hour bar is drawn", three is not None)
+            ok("week: ...about three rows tall, not one",
+               three and three["height"] >= 56 * 3 - 4)
+            # The row is clipped no more: the bar's visible box (what the
+            # pointer can hit) reaches into the third hour.
+            ok("week: ...and its third hour is visible, not clipped",
+               three and page.evaluate(
+                   """([x, y, t]) => {
+                        const el = document.elementFromPoint(x, y);
+                        return !!el && el.textContent === t;
+                      }""",
+                   [three["left"] + 5, three["top"] + 56 * 2.5, three["t"]]))
+            ok("week: the same-hour booking is drawn too", same is not None)
+            ok("week: ...beside the other, not on top of it",
+               three and same and (same["left"] >= three["right"] - 1
+                                   or three["left"] >= same["right"] - 1))
+            ok("week: a booking starting at 23:30 is not dropped",
+               any("Late night" in b["t"] for b in bars))
+        finally:
+            page.close()
+    finally:
+        seeded()
+
+
 def test_week_view_is_reachable_by_keyboard(browser, base: str) -> None:
     """The week grid had no keyboard path at all.
 
@@ -3202,6 +3256,7 @@ TESTS = [
     test_a_hostile_title_is_not_code,
     test_code_prefix_is_parsed_out_of_titles,
     test_week_view_owns_all_seven_of_its_days,
+    test_week_view_bars_show_length_and_overlap,
     test_week_view_is_reachable_by_keyboard,
     test_preset_chips_are_real_buttons,
     test_nav_steps_the_view_you_are_looking_at,

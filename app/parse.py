@@ -109,6 +109,29 @@ def _pick(row: dict[str, str], field: str) -> str:
     return ""
 
 
+def _dialect(content: str) -> type[csv.Dialect]:
+    """The report's CSV dialect: its delimiter, and always double quotes.
+
+    Only the delimiter is guessed, and only from the header line. Letting
+    csv.Sniffer guess the quote character from the data let one comment
+    written as 'TBC' near the top make it pick a single quote — after which
+    every "208/LUNCH, DEAN/X"-style field split into the wrong columns, those
+    rows were skipped, and the export still read as complete, so the reconcile
+    deleted real bookings and logged them as cancelled. APEX quotes with ".
+    """
+    first = content.splitlines()[0] if content.strip() else ""
+    try:
+        delimiter = csv.Sniffer().sniff(first, delimiters=",;\t").delimiter
+    except csv.Error:
+        delimiter = ","
+
+    class Report(csv.excel):
+        pass
+
+    Report.delimiter = delimiter
+    return Report
+
+
 def is_report_csv(content: str) -> bool:
     """
     Whether a download is the report's CSV at all, judged by its header.
@@ -122,11 +145,7 @@ def is_report_csv(content: str) -> bool:
     content = content.lstrip("﻿").lstrip("\r\n")
     first = content.splitlines()[0] if content.strip() else ""
     try:
-        dialect = csv.Sniffer().sniff(first, delimiters=",;\t")
-    except csv.Error:
-        dialect = csv.excel
-    try:
-        header = next(csv.reader([first], dialect=dialect))
+        header = next(csv.reader([first], dialect=_dialect(first)))
     except (csv.Error, StopIteration):
         return False
     names = {h.strip().lower() for h in header}
@@ -144,12 +163,7 @@ def parse_csv(content: str) -> list[dict[str, Any]]:
     # APEX sometimes prefixes the download with a BOM or a blank line.
     content = content.lstrip("﻿").lstrip("\r\n")
 
-    try:
-        dialect = csv.Sniffer().sniff(content[:4096], delimiters=",;\t")
-    except csv.Error:
-        dialect = csv.excel
-
-    reader = csv.DictReader(io.StringIO(content), dialect=dialect)
+    reader = csv.DictReader(io.StringIO(content), dialect=_dialect(content))
     events: list[dict[str, Any]] = []
     skipped = 0
 
