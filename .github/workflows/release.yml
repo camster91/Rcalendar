@@ -56,10 +56,23 @@
 # the release step for the missing Setup exe -- so an Inno Setup upgrade on
 # the runner that changes the install path cannot publish a release with no
 # artifact in it.
+#
+# unsigned_test: the one way this workflow is useful today. It builds and
+# self-tests the installer WITHOUT signing (build.ps1 -Unsigned) and posts
+# it as a PRE-RELEASE on this private repo, tagged v<APP_VERSION>-test.<run>.
+# Nothing installed can pick it up: the updater reads only the public
+# mirror's latest full release (app/config.py UPDATES_REPO, /releases/latest
+# skips pre-releases), and a pre-release tag is not a version parse_version
+# accepts. It is for installing by hand to test, never for handing out.
 name: release
 
 on:
   workflow_dispatch:
+    inputs:
+      unsigned_test:
+        description: "Unsigned TEST build, posted as a pre-release (not a real release)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -103,6 +116,7 @@ jobs:
       # expression is pasted into the PowerShell text before it runs, so a
       # ref name containing a quote would be run as code.
       - name: The tag must name the version being built
+        if: ${{ !inputs.unsigned_test }}
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -141,7 +155,12 @@ jobs:
         run: .venv\Scripts\python.exe tests\test_web.py
 
       - name: Build the bundle and the installer
+        if: ${{ !inputs.unsigned_test }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build.ps1
+
+      - name: Build the bundle and the installer (UNSIGNED test build)
+        if: ${{ inputs.unsigned_test }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging/build.ps1 -Unsigned
 
       # The selftest half of verify-build.ps1, minus the dwell and the
       # FileSystemWatcher: those watch for a managed machine deleting the
@@ -191,8 +210,40 @@ jobs:
       # Pinned to a commit, not the movable v2 tag: this step holds a
       # contents: write token, and a tag can be repointed at other code.
       - name: Publish the release
+        if: ${{ !inputs.unsigned_test }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          files: |
+            dist\RotmanLSMCalendar-Setup-*.exe
+            dist\sha256.txt
+          body_path: release_body.md
+          fail_on_unmatched_files: true
+
+      # A pre-release, named and tagged as a test, on the commit this run
+      # built. The body says what it is before anything else does.
+      - name: Test pre-release notes
+        if: ${{ inputs.unsigned_test }}
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          $app = (& .venv\Scripts\python.exe -c "import app.config as c; print(c.APP_VERSION)").Trim()
+          "TAG=v$app-test.$env:RUN_NUMBER" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TITLE=v$app test build $env:RUN_NUMBER (UNSIGNED - for testing only)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $warn = "> **UNSIGNED TEST BUILD - not a release.** Built by CI without the`n" +
+                  "> code-signing certificate, for installing by hand to test. Do not hand`n" +
+                  "> it out: the app does not offer it as an update, and the real v$app`n" +
+                  "> release is the signed one made with packaging/release-local.ps1.`n`n"
+          Set-Content "release_body.md" -Value ($warn + (Get-Content "release_body.md" -Raw)) -NoNewline -Encoding utf8
+
+      - name: Publish the test pre-release
+        if: ${{ inputs.unsigned_test }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TITLE }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
           files: |
             dist\RotmanLSMCalendar-Setup-*.exe
             dist\sha256.txt
