@@ -3550,6 +3550,209 @@ def test_quick_filters_drive_the_free_drawer(browser, base: str) -> None:
         seeded_groups()
 
 
+def test_a_failed_free_check_is_no_opinion(browser, base: str) -> None:
+    """loadFreeRooms parsed whatever came back, error bodies included.
+
+    An error answer of {} has no .days, so FREE_DAYS became an *empty* map
+    rather than null, freeOn() was false for every booking, and the calendar
+    went blank under "0 of N rooms free" -- the exact answer its own catch
+    says a failure must never give.
+    """
+    page = open_page(browser, base, f"/?view=today&date={D}")
+    try:
+        unfiltered = events_shown(page)
+    finally:
+        page.close()
+
+    page = browser.new_page()
+    page.set_default_timeout(PAGE_TIMEOUT_MS)
+    page.route("**/*", _guard)
+    page.route(lambda url: "/api/today?dates=" in url,
+               lambda route: route.fulfill(
+                   status=500, content_type="application/json", body="{}"))
+    page.goto(base + f"/?view=today&date={D}&free=10:30&mins=60",
+              wait_until="load")
+    try:
+        page.wait_for_function(
+            "() => /\\d+ events/.test("
+            "document.getElementById('evcnt').textContent)")
+        wait_for_free(page)
+        ok("free-at: a failed check says so",
+           "Could not check" in page.inner_text("#freeNote"))
+        check("free-at: ...and filters nothing out",
+              events_shown(page), unfiltered)
+    finally:
+        page.close()
+
+
+def test_the_copy_button_works_from_the_keyboard(browser, base: str) -> None:
+    """The card's copy control was a span: no tab stop, no name, and opacity 0
+    until a mouse hovered the card. A keyboard could not find it, let alone
+    press it. Asserted by focusing it and pressing Enter, on both pages.
+    """
+    for path in (f"/?view=today&date={D}", "/list"):
+        page = open_page(browser, base, path)
+        try:
+            page.evaluate("() => { window.__copied = null; }")
+            b = page.eval_on_selector(
+                ".evcard .ecopy",
+                "el => ({ tag: el.tagName, type: el.type,"
+                " label: el.getAttribute('aria-label') || '',"
+                " tabbable: el.tabIndex >= 0,"
+                " border: getComputedStyle(el).borderTopWidth })")
+            ok(f"{path}: the copy control is a real button",
+               b["tag"] == "BUTTON" and b["type"] == "button")
+            ok(f"{path}: ...that a keyboard can land on", b["tabbable"])
+            ok(f"{path}: ...and it has a name", bool(b["label"]))
+            check(f"{path}: ...without the browser's button border",
+                  b["border"], "0px")
+
+            page.focus(".evcard .ecopy")
+            # Past the .15s opacity transition, so the reading is the end state.
+            page.wait_for_timeout(300)
+            check(f"{path}: focus shows the copy control",
+                  page.eval_on_selector(
+                      ".evcard .ecopy", "el => getComputedStyle(el).opacity"),
+                  "1")
+            page.keyboard.press("Enter")
+            page.wait_for_function("() => !!window.__copied")
+            ok(f"{path}: Enter copies the booking",
+               "Room" in (page.evaluate("() => window.__copied") or ""))
+        finally:
+            page.close()
+
+
+def test_the_changes_view_follows_a_scrape(browser, base: str) -> None:
+    """refreshEvents reloaded the bookings and kept the Changes memo.
+
+    So with the Changes view open, a scrape that landed behind it repainted
+    the cached feed under the same key -- the new addition never appeared
+    until a filter changed or the page was reloaded.
+    """
+    page = open_page(browser, base, "/?view=changes&date=2026-04-15")
+    try:
+        page.wait_for_selector("#chgList .chg")
+        ok("changes: the new booking is not there yet",
+           "Late scrape arrival" not in page.inner_text("#chgList"))
+        store.replace_events(
+            [booking("142", D, "09:00", "12:00", "RSM 6307"),
+             booking("147", D, "14:00", "16:00", "CIBC Info Session"),
+             booking("157", D1, "10:00", "11:00", "Standup"),
+             booking("142", D1, "09:00", "17:00", "Full day workshop"),
+             booking("147", D1, "00:00", "23:00", "RENOVATIONS", all_day=True),
+             booking("127", SOW, "09:00", "12:00", "Sunday morning session"),
+             booking("127", NEXT_SOW, "00:00", "23:00", "Sunday service block",
+                     all_day=True),
+             booking("Auditorium", D2, "09:00", "12:00", HOSTILE),
+             booking("157", D, "18:00", "19:00", "Late scrape arrival")],
+            SOW, D2)
+        page.evaluate("async () => { await refreshEvents(); }")
+        page.wait_for_function(
+            "() => (document.getElementById('chgList') || {textContent: ''})"
+            ".textContent.includes('Late scrape arrival')")
+        ok("changes: a scrape that lands shows up in the open feed", True)
+    finally:
+        page.close()
+        seeded()
+
+
+# Delays only the autocomplete answer for the one-character term, so the
+# answer for the longer term arrives first -- the order a slow server gives.
+SLOW_FIRST_SUGGEST = """() => {
+  const real = window.fetch;
+  window.fetch = (u, o) => {
+    const p = real(u, o);
+    return /autocomplete\\?q=1$/.test(String(u))
+      ? p.then(r => new Promise(res => setTimeout(() => res(r), 700))) : p;
+  };
+}"""
+
+FAILED_SUGGEST = """() => {
+  const real = window.fetch;
+  window.fetch = (u, o) => /autocomplete/.test(String(u))
+    ? Promise.resolve(new Response('{}', {status: 500})) : real(u, o);
+}"""
+
+
+def test_suggestions_show_the_latest_answer_and_survive_an_error(browser, base: str) -> None:
+    """The autocomplete fetch had no r.ok check, no catch and no ordering.
+
+    An error body ({} has no .groups) threw inside showDrop as an unhandled
+    rejection, and a slow answer for "1" landing after the one for "14"
+    replaced the newer list with suggestions for a term no longer typed.
+    """
+    for path, box in (("/", "#q"), ("/list", "#search")):
+        page = open_page(browser, base, path)
+        try:
+            page.evaluate(SLOW_FIRST_SUGGEST)
+            page.click(box)
+            page.fill(box, "1")
+            page.wait_for_timeout(300)   # past the 200ms debounce: "1" is in flight
+            page.fill(box, "14")
+            page.wait_for_selector("#sdrop.show .sdrop-item")
+            page.wait_for_timeout(900)   # and the slow "1" answer has landed
+            items = page.eval_on_selector_all(
+                "#sdrop .sdrop-item", "els => els.map(e => e.textContent)")
+            ok(f"{path}: suggestions are still for the latest term",
+               bool(items) and all("14" in t for t in items))
+        finally:
+            page.close()
+
+        page = open_page(browser, base, path)
+        errors: list = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        try:
+            page.evaluate(FAILED_SUGGEST)
+            page.click(box)
+            page.fill(box, "14")
+            page.wait_for_timeout(600)
+            check(f"{path}: a failed suggestion fetch throws nothing",
+                  [e.encode("ascii", "replace").decode() for e in errors], [])
+            ok(f"{path}: ...and leaves no list open",
+               "show" not in (page.get_attribute("#sdrop", "class") or ""))
+        finally:
+            page.close()
+
+
+def test_list_pages_merged_bookings(browser, base: str) -> None:
+    """list.html paged raw rows and merged each page afterwards.
+
+    One class held in three rooms is three rows, so it could be split across
+    two pages as two cards, each naming some of its rooms; and the day
+    heading counted only the cards on the current page.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        page.evaluate(f"""() => {{
+            const b = (room, s, e, title) => ({{room, title, description: '',
+              start: '{D}T' + s + ':00', end: '{D}T' + e + ':00', date: '{D}'}});
+            EVENTS = [b('142', '08:00', '08:30', 'Early'),
+                      b('142', '09:00', '10:00', 'Shared class'),
+                      b('147', '09:00', '10:00', 'Shared class'),
+                      b('157', '09:00', '10:00', 'Shared class'),
+                      b('147', '15:00', '16:00', 'Late')];
+            sortKey = 'time'; PER = 2; page = 0; render();
+        }}""")
+        cards = page.eval_on_selector_all(
+            ".evcard", "els => els.map(e => e.textContent)")
+        check("list: a page holds PER merged cards", len(cards), 2)
+        shared = [c for c in cards if "Shared class" in c]
+        ok("list: the shared class is one card naming all three rooms",
+           len(shared) == 1 and all(r in shared[0] for r in ("142", "147", "157")))
+        check("list: the day heading counts the whole day",
+              page.inner_text(".daysep .dc"), "3 events")
+
+        page.evaluate("() => { page = 1; render(); }")
+        cards = page.eval_on_selector_all(
+            ".evcard", "els => els.map(e => e.textContent)")
+        ok("list: the next page carries on after it",
+           len(cards) == 1 and "Late" in cards[0])
+        check("list: ...under the same day count",
+              page.inner_text(".daysep .dc"), "3 events")
+    finally:
+        page.close()
+
+
 TESTS = [
     test_shared_helpers_are_served,
     test_today_nav_keeps_url_current,
@@ -3611,6 +3814,11 @@ TESTS = [
     test_returning_to_changes_rebuilds_the_panel,
     test_free_now_is_grouped_timestamped_and_filters_in_place,
     test_quick_filters_drive_the_free_drawer,
+    test_a_failed_free_check_is_no_opinion,
+    test_the_copy_button_works_from_the_keyboard,
+    test_the_changes_view_follows_a_scrape,
+    test_suggestions_show_the_latest_answer_and_survive_an_error,
+    test_list_pages_merged_bookings,
 ]
 
 
