@@ -147,7 +147,11 @@ class Tray:
         true at launch ("Checking session…") for the life of the process.
         Rebuilt only when the text changes, which keeps the rebuild rare.
         """
-        shown = self._label()
+        try:
+            shown = self._label()
+        except Exception:
+            log.exception("tray status refresh failed — it stops here")
+            return
         while not self._closed.wait(every):
             try:
                 label = self._label()
