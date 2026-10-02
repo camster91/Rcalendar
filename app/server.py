@@ -368,7 +368,7 @@ def create_app(orchestrator: Any, *, access_key: str | None = None,
                 lo = min(date.fromisoformat(d) for d in days)
                 hi = max(date.fromisoformat(d) for d in days)
                 batch_events = store.get_events(
-                    date_from=lo.strftime("%Y-%m-%d"),
+                    date_from=(lo - timedelta(days=1)).strftime("%Y-%m-%d"),
                     date_to=(hi + timedelta(days=1)).strftime("%Y-%m-%d"))
             except ValueError:
                 batch_events = store.get_events()
@@ -378,11 +378,16 @@ def create_app(orchestrator: Any, *, access_key: str | None = None,
         # endpoint is polled every 60 seconds, and the table is a rolling
         # year — the full read spent a minute's worth of row objects to
         # answer a question about one or two days.
-        rows = store.get_events(date_from=day_iso, date_to=end_day)
+        # The read starts a day early: a booking stored under yesterday can run
+        # past midnight (parse rolls an 18:00-24:00 end into the next day), and
+        # "free now" at 00:30 must see it. Yesterday's other rows end before
+        # today starts, so the predicate passes over them.
+        prev_day = (when - timedelta(days=1)).strftime("%Y-%m-%d")
+        rows = store.get_events(date_from=prev_day, date_to=end_day)
         events = [e for e in rows if e.get("date") == day_iso]
-        # The window's rows are the same read: the day's own plus the next
-        # day's when the window reaches into it, exactly the span read.
-        window_events = (events if end_day == day_iso else rows)
+        # The window's rows are the same read: yesterday's, the day's own, and
+        # the next day's when the window reaches into it.
+        window_events = rows
 
         # Seed every known room, not just the ones with a booking that day.
         # Building this map from the day's bookings alone meant a room with a
@@ -718,11 +723,16 @@ def _availability_by_day(
     # the next when it runs past midnight. Same reason as the single-day form:
     # the rows were bucketed by the day the question opened on, so an 00:30
     # booking was invisible to "free from 23:00 for 180 min".
+    # And the day before: a booking can now run past midnight (parse rolls an
+    # 18:00-24:00 end into the next day), and it is stored under the day it
+    # started, so "free at 00:30" has to see last night's rows too.
     spans: dict[str, list[str]] = {}
     for d in days:
-        end = datetime.fromisoformat(f"{d}T{clock}:00") + timedelta(minutes=minutes)
-        spans[d] = [d] if end.strftime("%Y-%m-%d") == d else [
-            d, end.strftime("%Y-%m-%d")
+        start = datetime.fromisoformat(f"{d}T{clock}:00")
+        end = start + timedelta(minutes=minutes)
+        prev = (start - timedelta(days=1)).strftime("%Y-%m-%d")
+        spans[d] = [prev, d] if end.strftime("%Y-%m-%d") == d else [
+            prev, d, end.strftime("%Y-%m-%d")
         ]
     # Read once for every date any of the spans needs, rather than per day.
     rows_on: dict[str, list[dict[str, Any]]] = {

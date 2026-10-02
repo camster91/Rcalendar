@@ -412,6 +412,41 @@ def test_a_window_that_crosses_midnight() -> None:
           set(batch["days"][NEXT]["free"]), {"142", "147", "200", "368"})
 
 
+def test_last_nights_booking_still_holds_its_room() -> None:
+    """A booking that ran past midnight keeps its room busy after midnight.
+
+    parse now rolls an 18:00-24:00 (or 22:00-01:00) end into the next day,
+    and the row is stored under the day it started. /api/today read only the
+    asked-about day onward, so "free now" at 00:30 never saw last night's
+    booking and called its room free while it was still in use.
+    """
+    print("\n/api/today — last night's booking, after midnight")
+    late, morning = "2026-10-20", "2026-10-21"
+    # Its own window, so the shared seed above is left alone.
+    store.replace_events([
+        booking(iso(late, "22:00"), iso(morning, "01:00"), room="142",
+                title="Late Gala"),
+    ], late, morning, run_id=902, trigger="manual")
+    client = create_app(StubOrch()).test_client()
+
+    def free_rooms(payload: dict) -> set:
+        return {r["room"] for r in payload["rooms"] if r["status"] == "free"}
+
+    check("the room is busy at 00:30 the next morning",
+          "142" in free_rooms(client.get(
+              f"/api/today?date={morning}&at=00:30").get_json()), False)
+    check("...and free once the booking has ended",
+          "142" in free_rooms(client.get(
+              f"/api/today?date={morning}&at=01:30").get_json()), True)
+    check("the batch form agrees",
+          "142" in client.get(
+              f"/api/today?dates={morning}&at=00:30").get_json()
+          ["days"][morning]["free"], False)
+    check("the morning's own count does not take in last night's booking",
+          client.get(f"/api/today?date={morning}&at=00:30").get_json()
+          ["total_bookings"], 0)
+
+
 # ── 2.8 the feed ─────────────────────────────────────────────────────────
 
 def test_changes_filters() -> None:
@@ -703,6 +738,9 @@ def main() -> int:
     test_a_window_that_crosses_midnight()
     test_changes_filters()
     test_search_wildcards_are_literal()
+    # After the wildcard test, which counts every stored row: this one adds
+    # a row of its own in a window of its own.
+    test_last_nights_booking_still_holds_its_room()
     test_groups()
     test_presets()
     test_next_rooms_is_one_rule_for_both_pages()
