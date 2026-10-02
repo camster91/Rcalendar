@@ -1027,7 +1027,7 @@ def save_preset(name: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
         key = name.casefold()
         presets = [p for p in load_presets() if p["name"].casefold() != key]
         presets.append({"name": name, "filters": filters})
-        # Oldest first, so the newest arrival is the one dropped at the cap.
+        # Oldest first, so the oldest preset is the one dropped at the cap.
         presets = presets[-PRESET_LIMIT:]
         set_kv(PRESETS_KEY, presets)
         return presets
