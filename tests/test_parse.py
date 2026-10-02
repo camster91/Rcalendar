@@ -119,6 +119,68 @@ def test_times() -> None:
     check("invalid hour rejected", parse_rotman_time("2599", "", ref)[0], None)
 
 
+def test_past_midnight() -> None:
+    """An end at or after midnight is the next day, not a one-hour booking.
+
+    "0000" is under 600 and was dropped as a slot index, "2400" failed the
+    hour check, and "0100" came out before the start — every one fell back to
+    the default hour, so an 18:00-24:00 gala was stored as 18:00-19:00.
+    """
+    print("\nends past midnight")
+    ref = datetime(2026, 4, 15)
+    midnight = datetime(2026, 4, 16, 0, 0)
+    for raw in ("0000", "2400", "0"):
+        s, e = parse_rotman_time("1800", raw, ref)
+        check(f"18:00-{raw} keeps its start", s, datetime(2026, 4, 15, 18, 0))
+        check(f"18:00-{raw} ends at the next midnight", e, midnight)
+
+    s, e = parse_rotman_time("2200", "0100", ref)
+    check("a padded early end is the next morning", e,
+          datetime(2026, 4, 16, 1, 0))
+    s, e = parse_rotman_time("2200", "700", ref)
+    check("a real end before the start rolls to the next day", e,
+          datetime(2026, 4, 16, 7, 0))
+
+    # The slot-index rule is untouched: an unpadded small end is a period
+    # number, and on a slot-index row nothing is read as midnight.
+    s, e = parse_rotman_time("2200", "100", ref)
+    check("an unpadded small end is still a slot index -> default length", e,
+          datetime(2026, 4, 15, 23, 0))
+    s, e = parse_rotman_time("500", "0", ref)
+    check("a slot-index start with a zero end stays timeless", (s, e),
+          (None, None))
+    s, e = parse_rotman_time("0", "2300", ref)
+    check("the service block's 0 start is still a slot index", s, None)
+
+    # The all-day test is a span now; midnight-to-midnight must count.
+    events = parse_csv(
+        "Room,Event/Course,Date,Start Time,End Time,Comment\n"
+        "RT 142,Gala,15-April-26,1800,2400,\n"
+        "RT 157,Block,15-April-26,12:00 AM,2400,\n"
+    )
+    check("the gala ends at midnight", events[0]["end"], "2026-04-16T00:00:00")
+    check("...and is not all-day", events[0]["all_day"], False)
+    check("a 00:00-24:00 block is all-day", events[1]["all_day"], True)
+
+
+def test_comment_window_shape() -> None:
+    """A number pair in a comment is a window only if it is shaped like one."""
+    print("\ncomment windows must look like times")
+    ref = datetime(2026, 4, 15)
+    for comment in ("MBA 2026-2027 cohort", "Rooms 2030-2050",
+                    "1200-1100 reversed", "0700-2330 too long",
+                    "0903-1207 odd minutes"):
+        check(f"refused: {comment!r}",
+              parse_rotman_time("500", "501", ref, comment=comment), (None, None))
+    for comment, want in (("0900-1200", (9, 0, 12, 0)),
+                          ("1300-1559 lab", (13, 0, 15, 59)),
+                          ("1810-2050", (18, 10, 20, 50))):
+        check(f"accepted: {comment!r}",
+              parse_rotman_time("500", "501", ref, comment=comment),
+              (datetime(2026, 4, 15, want[0], want[1]),
+               datetime(2026, 4, 15, want[2], want[3])))
+
+
 def test_twelve_hour_clock() -> None:
     """A 12-hour string carries half its meaning in letters.
 
@@ -433,6 +495,8 @@ def main() -> int:
 
     test_dates()
     test_times()
+    test_past_midnight()
+    test_comment_window_shape()
     test_twelve_hour_clock()
     test_rooms()
     test_cleanup()

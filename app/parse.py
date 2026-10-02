@@ -92,6 +92,18 @@ _TIME_RANGE_RE = re.compile(r"\b(\d{3,4})\s*[-–—]\s*(\d{3,4})\b")
 # booking all-day, which is visible and corrects on the next scrape,
 # where a plausible wrong window sits looking right indefinitely.
 _BOOKING_HOUR_FLOOR = 6
+# The floor alone still lets numbers that are not times through: "MBA
+# 2026-2027 cohort" reads as 20:26-20:27, "Rooms 2030-2050" as 20:30-20:50.
+# A recovered window also has to look like one a timetable would write: it
+# starts on a five-minute mark, ends on one (or a minute short, the
+# "1200-1259" shape the report uses), and runs at least half an hour and at
+# most a long day. A year range or a list of room numbers fails one of
+# those; a real "0900-1200" passes all of them.
+_MIN_RECOVERED_SPAN = timedelta(minutes=30)
+# The longest booking a time pair is trusted to describe, recovered from a
+# comment or rolled past midnight. Past this a reversed pair is more likely
+# mis-keyed than overnight, and keeps the default length it always had.
+_MAX_SPAN = timedelta(hours=16)
 # Longest alternative first — otherwise "ROTMAN" matches as "RT" and
 # leaves "MAN L1060" behind.
 _ROOM_PREFIX_RE = re.compile(r"^(?:ROTMAN|ROT|RT)\s*[- ]?\s*", re.IGNORECASE)
@@ -209,11 +221,13 @@ def _row_to_event(row: dict[str, str]) -> dict[str, Any] | None:
     # day. The second case is the 003/RENOVATIONS and 003/AV UPGRADES service
     # blocks, which arrive as 00:00-23:00: without this they rendered as
     # "12:00 a.m. -> 11:00 p.m." and sat at the top of every month cell.
+    # Measured as a span, not as end.hour: an end at midnight is now the next
+    # day's 00:00, and a 00:00-24:00 block is the most all-day of all.
     all_day = start is None or (
         start.hour == 0
         and start.minute == 0
         and end is not None
-        and end.hour >= 23
+        and end - start >= timedelta(hours=23)
     )
 
     return {
@@ -275,11 +289,22 @@ def parse_rotman_time(
     start_is_slot = _is_slot_index(start_raw)
     end_is_slot = _is_slot_index(end_raw)
 
+    # An end past midnight, read before the slot rule can throw it away: "0"
+    # is under 600 and "2400" is not a clock hour, so an 18:00-24:00 gala
+    # used to be stored as 18:00-19:00. Only behind a real clock start — on a
+    # slot-index row the end is a period number like any other.
+    if start is not None and not start_is_slot:
+        late = _past_midnight(end_raw, ref)
+        if late is not None and (late.hour == 0 and late.minute == 0
+                                 or late - start <= _MAX_SPAN):
+            end, end_is_slot = late, False
+
     recovered = False
     if start_is_slot:
         # Recover the real window from the comment if it is there — but only
-        # when both ends read as times inside the bookable day. Anything
-        # else is prose the regex happened to match, and the booking stays
+        # when both ends read as times inside the bookable day and the pair
+        # has a timetable's shape (see _MIN_RECOVERED_SPAN). Anything else
+        # is prose the regex happened to match, and the booking stays
         # all-day rather than taking a window out of it.
         m = _TIME_RANGE_RE.search(comment or "")
         if m:
@@ -287,7 +312,10 @@ def parse_rotman_time(
             end = _hhmm(m.group(2), ref)
             if (start is not None and end is not None
                     and start.hour >= _BOOKING_HOUR_FLOOR
-                    and end.hour >= _BOOKING_HOUR_FLOOR):
+                    and end.hour >= _BOOKING_HOUR_FLOOR
+                    and _MIN_RECOVERED_SPAN <= end - start <= _MAX_SPAN
+                    and start.minute % 5 == 0
+                    and end.minute % 5 in (0, 4)):
                 recovered = True
             else:
                 start = end = None
@@ -301,11 +329,39 @@ def parse_rotman_time(
 
     if start and end is None:
         end = start + timedelta(minutes=DEFAULT_DURATION_MINUTES)
+    if (start and end and end < start
+            and end + timedelta(days=1) - start <= _MAX_SPAN):
+        # A real end earlier than the start is the next morning: 22:00-07:00.
+        end += timedelta(days=1)
     if start and end and end <= start:
-        # Overnight or mis-ordered — treat as a default-length booking.
+        # Mis-ordered (or longer than _MAX_SPAN once rolled) — treat as a
+        # default-length booking.
         end = start + timedelta(minutes=DEFAULT_DURATION_MINUTES)
 
     return start, end
+
+
+def _past_midnight(raw: str, ref: datetime) -> datetime | None:
+    """An end time that falls on the day after `ref`, or None.
+
+    Midnight is unambiguous however it is spelled — "0", "0000", "2400" — and
+    is the next day's 00:00. Any other early hour is only read as a time when
+    it is written as one, zero-padded to four digits ("0100"): the report's
+    own numbers are unpadded ("645"), so a bare "100" is still the slot index
+    the module docstring describes and is left to that rule.
+    """
+    s = (raw or "").strip()
+    if not re.fullmatch(r"\d{1,4}", s):
+        return None
+    val = int(s)
+    next_day = datetime(ref.year, ref.month, ref.day) + timedelta(days=1)
+    if val in (0, 2400):
+        return next_day
+    if len(s) == 4 and s[0] == "0" and val < 600:
+        hours, minutes = divmod(val, 100)
+        if minutes <= 59:
+            return next_day.replace(hour=hours, minute=minutes)
+    return None
 
 
 def _is_slot_index(raw: str) -> bool:

@@ -197,7 +197,9 @@ def replace_events(
     adds at all.
 
     `record_changes=False` is the backfill path: a first observation is not a
-    change, and a year of them would bury the real feed.
+    change, and a year of them would bury the real feed. The same holds at
+    the front of the window: a booking dated after the previous successful
+    scrape's `date_to` is stored but not logged as added (see _covered_to).
 
     `complete=False` says the caller could not establish that what it read was
     the *whole* report. The absence of a booking is then no evidence that the
@@ -273,6 +275,18 @@ def replace_events(
         added = [u for u in seen if u not in before] if have_window else []
         removed = [u for u in before if u not in seen] if have_window else []
 
+        # A booking past the reach of the last good scrape was never looked
+        # for, so finding it is a first observation, not an addition — the
+        # backfill's reason for record_changes=False, met at the front of the
+        # window instead. Without this, every month the window moved forward
+        # logged the whole new month (~2,000 rows on the 1st) as "added".
+        # Stored all the same; only the feed row is withheld.
+        covered_to = _covered_to(conn, run_id) if added else None
+        if covered_to:
+            # An undated row ("" sorts first) is kept, as it always was.
+            added = [u for u in added
+                     if (by_uid[u].get("start") or "")[:10] <= covered_to]
+
         # An empty report for a window that currently holds bookings is far
         # more likely to be a failed render than a genuine mass cancellation.
         # Acting on it would empty the window and log a removal burst that
@@ -335,6 +349,23 @@ def replace_events(
     log.info("stored %d events (%s → %s) +%d -%d",
              len(rows), date_from, date_to, len(added), len(removed))
     return len(rows)
+
+
+def _covered_to(conn: sqlite3.Connection, run_id: int | None) -> str | None:
+    """The last day (ISO) the previous successful scrape covered, or None.
+
+    None — no earlier scrape on record, or one with no readable window — keeps
+    the old behaviour, where everything the window did not hold is an add.
+    Backfills are left out: they reach backwards, never past the front.
+    """
+    row = conn.execute(
+        "SELECT date_to FROM scrape_runs "
+        "WHERE status IN ('ok', 'empty') AND date_to IS NOT NULL "
+        "AND (trigger IS NULL OR trigger != 'backfill') AND id IS NOT ? "
+        "ORDER BY id DESC LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    return _to_iso_date(row["date_to"]) if row else None
 
 
 def _change_rows(

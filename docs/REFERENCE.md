@@ -448,7 +448,10 @@ carries no booking id, so a booking whose *time* is edited is reported
 honestly as one removal plus one addition rather than guessed at as a
 "move". Backfilled history is deliberately **not** logged as changes: a
 first observation is not a change, and 24,000 of them would bury the real
-feed.
+feed. The same goes for the front of the daily window: when it moves forward
+a month, the bookings in the newly visible month are stored but not logged as
+added — only bookings dated within the previous successful scrape's reach
+(its `date_to`) can be additions. Removals are unaffected.
 
 The retention margin is not decoration. A backfill window starts on the 1st
 of the month a year back, and today can be the 31st, so the oldest row a
@@ -689,7 +692,13 @@ the cursor.
   show as all-day rather than a wrong hour. Guessing would be worse. The
   same rule covers a 12-hour time: `2:00 PM` is read as 14:00 rather than
   as the `2` the digits spell, and a contradictory `13:00 PM` is dropped
-  rather than resolved one way or the other.
+  rather than resolved one way or the other. A window recovered from the
+  comment has to look like one — on five-minute marks, 30 minutes to 16
+  hours long — so "MBA 2026-2027" is not read as 20:26-20:27.
+- An end at midnight (`0`, `0000`, `2400`) or a zero-padded early hour
+  (`0100`) after a real start time is the **next day**, and a real end
+  earlier than the start rolls over too (22:00-07:00) when that gives at
+  most 16 hours. Such a booking's `end` is on the day after its `date`.
 - **A booking's identity is the change feed's pairing key** (title, room,
   start *and* end). The `end` matters: two blocks can share a name and a
   start, and without the end the feed would pair them and report the
