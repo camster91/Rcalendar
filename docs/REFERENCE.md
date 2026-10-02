@@ -158,7 +158,12 @@ signature intact, with at most an untrusted self-signed root to complain of;
 signer thumbprint pinned in `app/config.py` `SIGNING_THUMBPRINTS`; timestamp
 present), and only then runs
 it — a download that fails either check is never run. The checksum proves the
-file is what was published; the signature proves who published it. The
+file is what was published; the signature proves who published it. Neither
+says *which version* it is, so that is checked too: the release's installer
+must be named `RotmanLSMCalendar-Setup-<tag's version>.exe`, and the version
+written inside the signed installer must be that same version — a new tag
+carrying a genuine older installer is refused, never installed as a
+downgrade. The
 installer runs **silently** — a progress bar, no wizard pages, your previous
 shortcut/autostart choices kept — and starts the app again when it is done;
 your data folder is untouched throughout. *Skip this
@@ -181,8 +186,10 @@ with one honest sentence rather than pretending to work.
 
 The token travels as an `Authorization: Bearer` header on requests to
 `api.github.com` **only**. The installer download goes through the API's asset
-endpoint rather than the browser-facing redirect precisely so the header
-never has to survive one.
+endpoint, which redirects to GitHub's download host; Python would carry an
+ordinary header across that redirect, so the token is attached as one that
+urllib keeps off every redirected request. A redirect to anything but HTTPS is
+refused.
 
 ## Where the data lives
 
