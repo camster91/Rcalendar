@@ -2784,7 +2784,8 @@ def test_all_rooms_is_never_shown_under_a_lit_group(browser, base: str) -> None:
     for label, path, act in [
         ("calendar: clicking the only selected room",
          "/?groups=North", lambda p: p.click('#rchips .rc[data-room="142"]')),
-        ("calendar: the Active row's room ✕",
+        # ASCII only: labels are printed, and the Windows CI console is cp1252.
+        ("calendar: the Active row's room remove button",
          "/?groups=North", lambda p: p.click("#active .tag-rm .tag-x")),
         ("list: removing the last room tag",
          "/list?groups=North", lambda p: p.click("#tags .tag-rm .tag-x")),
