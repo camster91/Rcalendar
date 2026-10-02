@@ -688,6 +688,95 @@ def test_a_failed_daily_is_retried_by_the_heartbeat() -> None:
         scheduler.session.heartbeat = real_heartbeat
 
 
+def test_the_daily_is_neither_repeated_nor_skipped() -> None:
+    """Which scrape counts as the day's refresh, in-process and across restarts.
+
+    Three ways it went wrong: a relaunch after 06:00 (the updater's included)
+    left _last_daily unset and scraped again 20 s in; any scrape before 06:00
+    — a sign-in at 01:00, Scrape Now — marked the day done and cancelled the
+    06:00 run; and a failed last run counted as fresh at startup.
+    """
+    print("\ndaily bookkeeping across restarts")
+    real = {
+        "datetime": scheduler.datetime,
+        "probe": scheduler.session.probe,
+        "last_run": scheduler.store.last_run,
+        "scrape": scheduler.scrape,
+    }
+    today = date(2026, 9, 21)
+    scheduler.datetime = FrozenDatetime
+    FrozenDatetime.fixed = datetime(2026, 9, 21, 10, 0)
+    scheduler.session.probe = lambda headless=True: \
+        scheduler.session.SessionState("ok", session_id="1")
+
+    def boot(last: dict | None) -> tuple[scheduler.Orchestrator, list[str]]:
+        scheduler.store.last_run = lambda *a, **kw: last
+        orch = scheduler.Orchestrator()
+        scrapes: list[str] = []
+        orch._do_scrape = (  # type: ignore[method-assign]
+            lambda trigger="manual", interactive=False: scrapes.append(trigger))
+        orch._queue_backfill_if_owed = lambda: None  # type: ignore[method-assign]
+        orch._bootstrap_session()
+        return orch, scrapes
+
+    def run(status: str, started: str, finished: str) -> dict:
+        return {"status": status, "trigger": "schedule",
+                "started_at": f"2026-09-21T{started}:00",
+                "finished_at": f"2026-09-21T{finished}:00"}
+
+    try:
+        # Today's 06:00 run succeeded; the app is relaunched at 10:00.
+        orch, scrapes = boot(run("ok", "06:00", "06:03"))
+        check("a relaunch after today's daily does not scrape at startup",
+              scrapes, [])
+        check("...nor 20 s later on the tick",
+              orch._due_for_daily(FrozenDatetime.fixed), False)
+        check("...and the heartbeat owes nothing either",
+              orch._owes_daily(FrozenDatetime.fixed), False)
+
+        # Fresh, but from before SCRAPE_TIME: today's daily is still owed.
+        orch, scrapes = boot(run("ok", "01:00", "01:02"))
+        check("an overnight scrape is fresh enough to skip startup", scrapes, [])
+        check("...but does not stand in for the 06:00 refresh",
+              orch._due_for_daily(FrozenDatetime.fixed), True)
+
+        # The newest run failed half an hour ago: that is not freshness.
+        orch, scrapes = boot(run("auth_required", "09:30", "09:30"))
+        check("a recent failed run does not suppress the startup scrape",
+              scrapes, ["startup"])
+        check("...which, after 06:00, is the day's attempt (no second "
+              "browser on the tick)", orch._last_daily, today)
+
+        # A startup before 06:00 scrapes but leaves 06:00 its own run.
+        FrozenDatetime.fixed = datetime(2026, 9, 21, 5, 0)
+        orch, scrapes = boot(None)
+        check("a stale startup before 06:00 scrapes", scrapes, ["startup"])
+        check("...without marking the day", orch._last_daily, None)
+
+        # And _do_scrape itself: success only marks the day from 06:00 on.
+        scheduler.store.init_db()
+        scheduler.scrape = lambda **kw: scrape.ScrapeResult(  # type: ignore[assignment]
+            "empty", date_from="21/09/2026", date_to="21/10/2026")
+        FrozenDatetime.fixed = datetime(2026, 9, 21, 1, 0)
+        orch = scheduler.Orchestrator()
+        orch._do_scrape(trigger="manual")
+        check("a 01:00 scrape that succeeds does not mark the day",
+              (orch._last_daily, orch._daily_ok), (None, None))
+        FrozenDatetime.fixed = datetime(2026, 9, 21, 6, 0)
+        check("...so the 06:00 daily still runs",
+              orch._due_for_daily(FrozenDatetime.fixed), True)
+        FrozenDatetime.fixed = datetime(2026, 9, 21, 11, 0)
+        orch._do_scrape(trigger="manual")
+        check("a scrape after 06:00 that succeeds does",
+              (orch._last_daily, orch._daily_ok), (today, today))
+    finally:
+        FrozenDatetime.fixed = datetime(2026, 9, 21, 9, 0, 0)
+        scheduler.datetime = real["datetime"]
+        scheduler.session.probe = real["probe"]
+        scheduler.store.last_run = real["last_run"]
+        scheduler.scrape = real["scrape"]
+
+
 def test_logout_reports_what_the_probe_found() -> None:
     """The logout command has to reach the session layer, and be reported honestly.
 
@@ -1367,6 +1456,7 @@ def main() -> int:
     test_window_guard()
     test_no_retry_storm()
     test_a_failed_daily_is_retried_by_the_heartbeat()
+    test_the_daily_is_neither_repeated_nor_skipped()
     test_an_export_outside_the_window_is_refused()
     test_a_generate_that_produced_no_render_is_not_trusted()
     test_logout_reports_what_the_probe_found()

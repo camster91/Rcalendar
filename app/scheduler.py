@@ -333,16 +333,30 @@ class Orchestrator:
 
             self._last_heartbeat = datetime.now()
 
+            # Fresh means the newest scrape *stored* something. A run that
+            # failed or wanted a sign-in is a reason to scrape, not to skip.
+            now = datetime.now()
             last = store.last_run()
             stale = True
-            if last and last.get("finished_at"):
+            if last and last.get("status") in ("ok", "empty"):
                 try:
-                    age = datetime.now() - datetime.fromisoformat(last["finished_at"])
+                    age = now - datetime.fromisoformat(last["finished_at"])
                     stale = age > timedelta(hours=20)
-                except ValueError:
+                    # And if that run was today's daily, this process owes no
+                    # other. Without this every relaunch after 06:00 — the
+                    # updater's own included — scraped again 20 s in.
+                    started = datetime.fromisoformat(last["started_at"])
+                    if started.date() == now.date() and _counts_as_daily(started):
+                        self._last_daily = self._daily_ok = now.date()
+                except (TypeError, ValueError):
                     stale = True
 
             if SCRAPE_ON_START and stale:
+                if _counts_as_daily(now):
+                    # This run is today's daily, so mark it attempted just as
+                    # _tick does; if it fails the heartbeat retries it, and the
+                    # tick does not launch a second browser 20 s later.
+                    self._last_daily = now.date()
                 self._set(busy=False, busy_action="", progress="")
                 self._do_scrape(trigger="startup")
 
@@ -649,7 +663,8 @@ class Orchestrator:
         # midnight mark the new day as already scraped — suppressing its 06:00
         # run and stretching the gap to ~30 hours, with a window computed
         # against the old day besides.
-        started_date = datetime.now().date()
+        started = datetime.now()
+        started_date = started.date()
         self._set(busy=True, busy_action="Scraping LSM",
                   progress="Starting…", last_scrape_message="")
         run_id = store.start_run(trigger)
@@ -733,8 +748,12 @@ class Orchestrator:
                     progress="",
                     session="ok",
                 )
-                self._last_daily = started_date
-                self._daily_ok = started_date
+                # Only a run from SCRAPE_TIME on is the day's refresh. A
+                # sign-in or Scrape Now at 01:00 used to mark the day done and
+                # cancel the 06:00 run, leaving the calendar on the night's data.
+                if _counts_as_daily(started):
+                    self._last_daily = started_date
+                    self._daily_ok = started_date
                 self._last_heartbeat = datetime.now()
                 log.info("scrape complete — %d bookings stored", len(kept))
             else:
@@ -1108,6 +1127,11 @@ def _excluded_rooms(seen: Iterable[str] = ()) -> set[str]:
 def _rooms_from(events: list[dict[str, Any]], all_rooms: list[str]) -> list[str]:
     seen = {e["room"] for e in events if e.get("room")}
     return sorted(seen | set(all_rooms or []))
+
+
+def _counts_as_daily(started: datetime) -> bool:
+    """A scrape started at or after SCRAPE_TIME is that day's refresh."""
+    return started.time() >= _parse_time(SCRAPE_TIME)
 
 
 def _parse_time(raw: str) -> dtime:

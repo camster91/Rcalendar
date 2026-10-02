@@ -68,7 +68,7 @@ Edge's, where Edge is installed, or Playwright's Chromium's otherwise:
 | When | What happens |
 |---|---|
 | First run | Click **Sign in to LSM**. A browser window opens; you sign in and approve Duo **once**. The session cookie lands in the profile. |
-| Every morning | The 6 AM scrape reuses that profile. Headless, no prompts. |
+| Every morning | The 6 AM scrape reuses that profile. Headless, no prompts. Only a scrape that starts at or after 6 AM counts as the day's refresh — an overnight sign-in or Scrape Now does not cancel it — and restarting the app once it has succeeded (an update's relaunch included) does not scrape again. |
 | Every 4 hours | A heartbeat re-pings LSM so the Shibboleth idle-timeout doesn't lapse. If that morning's scrape failed (no network yet, LSM down), the first heartbeat that finds the session alive runs it again. |
 | Session dies | The sidebar shows **Session expired** and a **Sign in to LSM** button appears. One click, one Duo tap. |
 | No access | The UTORid signed in but LSM will not show it the report: the app says **No access to LSM's report** and why, instead of asking for sign-in again. |
@@ -140,7 +140,10 @@ This drops a shortcut in your Startup folder pointing at
 reversible. `pythonw` rather than `python` so no console window flashes
 on every login, and `--tray` so no calendar window does either. The app
 comes up in the tray, scrapes at 06:00, and stays out of the way; the
-window opens from the tray's "Open Calendar".
+window opens from the tray's "Open Calendar", or from launching the app
+again (the Start menu): a second launch shows the running app's window and
+exits. Closing the window hides it to the tray, but Windows sign-out,
+shutdown, Task Manager and the installer close the app for real.
 
 ## Staying up to date
 
@@ -208,7 +211,8 @@ also mints a **key**: the window and the tray open the UI through a URL
 carrying it, and without it every page and API answers 401. Loopback is shared
 by every account on a machine, so the port alone cannot say whose app it is;
 the key can. Open the calendar from the tray (or the Start menu), not from a
-bookmark.
+bookmark. The app's own requests to this server bypass any system proxy, so
+the key never leaves the machine.
 
 | File | Purpose |
 |---|---|

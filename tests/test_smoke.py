@@ -1030,6 +1030,184 @@ def test_tray_flag() -> None:
         check("--tray and --no-window together are refused", e.code, 2)
 
 
+def test_the_handshake_ignores_the_system_proxy() -> None:
+    """The loopback handshake must not go through a configured proxy.
+
+    urlopen() follows the proxy settings, and Windows' "<local>" bypass does
+    not cover 127.0.0.1, so on a proxied machine the launch key went to the
+    proxy and startup failed. A dead proxy with no bypass reproduces it on
+    any OS: the old code times out, the fixed one never asks the proxy.
+    """
+    print("\nloopback handshake vs. a system proxy")
+
+    from app import main as app_main
+
+    keys = ("http_proxy", "HTTP_PROXY", "no_proxy", "NO_PROXY")
+    saved_env = {k: os.environ.get(k) for k in keys}
+    saved_web = dict(app_main._WEB)
+    try:
+        ok("the server binds", app_main._start_server(StubOrch()))
+        for k in keys:
+            os.environ.pop(k, None)
+        os.environ["http_proxy"] = "http://127.0.0.1:9"   # nothing listens
+        ok("the handshake passes with a dead proxy configured",
+           app_main._wait_for_server(timeout=5))
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if app_main._WEB.get("server"):
+            app_main._WEB["server"].shutdown()
+        app_main._WEB.clear()
+        app_main._WEB.update(saved_web)
+
+
+def test_the_tray_status_line_refreshes() -> None:
+    """pystray's win32 menu is built once; the status line has to be pushed.
+
+    Nothing called update_menu(), so the line kept its launch-time text
+    ("Checking session…") for as long as the app ran.
+    """
+    print("\ntray -- status line refresh")
+
+    import time
+
+    from app.main import Tray
+
+    class Orch:
+        def __init__(self) -> None:
+            self.st = {"busy": True, "busy_action": "Checking session"}
+
+        def status(self) -> dict:
+            return dict(self.st)
+
+        def stop(self) -> None:
+            pass
+
+    class Icon:
+        def __init__(self) -> None:
+            self.updates = 0
+
+        def update_menu(self) -> None:
+            self.updates += 1
+
+        def stop(self) -> None:
+            pass
+
+    orch, icon = Orch(), Icon()
+    tray = Tray(orch, window=None)
+    tray._icon = icon
+    worker = threading.Thread(target=tray._refresh_label, args=(0.01,),
+                              daemon=True)
+    worker.start()
+    time.sleep(0.1)
+    check("an unchanged status does not rebuild the menu", icon.updates, 0)
+    orch.st = {"busy": False, "session": "ok"}
+    time.sleep(0.1)
+    check("a changed status rebuilds it, once", icon.updates, 1)
+    tray._quit()
+    worker.join(timeout=2)
+    ok("quitting stops the refresher", not worker.is_alive())
+
+
+def test_a_second_launch_hands_over() -> None:
+    """Opening the app while it runs shows its window, not an error box.
+
+    With autostart the app is always already running, so every Start-menu
+    launch used to end on "already running". The OS side (a named event) is
+    Windows-only; what is asserted here is the decision around it.
+    """
+    print("\nsecond launch hands over")
+
+    import contextlib
+    import io
+
+    from app import main as app_main
+
+    name = app_main._show_event_name(DATA_DIR)
+    ok("the event lives in the session's Local namespace",
+       name.startswith("Local\\"))
+    check("...is stable for one data directory",
+          app_main._show_event_name(DATA_DIR), name)
+    ok("...and differs for another (LSM_DATA_DIR copies stay apart)",
+       app_main._show_event_name(Path(_tmp) / "other") != name)
+
+    signalled: list[bool] = []
+    notices: list[bool] = []
+    saved = (app_main._ask_running_instance_to_show,
+             app_main._already_running_notice)
+    answer = {"ok": True}
+
+    def fake_signal() -> bool:
+        signalled.append(True)
+        return answer["ok"]
+
+    app_main._ask_running_instance_to_show = fake_signal
+    app_main._already_running_notice = lambda gui=False: notices.append(gui)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            check("a windowed launch that reaches the instance exits 0",
+                  app_main._second_launch(True, False), 0)
+            check("...with no notice", notices, [])
+            check("a --tray launch exits quietly",
+                  app_main._second_launch(True, True), 0)
+            check("...without waking the window", len(signalled), 1)
+            answer["ok"] = False
+            check("an instance that cannot be reached is still reported",
+                  app_main._second_launch(True, False), 1)
+            check("...with the GUI notice", notices, [True])
+            check("a headless launch reports on the console",
+                  app_main._second_launch(False, False), 1)
+            check("...and does not signal", len(signalled), 2)
+    finally:
+        (app_main._ask_running_instance_to_show,
+         app_main._already_running_notice) = saved
+
+
+def test_system_closes_get_past_hide_to_tray() -> None:
+    """Sign-out, shutdown and installers must be able to close the window.
+
+    pywebview cancels every close our `closing` handler answers False, so
+    hide-to-tray blocked Windows sign-out and the installer's Restart Manager.
+    The handler added after pywebview's lets any close but the user's through
+    and runs the quit path. Driven with fake event args: the real Form needs
+    Windows.
+    """
+    print("\nsystem closes get past hide-to-tray")
+
+    import types
+
+    from app.main import _system_close_handler
+
+    quitting = threading.Event()
+    quits: list[int] = []
+    done = threading.Event()
+
+    def quit_app() -> None:
+        quits.append(1)
+        done.set()
+
+    handler = _system_close_handler("UserClosing", quitting, quit_app)
+
+    user = types.SimpleNamespace(CloseReason="UserClosing", Cancel=True)
+    handler(None, user)
+    check("the user's X still hides to tray", user.Cancel, True)
+    ok("...and does not quit", not quitting.is_set() and not quits)
+
+    shutdown = types.SimpleNamespace(CloseReason="WindowsShutDown", Cancel=True)
+    handler(None, shutdown)
+    check("a Windows shutdown is let through", shutdown.Cancel, False)
+    done.wait(2)
+    ok("...and the app quits", quitting.is_set() and quits == [1])
+
+    again = types.SimpleNamespace(CloseReason="TaskManagerClosing", Cancel=True)
+    handler(None, again)
+    check("a later system close is let through too", again.Cancel, False)
+    check("...without starting a second quit", quits, [1])
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — smoke tests")
@@ -1047,6 +1225,10 @@ def main() -> int:
     test_a_second_launch_gets_its_own_server()
     test_single_instance()
     test_tray_flag()
+    test_the_handshake_ignores_the_system_proxy()
+    test_the_tray_status_line_refreshes()
+    test_a_second_launch_hands_over()
+    test_system_closes_get_past_hide_to_tray()
     test_icon()
 
     print("\n" + "=" * 60)
