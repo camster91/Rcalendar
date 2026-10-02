@@ -8,8 +8,8 @@ and the install path.
 
 Nothing here talks to GitHub. The one network touchpoint the app has
 (updater._fetch) is swapped for fakes, and the one level below it
-(urllib.request.urlopen) is swapped where the headers themselves are the
-question. The app is otherwise read-only toward LSM; the updater is the
+(updater._urlopen, the opener call) is swapped where the headers themselves
+are the question. The app is otherwise read-only toward LSM; the updater is the
 only place it reaches outward, so this suite is the record of what that
 outward reach is allowed to do — and, in the install test, of what it
 must refuse to run.
@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import http.client
+import io
 import json
 import os
 import sys
@@ -242,6 +243,36 @@ def test_download() -> None:
             ok("a missing setup asset is named",
                "RotmanLSMCalendar-Setup-" in str(exc))
 
+    # The downgrade: a new tag carrying a genuine, signed OLD installer. The
+    # tag is what is_newer judged, so the installer must be named for it.
+    downgrade = {**RELEASE, "tag": "v9.9.9"}
+    try:
+        updater.select_setup(downgrade)
+        ok("a tag whose installer names another version is refused", False)
+    except updater.UpdateError as exc:
+        ok("a tag whose installer names another version is refused",
+           "v9.9.9" in str(exc)
+           and "RotmanLSMCalendar-Setup-9.9.9.exe" in str(exc))
+    # ...even when the right name is there too, the wrong one is never chosen.
+    both = {**downgrade, "assets": RELEASE["assets"] + [
+        {"id": 104, "name": "RotmanLSMCalendar-Setup-9.9.9.exe", "size": 4}]}
+    check("the installer named for the tag is the one chosen",
+          updater.select_setup(both)["id"], 104)
+    check("a capital-V tag names the same installer",
+          updater.select_setup({**RELEASE, "tag": "V1.2.0"})["id"], 102)
+    for bad_tag in ("", "v1.2.0-rc1", "v1/../1.2.0"):
+        try:
+            updater.select_setup({**RELEASE, "tag": bad_tag})
+            ok(f"an unusable tag {bad_tag!r} is refused", False)
+        except updater.UpdateError:
+            ok(f"an unusable tag {bad_tag!r} is refused", True)
+    check("the staged name gives back its version",
+          updater.setup_version("RotmanLSMCalendar-Setup-1.2.0.exe"), "1.2.0")
+    for name in ("Setup.exe", "RotmanLSMCalendar-Setup-.exe",
+                 "RotmanLSMCalendar-Setup-1.2.0.zip",
+                 "RotmanLSMCalendar-Setup-1.2.0-rc1.exe"):
+        check(f"no version in {name!r}", updater.setup_version(name), None)
+
 
 def test_sha256_asset() -> None:
     print("\nthe release's own checksum sidecar")
@@ -325,7 +356,7 @@ def test_fetch_headers() -> None:
         requests.append(req)
         return FakeResponse(b"{}")
 
-    with patched(urllib.request, urlopen=fake_urlopen):
+    with patched(updater, _urlopen=fake_urlopen):
         updater._fetch("https://api.github.com/x", token="ghp_secret")
         updater._fetch("https://api.github.com/y")
 
@@ -339,13 +370,39 @@ def test_fetch_headers() -> None:
           requests[0].get_header("User-agent"),
           f"RotmanLSMCalendar/{APP_VERSION}")
 
+    # The token must not follow the asset endpoint's 302 to another host.
+    # urllib copies ordinary headers onto the redirected request; only an
+    # unredirected header stays behind, so that is where the token must be —
+    # and the redirect itself is driven through urllib to prove it.
+    ok("the token is an unredirected header",
+       "Authorization" in requests[0].unredirected_hdrs
+       and "Authorization" not in requests[0].headers)
+    handler = updater._HttpsRedirectsOnly()
+    hop = handler.redirect_request(
+        requests[0], io.BytesIO(b""), 302, "Found", {},
+        "https://objects.githubusercontent.com/asset?sig=x")
+    ok("a redirect is still followed", hop is not None)
+    check("...and the redirected request carries no token",
+          hop.get_header("Authorization"), None)
+    try:
+        handler.redirect_request(requests[0], io.BytesIO(b""), 302, "Found",
+                                 {}, "http://objects.githubusercontent.com/x")
+        ok("a redirect to plain HTTP is refused", False)
+    except updater.UpdateError as exc:
+        ok("a redirect to plain HTTP is refused", "HTTPS" in str(exc))
+    ok("the opener _fetch uses is the HTTPS-only one",
+       any(isinstance(h, updater._HttpsRedirectsOnly)
+           for h in updater._OPENER.handlers)
+       and not any(type(h) is urllib.request.HTTPRedirectHandler
+                   for h in updater._OPENER.handlers))
+
     # The chunked path: on_data receives each chunk with the running total
     # when the server does not name a size.
     def streaming_urlopen(req, timeout=None):
         return FakeResponse(b"0123456789")
 
     got: list[tuple[int, int | None]] = []
-    with patched(urllib.request, urlopen=streaming_urlopen):
+    with patched(updater, _urlopen=streaming_urlopen):
         body = updater._fetch("https://api.github.com/z", on_data=lambda chunk,
                               total: got.append((len(chunk), total)))
     check("a streamed body arrives whole", body, b"0123456789")
@@ -359,7 +416,7 @@ def test_fetch_headers() -> None:
             raise urllib.error.HTTPError(req.full_url, code, "err", None, None)
         return fake
 
-    with patched(urllib.request, urlopen=raise_status(404)):
+    with patched(updater, _urlopen=raise_status(404)):
         try:
             updater._fetch("https://api.github.com/x")
             ok("a 404 raises", False)
@@ -367,7 +424,7 @@ def test_fetch_headers() -> None:
             ok("a 404 without a token names the token fix",
                "private" in str(exc) and "token" in str(exc))
 
-    with patched(urllib.request, urlopen=raise_status(403)):
+    with patched(updater, _urlopen=raise_status(403)):
         try:
             updater._fetch("https://api.github.com/x", token="bad")
             ok("a 403 raises", False)
@@ -377,7 +434,7 @@ def test_fetch_headers() -> None:
     def unreachable(req, timeout=None):
         raise urllib.error.URLError("connection refused")
 
-    with patched(urllib.request, urlopen=unreachable):
+    with patched(updater, _urlopen=unreachable):
         try:
             updater._fetch("https://api.github.com/x")
             ok("an unreachable host raises", False)
@@ -392,7 +449,7 @@ def test_fetch_headers() -> None:
         def read(self, size: int = -1) -> bytes:
             raise http.client.IncompleteRead(b"partial", 10)
 
-    with patched(urllib.request, urlopen=lambda req, timeout=None: dying(b"")):
+    with patched(updater, _urlopen=lambda req, timeout=None: dying(b"")):
         try:
             updater._fetch("https://api.github.com/x")
             ok("a mid-body disconnect raises", False)
@@ -1035,26 +1092,87 @@ def test_signature() -> None:
     print("\ninstaller signature")
 
     pin = updater.SIGNING_THUMBPRINTS[0]
-    good = {"status": "UnknownError", "thumbprint": pin, "timestamped": True}
-    check("self-signed, pinned, timestamped: trusted",
-          updater.judge_signature(good), None)
+    good = {"status": "UnknownError", "thumbprint": pin, "timestamped": True,
+            "trust": updater.CERT_E_UNTRUSTEDROOT, "version": "1.2.0"}
+    judge = updater.judge_signature
+    check("self-signed, pinned, timestamped, right version: trusted",
+          judge(good, "1.2.0"), None)
     check("a chain the machine trusts is fine too",
-          updater.judge_signature({**good, "status": "Valid"}), None)
+          judge({**good, "status": "Valid", "trust": updater.TRUST_OK},
+                "1.2.0"), None)
+    # UnknownError is PowerShell's name for every code it has no name for.
+    # A signer signature that does not verify (NTE_BAD_SIGNATURE) is one, and
+    # it must not pass on the strength of a thumbprint anyone can embed.
+    ok("UnknownError with a signature that does not verify is refused",
+       judge({**good, "trust": 0x80090006}, "1.2.0"))
+    ok("a missing trust verdict is refused",
+       judge({k: v for k, v in good.items() if k != "trust"}, "1.2.0"))
     check("the thumbprint's case does not matter",
-          updater.judge_signature({**good, "thumbprint": pin.lower()}), None)
+          judge({**good, "thumbprint": pin.lower()}, "1.2.0"), None)
     ok("a tampered file is refused",
-       updater.judge_signature({**good, "status": "HashMismatch"}))
+       judge({**good, "status": "HashMismatch"}, "1.2.0"))
     ok("an unsigned file is refused",
-       updater.judge_signature({**good, "status": "NotSigned"}))
+       judge({**good, "status": "NotSigned"}, "1.2.0"))
     ok("another publisher's signature is refused",
-       updater.judge_signature({**good, "thumbprint": "AB" * 20}))
+       judge({**good, "thumbprint": "AB" * 20}, "1.2.0"))
     ok("an untimestamped signature is refused",
-       updater.judge_signature({**good, "timestamped": False}))
+       judge({**good, "timestamped": False}, "1.2.0"))
 
-    stray = Path(tempfile.mkdtemp()) / "Setup.exe"
+    # The version inside the signed bytes: a genuine signature on an older
+    # installer is still genuine, so this is what stops a downgrade that
+    # got past the asset name.
+    ok("a genuinely signed older installer is refused",
+       "1.1.0" in (judge({**good, "version": "1.1.0"}, "1.2.0") or ""))
+    ok("an installer with no version resource is refused",
+       judge({k: v for k, v in good.items() if k != "version"}, "1.2.0"))
+    ok("an unparsable version resource is refused",
+       judge({**good, "version": "0.0.0-dev"}, "0.0.0"))
+    check("Windows' four-part spelling is the same version",
+          judge({**good, "version": "1.2.0.0"}, "1.2.0"), None)
+    check("...and so is a shorter one",
+          judge({**good, "version": "1.2"}, "1.2.0"), None)
+
+    # verify_signature takes the version from the staged name, which
+    # select_setup tied to the tag; a name that carries none is refused
+    # before anything is asked of Windows.
+    with patched(updater, _signature_facts=lambda p: dict(good)):
+        check("the staged name's version is the one required",
+              _REAL_VERIFY_SIGNATURE(
+                  Path("RotmanLSMCalendar-Setup-1.2.0.exe")), None)
+        ok("...so an installer staged for another version is refused",
+           _REAL_VERIFY_SIGNATURE(Path("RotmanLSMCalendar-Setup-9.9.9.exe")))
+        ok("...and a name with no version is refused",
+           _REAL_VERIFY_SIGNATURE(Path("Setup.exe")))
+
+    stray = Path(tempfile.mkdtemp()) / "RotmanLSMCalendar-Setup-1.2.0.exe"
     stray.write_bytes(b"MZ nobody signed this")
     ok("a real unsigned file, read by Windows, is refused",
        _REAL_VERIFY_SIGNATURE(stray))
+
+    # WinVerifyTrust itself, on Windows: the call has to reach the API and
+    # read the answers judge_signature depends on, or every update would be
+    # refused (or, worse, waved through) on the strength of a bad struct.
+    if sys.platform == "win32":
+        # Not a code this pins: the stray is not even a real PE, so Windows
+        # answers TRUST_E_SUBJECT_FORM_UNKNOWN rather than NOSIGNATURE. What
+        # matters is that it is neither of the two the gate accepts.
+        ok("WinVerifyTrust does not pass an unsigned file",
+           updater.win_verify_trust(stray)
+           not in (updater.TRUST_OK, updater.CERT_E_UNTRUSTEDROOT))
+        signed = Path(sys.executable)
+        if updater.win_verify_trust(signed) == updater.TRUST_OK:
+            # A file Windows trusts, then the same bytes with one changed: the
+            # tamper has to come back as neither of the codes the gate accepts.
+            body = bytearray(signed.read_bytes())
+            body[len(body) // 3] ^= 0xFF
+            tampered = stray.with_name("tampered.exe")
+            tampered.write_bytes(bytes(body))
+            ok("a signed file with one byte changed does not verify",
+               updater.win_verify_trust(tampered)
+               not in (updater.TRUST_OK, updater.CERT_E_UNTRUSTEDROOT))
+        else:
+            print("  (skip) this Python is not Authenticode-signed; "
+                  "no tamper check")
 
     def broken(path):
         raise OSError("no PowerShell here")

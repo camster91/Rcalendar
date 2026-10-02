@@ -297,6 +297,64 @@ def test_empty_report_does_not_wipe() -> None:
                if r["room"] == "L1030"]), 0)
 
 
+def test_window_moving_forward_is_not_a_flood() -> None:
+    """A month the window has just reached holds first observations, not adds.
+
+    On the 1st of every month the daily window gains a month, and every
+    booking in it used to be logged as "added" — ~2,000 rows burying the
+    real feed. Only what the previous good scrape already covered can change.
+    """
+    print("\nthe window moving forward a month logs no flood")
+    y = date.today().year + 1
+
+    def at(m: int, d: int, title: str, yr: int = y) -> dict:
+        when = datetime(yr, m, d, 10, 0)
+        return {"title": title, "room": "L1050", "start": when.isoformat(),
+                "end": (when + timedelta(hours=1)).isoformat(),
+                "description": "", "class_code": "A", "cancelled": False}
+
+    def feed(rid: int, kind: str | None = None) -> list[str]:
+        # By room too: earlier fixtures hard-code small run_ids.
+        return sorted(r["title"] for r in store.get_changes(
+            run_id=rid, kind=kind, room="L1050", limit=500))
+
+    sep_dec = [at(9, 10, "Kappa Sep"), at(10, 5, "Kappa Oct"),
+               at(12, 1, "Kappa Dec")]
+    r1 = store.start_run("schedule")
+    store.replace_events(sep_dec, f"01/09/{y}", f"31/12/{y}",
+                         run_id=r1, trigger="schedule")
+    store.finish_run(r1, "ok", 3, f"01/09/{y}", f"31/12/{y}")
+
+    jan = [at(1, 12, "Kappa Jan A", y + 1), at(1, 20, "Kappa Jan B", y + 1)]
+    r2 = store.start_run("schedule")
+    store.replace_events(sep_dec + jan + [at(10, 20, "Kappa Oct New")],
+                         f"01/09/{y}", f"31/01/{y + 1}",
+                         run_id=r2, trigger="schedule")
+    store.finish_run(r2, "ok", 6, f"01/09/{y}", f"31/01/{y + 1}")
+    check("only the booking inside the old reach is an addition",
+          feed(r2), ["Kappa Oct New"])
+    check("the newly visible month is still stored",
+          len([e for e in store.get_events(room="L1050")
+               if e["title"].startswith("Kappa Jan")]), 2)
+
+    # Once a scrape has covered January, January can change like any month.
+    r3 = store.start_run("schedule")
+    store.replace_events(sep_dec + jan[:1] + [at(10, 20, "Kappa Oct New"),
+                                               at(1, 25, "Kappa Jan C", y + 1)],
+                         f"01/09/{y}", f"31/01/{y + 1}",
+                         run_id=r3, trigger="schedule")
+    check("a later add in the covered month is logged", feed(r3, "added"),
+          ["Kappa Jan C"])
+    check("...and the removal beside it is unchanged", feed(r3, "removed"),
+          ["Kappa Jan B"])
+
+    # Leave scrape_runs as it was: later tests read the last run, and an
+    # earlier date_to would gate their additions.
+    with sqlite3.connect(store.DB_PATH) as conn:
+        conn.execute("DELETE FROM scrape_runs WHERE id IN (?,?,?)",
+                     (r1, r2, r3))
+
+
 def test_stats_are_recomputed_only_when_the_events_change() -> None:
     """stats() answers every status poll, so it caches — but never stale."""
     print("\nstats cache")
@@ -756,6 +814,7 @@ def main() -> int:
     test_backfill_logs_no_changes()
     test_partial_report_adds_but_never_deletes()
     test_empty_report_does_not_wipe()
+    test_window_moving_forward_is_not_a_flood()
     test_stats_are_recomputed_only_when_the_events_change()
     test_runs_and_retention()
     test_prune()

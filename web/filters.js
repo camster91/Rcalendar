@@ -12,9 +12,10 @@
  * ("Identifier 'PAL' has already been declared") which kills the page blank
  * rather than degrading, so they are declared here and nowhere else.
  *
- * Nothing here touches the DOM or reads a page's own state. Anything that
- * needs the room list takes it as an argument, which is what keeps this file
- * honest about what it depends on.
+ * Nothing here touches the DOM or reads a page's own state, except staleTab
+ * at the bottom, whose banner is the same on both pages. Anything that needs
+ * the room list takes it as an argument, which is what keeps this file honest
+ * about what it depends on.
  */
 
 // Room colours. These fill month chips, week bars, card borders and the room
@@ -116,13 +117,15 @@ function parseFilters(raw, ctx){
   // strings and intersecting with what actually exists — so a name that is no
   // longer in the data drops out instead of selecting nothing. An absent *or
   // empty* list returns null, which every caller reads as "no opinion", the
-  // same rule roomClear documents.
+  // same rule roomClear documents. Empty is judged *after* the intersection:
+  // judged before, a link naming only rooms that have since gone came back as
+  // [] — a selection of nothing, which blanked the page under "All Rooms".
   const names=(v,valid)=>{
     let list=null;
     if(Array.isArray(v))list=v.filter(x=>typeof x==='string'&&x);
     else if(typeof v==='string'&&v)list=v.split(',').filter(Boolean);
-    if(!list||!list.length)return null;
-    return valid?list.filter(x=>valid.indexOf(x)>=0):list;
+    if(list&&valid)list=list.filter(x=>valid.indexOf(x)>=0);
+    return list&&list.length?list:null;
   };
   return {
     rooms:names(src.rooms,rooms),
@@ -181,3 +184,33 @@ function nextRooms(current, room, mode, rooms){
   }
   return cur;
 }
+
+// ── STALE TAB ──
+// The server answers every /api/ call 401 once this tab's key cookie is from
+// an earlier launch — the app restarted or updated under an open tab (see
+// _require_key in app/server.py). Nothing in the tab can mend that: the key
+// is traded only on the URL the tray opens. Read as anything else it misled:
+// the boot card offered an LSM sign-in, Sign in toasted "a browser window
+// opened" and polled for six minutes, and Scrape spun for fifteen. So a 401 is
+// said once, in words that name the fix, and TAB_STALE stops every poll.
+//
+// Pass any fetch Response; true means this tab is stale and the caller should
+// stop. Built with DOM calls and textContent, like the rest of the UI.
+const STALE_MSG='This tab is out of date — reopen the calendar from the tray icon or Start menu.';
+let TAB_STALE=false;
+function staleTab(r){
+  if(!TAB_STALE&&r&&r.status===401){
+    TAB_STALE=true;
+    const b=document.createElement('div');
+    b.id='staleBanner';b.setAttribute('role','alert');b.textContent=STALE_MSG;
+    // Fixed over the toolbar: nothing on it works from this tab any more.
+    // #dc1313 is the pages' --rd, which carries white text at 5:1.
+    b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;padding:14px 20px;'
+      +'background:#dc1313;color:#fff;font:600 .95rem Inter,system-ui,sans-serif;text-align:center';
+    document.body.appendChild(b);
+  }
+  return TAB_STALE;
+}
+// The same check as a throw, for a fetch inside a try whose catch already
+// says what went wrong and puts its button back: keyed(await fetch(url)).
+function keyed(r){if(staleTab(r))throw new Error(STALE_MSG);return r;}

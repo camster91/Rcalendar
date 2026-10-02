@@ -15,11 +15,13 @@ pasted one, is still sent on every request so the mirror keeps working the
 day it is ever made private. Downloads go through the API's asset endpoint
 (/repos/<repo>/releases/assets/<id> with Accept: application/octet-stream)
 rather than browser_download_url on purpose: that endpoint answers 302 to a
-pre-signed URL that needs no Authorization header, so the token only ever
-travels to api.github.com, and whichever way urllib handles the
-Authorization header across a cross-host redirect — recent Pythons strip it
-— the outcome is the same. (See also dpapi.py for how the token itself is
-held: never in cleartext, exactly like the session snapshot.)
+pre-signed URL that needs no Authorization header. urllib does NOT strip
+that header on a cross-host redirect — it copies every ordinary header to
+the new request — so _fetch adds it as an *unredirected* header, which
+urllib keeps on the first request only: the token travels to
+api.github.com and nowhere else. A redirect to anything but HTTPS is
+refused outright. (See also dpapi.py for how the token itself is held:
+never in cleartext, exactly like the session snapshot.)
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import os
 import shutil
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
@@ -44,8 +47,10 @@ TOKEN_FILE = DATA_DIR / "github-token.bin"
 STAGE_DIR = DATA_DIR / "update-staged"
 
 # The release's sidecar and the installer it describes. Both names are
-# written by packaging/release-local.ps1; matching on the prefix rather than
-# the version keeps this from re-declaring what the release already knows.
+# written by packaging/release-local.ps1. The installer is chosen by its
+# full name, prefix + the tag's version + .exe — never by prefix alone, or a
+# release tagged v9.9.9 could carry a genuine, signed older installer and
+# downgrade every client (see select_setup).
 SHA256_ASSET = "sha256.txt"
 SETUP_PREFIX = "RotmanLSMCalendar-Setup-"
 
@@ -111,6 +116,34 @@ def _unreachable(exc: BaseException) -> UpdateError:
     )
 
 
+class _HttpsRedirectsOnly(urllib.request.HTTPRedirectHandler):
+    """urllib's redirect handling, minus the redirects that leave HTTPS.
+
+    The asset endpoint's 302 is followed as before; a hop to plain HTTP is
+    refused before it is made, because nothing this module fetches is
+    meant to cross the network in the clear.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme.lower() != "https":
+            fp.close()
+            # The URL is left out of the sentence: a pre-signed one carries
+            # its own credential in the query string.
+            raise UpdateError(
+                "GitHub redirected the download to an address that is not "
+                "HTTPS — it was refused. Try again later."
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpsRedirectsOnly)
+
+
+def _urlopen(req: urllib.request.Request, timeout: float):
+    """The opener call itself, kept apart so tests can swap it."""
+    return _OPENER.open(req, timeout=timeout)
+
+
 def _fetch(url: str, token: str | None = None,
            accept: str = "application/json", timeout: float = 20.0,
            on_data: Callable[[bytes, int | None], None] | None = None) -> bytes:
@@ -131,11 +164,12 @@ def _fetch(url: str, token: str | None = None,
         "Accept": accept,
         "User-Agent": f"RotmanLSMCalendar/{APP_VERSION}",
     }
-    if token:
-        # Only ever sent to api.github.com (see the module docstring for why
-        # asset downloads are routed so that it never needs to leave it).
-        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
+    if token:
+        # Unredirected: urllib copies ordinary headers onto a redirect's new
+        # request, and the asset endpoint's 302 points at another host. This
+        # keeps the token on the api.github.com request alone.
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
 
     # Each read is translated on its own, and the on_data callback is
     # deliberately called OUTSIDE every translation below it: the callback
@@ -149,7 +183,7 @@ def _fetch(url: str, token: str | None = None,
             raise _unreachable(exc) from exc
 
     try:
-        resp = urllib.request.urlopen(req, timeout=timeout)
+        resp = _urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
         code = exc.code
         if code == 404:
@@ -205,16 +239,13 @@ def _fetch(url: str, token: str | None = None,
         return b"".join(chunks)
 
 
-def _asset(release: dict[str, Any], name: str,
-           prefix: bool = False) -> dict[str, Any]:
-    """Find one asset by exact name (or prefix) on a release dict."""
+def _asset(release: dict[str, Any], name: str) -> dict[str, Any]:
+    """Find one asset by exact name on a release dict."""
     for asset in release.get("assets") or []:
-        if (asset.get("name", "").startswith(name) if prefix
-                else asset.get("name") == name):
+        if asset.get("name") == name:
             return asset
-    kind = "starting with" if prefix else "named"
     raise UpdateError(
-        f"The release has no asset {kind} '{name}' — it was published "
+        f"The release has no asset named '{name}' — it was published "
         "without the file the updater needs."
     )
 
@@ -248,16 +279,49 @@ def fetch_latest(token: str | None) -> dict[str, Any]:
     }
 
 
+def same_version(a: str, b: str) -> bool:
+    """True when two version strings name the same version: '1.3' ==
+    '1.3.0' == '1.3.0.0'. Unparsable on either side is never the same."""
+    pa, pb = parse_version(a), parse_version(b)
+    if pa is None or pb is None:
+        return False
+    n = max(len(pa), len(pb))
+    return pa + (0,) * (n - len(pa)) == pb + (0,) * (n - len(pb))
+
+
+def setup_version(name: str) -> str | None:
+    """'RotmanLSMCalendar-Setup-1.3.0.exe' -> '1.3.0'; None for any other
+    shape. The inverse of the name select_setup insists on."""
+    if not (name.startswith(SETUP_PREFIX) and name.endswith(".exe")):
+        return None
+    version = name[len(SETUP_PREFIX):-len(".exe")]
+    return version if parse_version(version) is not None else None
+
+
 def select_setup(release: dict[str, Any]) -> dict[str, Any]:
     """The release's installer asset. One selection site, so the hash
-    check and the download can never disagree about which file they mean."""
-    asset = _asset(release, SETUP_PREFIX, prefix=True)
-    if not str(asset.get("name", "")).endswith(".exe"):
+    check and the download can never disagree about which file they mean.
+
+    It must be named for the version the tag claims. The tag is what
+    is_newer judged, and the asset is what runs; anything looser lets a
+    new tag carry an old installer, and the old one is genuinely signed.
+    """
+    tag = str(release.get("tag") or "").strip()
+    version = tag[1:] if tag[:1] in ("v", "V") else tag
+    if parse_version(version) is None:
         raise UpdateError(
-            "The release's setup asset is not the installer — its name does "
-            "not end in .exe."
+            f"The release is tagged '{tag}', which is not a version this app "
+            "can install from."
         )
-    return asset
+    want = f"{SETUP_PREFIX}{version}.exe"
+    for asset in release.get("assets") or []:
+        if asset.get("name") == want:
+            return asset
+    raise UpdateError(
+        f"The release is tagged {tag} but carries no '{want}' — its "
+        "installer must be named for the version the release claims, so "
+        "nothing is installed from it."
+    )
 
 
 def fetch_sha256(release: dict[str, Any], token: str | None,
@@ -270,8 +334,8 @@ def fetch_sha256(release: dict[str, Any], token: str | None,
     version of the check worth having.
 
     The sidecar's second field names the file the hash describes; it is
-    compared against `setup_name` because the installer is chosen by prefix
-    and the sidecar is not — a release whose two assets disagree (a rebuilt
+    compared against `setup_name` because the installer is chosen by the
+    tag and the sidecar is not — a release whose two assets disagree (a rebuilt
     Setup uploaded beside the old one, a sidecar left over from the last
     version) would otherwise hand every client a download that fails
     verification byte-identically, forever, under a message that calls a
@@ -359,12 +423,17 @@ def launch_installer(path: Path) -> None:
 
 # Read back with Windows' own Authenticode reader rather than parsed by hand.
 # The path travels in an environment variable, never in the command text, so
-# no file name can be read as PowerShell.
+# no file name can be read as PowerShell. The version is the installer's own
+# version resource (Inno fills ProductVersion from AppVersion): it sits
+# inside the signed bytes, so unlike the tag or the file name it is the
+# signer's claim, not the publisher account's.
 _SIGNATURE_PS = (
     "$s = Get-AuthenticodeSignature -LiteralPath $env:LSM_SIGNED_FILE; "
+    "$v = (Get-Item -LiteralPath $env:LSM_SIGNED_FILE).VersionInfo; "
     "[pscustomobject]@{ status = [string]$s.Status; "
     "thumbprint = [string]$s.SignerCertificate.Thumbprint; "
-    "timestamped = [bool]$s.TimeStamperCertificate } | ConvertTo-Json -Compress"
+    "timestamped = [bool]$s.TimeStamperCertificate; "
+    "version = [string]$v.ProductVersion } | ConvertTo-Json -Compress"
 )
 
 
@@ -376,10 +445,81 @@ def _signature_facts(path: Path) -> dict[str, Any]:
         capture_output=True, text=True, timeout=60, env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    return json.loads(out.stdout.strip() or "{}")
+    facts = json.loads(out.stdout.strip() or "{}")
+    facts["trust"] = win_verify_trust(path)
+    return facts
 
 
-def judge_signature(facts: dict[str, Any]) -> str | None:
+# WinVerifyTrust's answers that judge_signature accepts. S_OK is a chain the
+# machine trusts. CERT_E_UNTRUSTEDROOT is the designed state of this app's
+# self-signed certificate: the signature verifies, and the only complaint is
+# that its root is in no trusted store. Get-AuthenticodeSignature folds that
+# answer into UnknownError together with every other code it has no name for
+# — a signer signature that does not verify among them — so the Status alone
+# cannot tell "self-signed" from "forged". This code can.
+TRUST_OK = 0
+CERT_E_UNTRUSTEDROOT = 0x800B0109
+
+
+def win_verify_trust(path: Path) -> int:
+    """WinVerifyTrust's Authenticode verdict on a file, as an unsigned HRESULT.
+
+    The generic-verify policy, no UI, no revocation check (a self-signed
+    certificate has no CRL to ask). Raises off Windows; verify_signature
+    reads that as a check that could not run, and refuses.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+    class WINTRUST_FILE_INFO(ctypes.Structure):
+        _fields_ = [("cbStruct", wintypes.DWORD),
+                    ("pcwszFilePath", wintypes.LPCWSTR),
+                    ("hFile", wintypes.HANDLE),
+                    ("pgKnownSubject", ctypes.POINTER(GUID))]
+
+    class WINTRUST_DATA(ctypes.Structure):
+        _fields_ = [("cbStruct", wintypes.DWORD),
+                    ("pPolicyCallbackData", ctypes.c_void_p),
+                    ("pSIPClientData", ctypes.c_void_p),
+                    ("dwUIChoice", wintypes.DWORD),
+                    ("fdwRevocationChecks", wintypes.DWORD),
+                    ("dwUnionChoice", wintypes.DWORD),
+                    ("pFile", ctypes.POINTER(WINTRUST_FILE_INFO)),
+                    ("dwStateAction", wintypes.DWORD),
+                    ("hWVTStateData", wintypes.HANDLE),
+                    ("pwszURLReference", wintypes.LPWSTR),
+                    ("dwProvFlags", wintypes.DWORD),
+                    ("dwUIContext", wintypes.DWORD),
+                    ("pSignatureSettings", ctypes.c_void_p)]
+
+    # WINTRUST_ACTION_GENERIC_VERIFY_V2 {00AAC56B-CD44-11d0-8CC2-00C04FC295EE}
+    action = GUID(0x00AAC56B, 0xCD44, 0x11D0,
+                  (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0,
+                                       0x4F, 0xC2, 0x95, 0xEE))
+    file_info = WINTRUST_FILE_INFO(ctypes.sizeof(WINTRUST_FILE_INFO),
+                                   str(path), None, None)
+    data = WINTRUST_DATA()
+    data.cbStruct = ctypes.sizeof(WINTRUST_DATA)
+    data.dwUIChoice = 2            # WTD_UI_NONE
+    data.fdwRevocationChecks = 0   # WTD_REVOKE_NONE
+    data.dwUnionChoice = 1         # WTD_CHOICE_FILE
+    data.pFile = ctypes.pointer(file_info)
+    data.dwStateAction = 0         # WTD_STATEACTION_IGNORE: nothing to close
+
+    wintrust = ctypes.WinDLL("wintrust")
+    wintrust.WinVerifyTrust.argtypes = [wintypes.HWND, ctypes.POINTER(GUID),
+                                        ctypes.POINTER(WINTRUST_DATA)]
+    wintrust.WinVerifyTrust.restype = wintypes.LONG
+    result = wintrust.WinVerifyTrust(None, ctypes.byref(action),
+                                     ctypes.byref(data))
+    return result & 0xFFFFFFFF
+
+
+def judge_signature(facts: dict[str, Any], version: str) -> str | None:
     """None when the signature is one this app trusts, else why not.
 
     The gate is the one packaging/sign.ps1 applies to its own output, for
@@ -389,11 +529,23 @@ def judge_signature(facts: dict[str, Any]) -> str | None:
     that the signature is intact (not HashMismatch, not NotSigned), that its
     signer is a pinned project certificate, and that it carries a timestamp
     (without one the signature dies with the certificate).
+
+    "Intact" is WinVerifyTrust's own code (facts["trust"]), not the Status:
+    UnknownError also covers a signer signature that does not verify, and a
+    forged blob that merely embeds the public pinned certificate and a copied
+    timestamp would show the right thumbprint and a timestamper all the same.
+
+    Last, the installer's own signed version resource must name `version`,
+    the release's version: a genuine signature on an *older* installer is
+    still genuine, and only the signed bytes can say which version they are.
     """
     status = str(facts.get("status") or "")
     if status not in ("Valid", "UnknownError"):
         return (f"The downloaded installer's signature is {status or 'missing'}"
                 f" — it will not be run.")
+    if facts.get("trust") not in (TRUST_OK, CERT_E_UNTRUSTEDROOT):
+        return ("The downloaded installer's signature does not verify — "
+                "it will not be run.")
     thumb = str(facts.get("thumbprint") or "").upper()
     if thumb not in SIGNING_THUMBPRINTS:
         return ("The downloaded installer is not signed by this app's "
@@ -401,6 +553,10 @@ def judge_signature(facts: dict[str, Any]) -> str | None:
     if not facts.get("timestamped"):
         return ("The downloaded installer's signature has no timestamp — "
                 "it will not be run.")
+    signed = str(facts.get("version") or "").strip()
+    if not same_version(signed, version):
+        return (f"The downloaded installer is version {signed or 'unknown'}, "
+                f"not the {version} the release names — it will not be run.")
     return None
 
 
@@ -409,14 +565,22 @@ def verify_signature(path: Path) -> str | None:
 
     Fails closed: a check that cannot run is a refusal, because the one thing
     this exists to stop is running an installer nobody vouched for.
+
+    The version the installer must carry is read off its staged name, which
+    select_setup has already tied to the release's tag.
     """
+    version = setup_version(path.name)
+    if version is None:
+        log.error("installer name carries no version: %s", path.name)
+        return ("The installer's file name does not say which version it is "
+                "— it will not be run.")
     try:
         facts = _signature_facts(path)
     except Exception as exc:
         log.error("could not read the installer's signature: %s", exc)
         return ("The installer's signature could not be checked — it will "
                 "not be run.")
-    problem = judge_signature(facts)
+    problem = judge_signature(facts, version)
     if problem:
         log.error("installer signature refused: %s (%s)", problem, facts)
     return problem

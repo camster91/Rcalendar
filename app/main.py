@@ -29,6 +29,7 @@ a fill that did not complete, and the only way to ask for it a second time.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import secrets
 import sys
@@ -101,6 +102,8 @@ class Tray:
         # tell "the user clicked X" from "we are quitting". See _quit.
         self.quitting = quitting if quitting is not None else threading.Event()
         self._icon = None
+        # Set when the icon's loop ends; stops the label refresher.
+        self._closed = threading.Event()
 
     def start(self) -> None:
         import pystray
@@ -129,7 +132,35 @@ class Tray:
         self._icon = pystray.Icon(
             "rotman-lsm", paint_icon(TRAY_ICON_SIZE), APP_NAME, menu
         )
-        self._icon.run()
+        threading.Thread(target=self._refresh_label, name="tray-label",
+                         daemon=True).start()
+        try:
+            self._icon.run()
+        finally:
+            self._closed.set()
+
+    def _refresh_label(self, every: float = 3.0) -> None:
+        """Keep the status line current.
+
+        pystray's win32 backend builds the menu once and rebuilds it only
+        after one of its own items is clicked, so the line said whatever was
+        true at launch ("Checking session…") for the life of the process.
+        Rebuilt only when the text changes, which keeps the rebuild rare.
+        """
+        try:
+            shown = self._label()
+        except Exception:
+            log.exception("tray status refresh failed — it stops here")
+            return
+        while not self._closed.wait(every):
+            try:
+                label = self._label()
+                if label != shown and self._icon is not None:
+                    self._icon.update_menu()
+                    shown = label
+            except Exception:
+                log.exception("tray status refresh failed — it stops here")
+                return
 
     def _label(self) -> str:
         st = self.orch.status()
@@ -216,6 +247,7 @@ class Tray:
         # against the worker joining itself, and quitting.set() is the
         # ordering this comment exists for.
         self.quitting.set()
+        self._closed.set()
         self.orch.stop()
         if self._icon:
             self._icon.stop()
@@ -376,8 +408,9 @@ def _another_instance_is_running(gui: bool = False) -> bool:
 
     False means this process now owns the directory for the rest of its life.
     True means another instance has it and the reader has already been told
-    why, so the caller only has to return 1 — every entry point opens with
-    this, before the database is touched or a worker is started.
+    why, so the caller only has to return 1 — every CLI entry point opens
+    with this, before the database is touched or a worker is started (run_app
+    claims directly, so a second windowed launch can hand over instead).
 
     Asking is claiming, so call it once. A second call in the same process
     reports the first call's own lock as a second instance.
@@ -386,6 +419,204 @@ def _another_instance_is_running(gui: bool = False) -> bool:
         return False
     _already_running_notice(gui=gui)
     return True
+
+
+# ── "Show yourself": a second launch hands over to the running one ───────
+#
+# With autostart the app is always already running, so every Start-menu
+# launch used to end on the "already running" box instead of the calendar. Now
+# the running app waits on a named event, and a second windowed launch sets it
+# and exits: the running app shows its window. The name carries the data
+# directory because the data directory is what makes an instance (see
+# _claim_instance) — a copy run with its own LSM_DATA_DIR has its own event.
+# "Local\" keeps it per Windows session, so another user's app is never woken.
+
+_EVENT_MODIFY_STATE = 0x0002
+_WAIT_OBJECT_0 = 0
+_WAIT_FAILED = 0xFFFFFFFF
+
+
+def _show_event_name(data_dir: Path) -> str:
+    where = os.path.normcase(os.path.abspath(str(data_dir)))
+    digest = hashlib.sha1(where.encode("utf-8")).hexdigest()[:16]
+    return f"Local\\RotmanLSMCalendar-show-{digest}"
+
+
+def _kernel32():
+    """kernel32 with the prototypes the event calls need. Its own WinDLL, so
+    these argtypes never leak into ctypes.windll, which pystray shares."""
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateEventW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
+                               wintypes.LPCWSTR)
+    k.CreateEventW.restype = wintypes.HANDLE
+    k.OpenEventW.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR)
+    k.OpenEventW.restype = wintypes.HANDLE
+    k.SetEvent.argtypes = (wintypes.HANDLE,)
+    k.SetEvent.restype = wintypes.BOOL
+    k.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    k.WaitForSingleObject.restype = wintypes.DWORD
+    k.CloseHandle.argtypes = (wintypes.HANDLE,)
+    k.CloseHandle.restype = wintypes.BOOL
+    return k
+
+
+def _create_show_event() -> Any:
+    """The running app's end: create the event, or None if it cannot.
+
+    Created as soon as the instance lock is held, before the server and the
+    window, so a launch made during startup is not refused: the event stays
+    set until the listener starts and takes it.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        handle = _kernel32().CreateEventW(None, False, False,
+                                          _show_event_name(DATA_DIR))
+    except Exception:
+        log.exception("could not create the show-window event")
+        return None
+    if not handle:
+        log.warning("could not create the show-window event — a second "
+                    "launch will show the already-running notice")
+    return handle or None
+
+
+def _listen_for_show(handle: Any, on_show, stop: threading.Event) -> None:
+    """Call on_show() each time a second launch sets the event."""
+    if not handle:
+        return
+    k = _kernel32()
+
+    def loop() -> None:
+        while not stop.is_set():
+            result = k.WaitForSingleObject(handle, 1000)
+            if result == _WAIT_FAILED:
+                log.error("show-window event wait failed — listener stops")
+                return
+            if result == _WAIT_OBJECT_0 and not stop.is_set():
+                log.info("another launch asked for the window — showing it")
+                try:
+                    on_show()
+                except Exception:
+                    log.exception("could not show the window")
+
+    threading.Thread(target=loop, name="show-listener", daemon=True).start()
+
+
+def _ask_running_instance_to_show() -> bool:
+    """The second launch's end: set the event. True if a listener exists."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        k = _kernel32()
+        handle = k.OpenEventW(_EVENT_MODIFY_STATE, False,
+                              _show_event_name(DATA_DIR))
+        if not handle:
+            return False   # a headless instance, or one that predates this
+        try:
+            # The running app is a background process, and Windows lets only
+            # the foreground one (this launch) hand it focus. ASFW_ANY = -1.
+            try:
+                ctypes.WinDLL("user32").AllowSetForegroundWindow(-1)
+            except Exception:
+                pass
+            return bool(k.SetEvent(handle))
+        finally:
+            k.CloseHandle(handle)
+    except Exception:
+        log.exception("could not signal the running instance")
+        return False
+
+
+def _second_launch(show_window: bool, start_hidden: bool) -> int:
+    """run_app found the instance lock held: hand over, or say why not."""
+    if show_window and start_hidden:
+        # Autostart (or a second --tray) over a running app: it is already
+        # where --tray would have put it.
+        log.info("already running — nothing for a --tray launch to do")
+        return 0
+    if show_window and _ask_running_instance_to_show():
+        log.info("already running — asked it to show its window")
+        return 0
+    _already_running_notice(gui=show_window)
+    return 1
+
+
+# ── Shutdown and sign-out get past hide-to-tray ──────────────────────────
+
+def _system_close_handler(user_closing: Any, quitting: threading.Event,
+                          quit_app) -> Any:
+    """A FormClosing handler that lets every close but the user's through.
+
+    pywebview's own FormClosing handler turns our `closing` False into
+    args.Cancel = True whatever the CloseReason, so hide-to-tray also refused
+    Windows sign-out and shutdown, Task Manager, and the installer's Restart
+    Manager close. This one is added after pywebview's, so .NET runs it
+    second: anything that is not UserClosing has its Cancel undone, and the
+    app takes its ordinary quit path. That path joins the worker, so it runs
+    on its own thread — the UI thread must answer Windows promptly.
+    """
+    def on_form_closing(sender: Any, args: Any) -> None:
+        try:
+            if args.CloseReason == user_closing:
+                return   # the X button: hide to tray, as pywebview's did
+            args.Cancel = False
+            if quitting.is_set():
+                return
+            log.info("window closing (%s) — quitting instead of hiding",
+                     args.CloseReason)
+            quitting.set()
+            threading.Thread(target=quit_app, name="system-quit",
+                             daemon=True).start()
+        except Exception:
+            log.exception("system close handler failed")
+
+    return on_form_closing
+
+
+def _let_system_closes_through(window: Any, quitting: threading.Event,
+                               quit_app) -> None:
+    """Hook _system_close_handler onto the native form once it exists.
+
+    before_show fires on the UI thread right after pywebview built the Form
+    and subscribed its own handler, which is what puts ours second.
+    """
+    if sys.platform != "win32":
+        return
+
+    def attach() -> None:
+        try:
+            from System.Windows.Forms import CloseReason
+
+            window.native.FormClosing += _system_close_handler(
+                CloseReason.UserClosing, quitting, quit_app)
+        except Exception:
+            log.exception("could not hook system closes — Windows sign-out "
+                          "may wait on this app")
+
+    try:
+        window.events.before_show += attach
+    except Exception:
+        log.exception("could not hook system closes")
+
+
+def _loopback_opener(*handlers: Any):
+    """A urllib opener for this app's own 127.0.0.1 server: never proxied.
+
+    urlopen() follows the system proxy, and on Windows the "<local>" bypass
+    does not cover 127.0.0.1 — so on a machine with a corporate proxy the
+    handshake, launch key and all, went to the proxy and startup failed. An
+    empty ProxyHandler means "no proxy" rather than "the default one".
+    """
+    import urllib.request
+
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                       *handlers)
 
 
 def _wait_for_server(timeout: float = 20.0) -> bool:
@@ -402,13 +633,14 @@ def _wait_for_server(timeout: float = 20.0) -> bool:
     import json
     import urllib.request
 
+    opener = _loopback_opener()
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             req = urllib.request.Request(
                 f"{base_url()}/api/status",
                 headers={KEY_HEADER: _WEB["key"] or ""})
-            with urllib.request.urlopen(req, timeout=2) as resp:
+            with opener.open(req, timeout=2) as resp:
                 body = json.loads(resp.read().decode("utf-8", "replace"))
             if _WEB["instance"] and body.get("instance") == _WEB["instance"]:
                 return True
@@ -603,7 +835,7 @@ def run_selftest() -> int:
             # trades the key for a cookie is part of what must work.
             import http.cookiejar
 
-            opener = urllib.request.build_opener(
+            opener = _loopback_opener(
                 urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
             with opener.open(entry_url(), timeout=15) as resp:
                 body = resp.read().decode("utf-8", "replace")
@@ -717,9 +949,11 @@ def run_install_browser() -> int:
 def run_app(show_window: bool = True, start_hidden: bool = False) -> int:
     # Before touching the database or starting a worker: a second instance would
     # otherwise open the same SQLite file, run its own scrape and heartbeat
-    # against LSM, and share one Chromium profile with the first.
-    if _another_instance_is_running(gui=show_window):
-        return 1
+    # against LSM, and share one Chromium profile with the first. A windowed
+    # launch hands over to that instance rather than refusing (_second_launch).
+    if _claim_instance(DATA_DIR / "app.lock") is None:
+        return _second_launch(show_window, start_hidden)
+    show_event = _create_show_event() if show_window else None
 
     # The version was logged by main() before dispatching here, so the GUI
     # mode says it in the same place every other mode does.
@@ -805,6 +1039,10 @@ def run_app(show_window: bool = True, start_hidden: bool = False) -> int:
     window.events.closing += on_closing
 
     tray = Tray(orch, window, quitting)
+    # Sign-out, shutdown and installers close the window for real.
+    _let_system_closes_through(window, quitting, tray._quit)
+    # A second launch shows this window, the way the tray's Open Calendar does.
+    _listen_for_show(show_event, tray._open, quitting)
 
     # The updater's two ways of reaching the outside world: a found update
     # announces itself through the tray, and a staged-and-verified installer

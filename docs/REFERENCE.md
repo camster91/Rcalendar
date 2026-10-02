@@ -68,8 +68,8 @@ Edge's, where Edge is installed, or Playwright's Chromium's otherwise:
 | When | What happens |
 |---|---|
 | First run | Click **Sign in to LSM**. A browser window opens; you sign in and approve Duo **once**. The session cookie lands in the profile. |
-| Every morning | The 6 AM scrape reuses that profile. Headless, no prompts. |
-| Every 4 hours | A heartbeat re-pings LSM so the Shibboleth idle-timeout doesn't lapse. |
+| Every morning | The 6 AM scrape reuses that profile. Headless, no prompts. Only a scrape that starts at or after 6 AM counts as the day's refresh — an overnight sign-in or Scrape Now does not cancel it — and restarting the app once it has succeeded (an update's relaunch included) does not scrape again. |
+| Every 4 hours | A heartbeat re-pings LSM so the Shibboleth idle-timeout doesn't lapse. If that morning's scrape failed (no network yet, LSM down), the first heartbeat that finds the session alive runs it again. |
 | Session dies | The sidebar shows **Session expired** and a **Sign in to LSM** button appears. One click, one Duo tap. |
 | No access | The UTORid signed in but LSM will not show it the report: the app says **No access to LSM's report** and why, instead of asking for sign-in again. |
 
@@ -140,7 +140,10 @@ This drops a shortcut in your Startup folder pointing at
 reversible. `pythonw` rather than `python` so no console window flashes
 on every login, and `--tray` so no calendar window does either. The app
 comes up in the tray, scrapes at 06:00, and stays out of the way; the
-window opens from the tray's "Open Calendar".
+window opens from the tray's "Open Calendar", or from launching the app
+again (the Start menu): a second launch shows the running app's window and
+exits. Closing the window hides it to the tray, but Windows sign-out,
+shutdown, Task Manager and the installer close the app for real.
 
 ## Staying up to date
 
@@ -153,10 +156,17 @@ that fails changes nothing — the offer stands and the click downloads the old
 way). An amber banner appears in the toolbar and the sidebar offers
 **Install update**: the app checks the downloaded installer against the
 `sha256.txt` the release itself published, then checks its **Authenticode
-signature** is the project's own (signer thumbprint pinned in
-`app/config.py` `SIGNING_THUMBPRINTS`, timestamp present), and only then runs
+signature** is the project's own (Windows' `WinVerifyTrust` finds the
+signature intact, with at most an untrusted self-signed root to complain of;
+signer thumbprint pinned in `app/config.py` `SIGNING_THUMBPRINTS`; timestamp
+present), and only then runs
 it — a download that fails either check is never run. The checksum proves the
-file is what was published; the signature proves who published it. The
+file is what was published; the signature proves who published it. Neither
+says *which version* it is, so that is checked too: the release's installer
+must be named `RotmanLSMCalendar-Setup-<tag's version>.exe`, and the version
+written inside the signed installer must be that same version — a new tag
+carrying a genuine older installer is refused, never installed as a
+downgrade. The
 installer runs **silently** — a progress bar, no wizard pages, your previous
 shortcut/autostart choices kept — and starts the app again when it is done;
 your data folder is untouched throughout. *Skip this
@@ -179,8 +189,10 @@ with one honest sentence rather than pretending to work.
 
 The token travels as an `Authorization: Bearer` header on requests to
 `api.github.com` **only**. The installer download goes through the API's asset
-endpoint rather than the browser-facing redirect precisely so the header
-never has to survive one.
+endpoint, which redirects to GitHub's download host; Python would carry an
+ordinary header across that redirect, so the token is attached as one that
+urllib keeps off every redirected request. A redirect to anything but HTTPS is
+refused.
 
 ## Where the data lives
 
@@ -199,7 +211,8 @@ also mints a **key**: the window and the tray open the UI through a URL
 carrying it, and without it every page and API answers 401. Loopback is shared
 by every account on a machine, so the port alone cannot say whose app it is;
 the key can. Open the calendar from the tray (or the Start menu), not from a
-bookmark.
+bookmark. The app's own requests to this server bypass any system proxy, so
+the key never leaves the machine.
 
 | File | Purpose |
 |---|---|
@@ -439,7 +452,10 @@ carries no booking id, so a booking whose *time* is edited is reported
 honestly as one removal plus one addition rather than guessed at as a
 "move". Backfilled history is deliberately **not** logged as changes: a
 first observation is not a change, and 24,000 of them would bury the real
-feed.
+feed. The same goes for the front of the daily window: when it moves forward
+a month, the bookings in the newly visible month are stored but not logged as
+added — only bookings dated within the previous successful scrape's reach
+(its `date_to`) can be additions. Removals are unaffected.
 
 The retention margin is not decoration. A backfill window starts on the 1st
 of the month a year back, and today can be the 31st, so the oldest row a
@@ -680,7 +696,13 @@ the cursor.
   show as all-day rather than a wrong hour. Guessing would be worse. The
   same rule covers a 12-hour time: `2:00 PM` is read as 14:00 rather than
   as the `2` the digits spell, and a contradictory `13:00 PM` is dropped
-  rather than resolved one way or the other.
+  rather than resolved one way or the other. A window recovered from the
+  comment has to look like one — on five-minute marks, 30 minutes to 16
+  hours long — so "MBA 2026-2027" is not read as 20:26-20:27.
+- An end at midnight (`0`, `0000`, `2400`) or a zero-padded early hour
+  (`0100`) after a real start time is the **next day**, and a real end
+  earlier than the start rolls over too (22:00-07:00) when that gives at
+  most 16 hours. Such a booking's `end` is on the day after its `date`.
 - **A booking's identity is the change feed's pairing key** (title, room,
   start *and* end). The `end` matters: two blocks can share a name and a
   start, and without the end the feed would pair them and report the
@@ -720,15 +742,23 @@ the cursor.
   the worker's thread cannot offer. (`POST /api/scrape` does accept
   `interactive=1` to ask for that window; nothing in this repository posts it,
   and the page sends no body at all.)
-- The web UI binds to `127.0.0.1` only and has **no authentication** — loopback
-  *is* the access control. Anything on this machine running as this user can
-  read the calendar and drive the app. The one check there is refuses a
-  state-changing request that announces a foreign origin, which is what stops a
-  page you merely have open from starting a scrape or ending your session; it
-  does not authenticate anyone and does not hide anything. Do not change the
-  host to `0.0.0.0` — the process holds a live LSM session, and
-  reachable-from-the-network would mean an unauthenticated calendar that anyone
-  could read and a scrape anyone could start.
+- The web UI binds to `127.0.0.1` only, and every request but the favicon
+  needs the **per-launch key** (see [Where the data lives](#where-the-data-lives)):
+  as `?k=` on the URL the window or tray opens, then as the `lsm_key_<port>`
+  HttpOnly cookie it is traded for, or as the `X-LSM-Key` header. On top of
+  that, a state-changing request that announces any origin but the server's
+  own — scheme, host **and port**, so `http://127.0.0.1:8888` is as foreign as
+  any website — is refused, and so is one whose `Sec-Fetch-Site` is anything
+  but `same-origin` or `none`. That is what stops a page you merely have open,
+  including one on another local server, from starting a scrape or ending your
+  session. **Known residual risk:** cookies are not isolated by port, so the
+  browser that holds the key cookie also sends it to every other server on
+  `127.0.0.1`/`localhost` it visits (a dev server, Jupyter). A process
+  listening there can read the key and call this API directly; pages it serves
+  still cannot make the browser write here. There is no small fix (a cookie has
+  no port attribute), and the key changes every launch. Do not change the host
+  to `0.0.0.0` — the process holds a live LSM session, and the key is not built
+  to be the only thing between it and the network.
 
 ## Versions and releases
 

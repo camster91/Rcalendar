@@ -1763,6 +1763,60 @@ def test_week_view_owns_all_seven_of_its_days(browser, base: str) -> None:
         page.close()
 
 
+def test_week_view_bars_show_length_and_overlap(browser, base: str) -> None:
+    """A week bar is as long as its booking, and overlapping bars both show.
+
+    Each hour cell clipped its contents (overflow:hidden on a 56px cell), so a
+    09:00-12:00 class drew as 09:00-10:00. Every bar also spanned the full day
+    column, so bookings starting in the same hour sat exactly on top of each
+    other and only the last was visible. And a booking starting at 23:30 was
+    dropped: the last row is hour 23, and the filter compared 23.5 against it.
+    """
+    print("\nweek: bar length, overlap, and the last hour")
+    store.replace_events(
+        [
+            booking("142", D1, "09:00", "12:00", "Three hour class"),
+            booking("147", D1, "09:00", "10:00", "Same hour meeting"),
+            booking("157", D1, "23:30", "23:59", "Late night"),
+        ],
+        SOW, D2,
+    )
+    try:
+        page = open_page(browser, base, f"/?view=week&date={D1}")
+        try:
+            bars = page.evaluate(
+                """(d) => [...document.querySelectorAll(
+                     '.wkc[data-date="' + d + '"] .wkev')].map(b => {
+                     const r = b.getBoundingClientRect();
+                     return {t: b.textContent, top: r.top, left: r.left,
+                             right: r.right, height: r.height};
+                   })""", D1)
+            three = next((b for b in bars if "Three hour" in b["t"]), None)
+            same = next((b for b in bars if "Same hour" in b["t"]), None)
+            ok("week: the three-hour bar is drawn", three is not None)
+            ok("week: ...about three rows tall, not one",
+               three and three["height"] >= 56 * 3 - 4)
+            # The row is clipped no more: the bar's visible box (what the
+            # pointer can hit) reaches into the third hour.
+            ok("week: ...and its third hour is visible, not clipped",
+               three and page.evaluate(
+                   """([x, y, t]) => {
+                        const el = document.elementFromPoint(x, y);
+                        return !!el && el.textContent === t;
+                      }""",
+                   [three["left"] + 5, three["top"] + 56 * 2.5, three["t"]]))
+            ok("week: the same-hour booking is drawn too", same is not None)
+            ok("week: ...beside the other, not on top of it",
+               three and same and (same["left"] >= three["right"] - 1
+                                   or three["left"] >= same["right"] - 1))
+            ok("week: a booking starting at 23:30 is not dropped",
+               any("Late night" in b["t"] for b in bars))
+        finally:
+            page.close()
+    finally:
+        seeded()
+
+
 def test_week_view_is_reachable_by_keyboard(browser, base: str) -> None:
     """The week grid had no keyboard path at all.
 
@@ -2587,6 +2641,333 @@ NAMELESS_CONTROLS = """
 """
 
 
+def test_a_link_naming_only_stale_rooms_shows_every_room(browser, base: str) -> None:
+    """A link or preset naming only rooms that are no longer in the data.
+
+    parseFilters judged the list empty *before* intersecting it with the rooms
+    that exist, so rooms=999 came back as [] -- a selection of nothing, which
+    both pages took at its word: zero bookings, no tag to remove, and the
+    room dropdown saying "All Rooms" over a blank list.
+    """
+    page = open_page(browser, base, "/")
+    try:
+        total = events_shown(page)
+    finally:
+        page.close()
+    page = open_page(browser, base, "/?rooms=999")
+    try:
+        check("calendar: rooms=999 shows every booking, not none",
+              events_shown(page), total)
+        ok("calendar: ...with every room selected",
+           page.evaluate("() => activeRooms.size === ROOMS.length"))
+    finally:
+        page.close()
+    page = open_page(browser, base, "/list?rooms=999")
+    try:
+        check("list: rooms=999 shows every booking, not none",
+              events_shown(page), total)
+        check("list: ...and the dropdown's All Rooms is true",
+              page.eval_on_selector("#roomFilter", "el => el.value"), "all")
+    finally:
+        page.close()
+
+
+def test_emptying_the_search_box_clears_the_search(browser, base: str) -> None:
+    """Clearing the calendar's search box left the search on.
+
+    onSearch's empty branch returned without resetting searchQ, so the
+    calendar, the URL's q= and the List link all stayed filtered by a box that
+    read empty. The list page reset the term but kept its page number, so a
+    new search could open past the end of its own results.
+    """
+    page = open_page(browser, base, "/")
+    try:
+        total = events_shown(page)
+        page.fill("#q", "standup")
+        page.wait_for_function("() => /[?&]q=standup/.test(location.search)")
+        check("calendar: typing filters", events_shown(page), 1)
+        page.fill("#q", "")
+        page.wait_for_function("() => !/[?&]q=/.test(location.search)")
+        check("calendar: emptying the box shows everything again",
+              events_shown(page), total)
+        ok("calendar: ...and the List link drops q=",
+           "q=" not in page.get_attribute("#tab-list", "href"))
+
+        # A picked event title is held as a chip with the box emptied, and
+        # focusing the box runs onSearch too. That must not drop the chip:
+        # only an edit of the box clears the term.
+        page.evaluate("() => { addTag('query', 'Standup');"
+                      " document.getElementById('q').blur(); }")
+        page.focus("#q")
+        page.wait_for_timeout(400)
+        check("calendar: focusing the empty box keeps a picked term",
+              param(page, "q"), "standup")
+    finally:
+        page.close()
+
+    page = open_page(browser, base, "/list")
+    try:
+        # Two to a page, on the third page, so a term matching most of the
+        # corpus still has a third page to stay on if nothing resets it.
+        page.evaluate("() => { PER = 2; page = 2; render(); }")
+        page.fill("#search", "s")
+        page.wait_for_function("() => /[?&]q=s/.test(location.search)")
+        check("list: a new search goes back to the first page",
+              page.evaluate("() => page"), 0)
+        page.fill("#search", "")
+        page.wait_for_function("() => !/[?&]q=/.test(location.search)")
+        check("list: emptying the box leaves no search tag behind",
+              page.eval_on_selector_all("#tags .tag-q", "els => els.length"), 0)
+    finally:
+        page.close()
+
+
+def test_the_list_refresh_survives_a_failure_and_learns_new_rooms(browser, base: str) -> None:
+    """refreshBookings, when a scrape lands behind the list page.
+
+    It did not check r.ok, so a 500 became EVENTS=[] and "No events match
+    your filters"; and it re-read only the events, so a room that was new in
+    that scrape stayed out of ROOMS and out of the selection -- hidden under
+    "All Rooms". The calendar's refreshEvents already handled both.
+    """
+    page = open_page(browser, base, "/list")
+    try:
+        ORCH.last_scrape = "2026-03-10T06:00:00"
+        page.evaluate("async () => { await loadStatus(); }")
+        before = events_shown(page)
+
+        page.route("**/api/bootstrap", lambda route: route.fulfill(
+            status=500, content_type="application/json", body="{}"))
+        ORCH.last_scrape = "2026-03-11T06:00:00"
+        page.evaluate("async () => { await loadStatus(); }")
+        page.wait_for_timeout(500)
+        check("list: a failed refresh keeps the bookings on screen",
+              events_shown(page), before)
+        page.unroute("**/api/bootstrap")
+
+        store.replace_events(
+            [booking("142", D, "09:00", "12:00", "RSM 6307"),
+             booking("147", D, "14:00", "16:00", "CIBC Info Session"),
+             booking("157", D1, "10:00", "11:00", "Standup"),
+             booking("142", D1, "09:00", "17:00", "Full day workshop"),
+             booking("147", D1, "00:00", "23:00", "RENOVATIONS", all_day=True),
+             booking("127", SOW, "09:00", "12:00", "Sunday morning session"),
+             booking("127", NEXT_SOW, "00:00", "23:00", "Sunday service block",
+                     all_day=True),
+             booking("Auditorium", D2, "09:00", "12:00", HOSTILE),
+             booking("199", D1, "18:00", "20:00", "New room evening")],
+            SOW, D2)
+        ORCH.last_scrape = "2026-03-12T06:00:00"
+        page.evaluate("async () => { await loadStatus(); }")
+        page.wait_for_function("() => document.body.textContent"
+                               ".includes('New room evening')")
+        check("list: a room new in the scrape is shown under All Rooms",
+              events_shown(page), before + 1)
+        ok("list: ...and the dropdown offers it",
+           page.evaluate("() => [...document.getElementById('roomFilter')"
+                         ".options].some(o => o.value === '199')"))
+    finally:
+        ORCH.last_scrape = None
+        page.close()
+        seeded()
+
+
+def test_all_rooms_is_never_shown_under_a_lit_group(browser, base: str) -> None:
+    """Room paths that land on every room must take the group with them.
+
+    The Active row's room ✕, clicking the only selected room again, and
+    removing the last room tag all widened to every room and left the group
+    lit. writeURL then wrote groups=North with no rooms=, and the reload --
+    or the tab across to the other page -- narrowed back to North.
+    """
+    seeded_groups()
+    for label, path, act in [
+        ("calendar: clicking the only selected room",
+         "/?groups=North", lambda p: p.click('#rchips .rc[data-room="142"]')),
+        # ASCII only: labels are printed, and the Windows CI console is cp1252.
+        ("calendar: the Active row's room remove button",
+         "/?groups=North", lambda p: p.click("#active .tag-rm .tag-x")),
+        ("list: removing the last room tag",
+         "/list?groups=North", lambda p: p.click("#tags .tag-rm .tag-x")),
+    ]:
+        page = open_page(browser, base, path)
+        try:
+            act(page)
+            ok(label + " shows every room",
+               page.evaluate("() => activeRooms.size === ROOMS.length"))
+            check(label + " ...and drops the group", param(page, "groups"), None)
+            ok(label + " ...and unlights it",
+               page.evaluate("() => !document.querySelector("
+                             "'#gbar [data-g=\"North\"]').classList.contains('on')"))
+        finally:
+            page.close()
+
+
+def _stale_page(browser, base: str, path: str, hits: list):
+    """A page whose every /api/ call is refused as a stale key cookie is.
+
+    The test server is built without a key, so the 401 is the server's own
+    answer replayed (app/server.py _require_key), not a real refusal.
+    """
+    page = browser.new_page()
+    page.set_default_timeout(PAGE_TIMEOUT_MS)
+    page.route("**/*", _guard)
+
+    def refuse(route):
+        hits.append(route.request.url)
+        route.fulfill(status=401, content_type="application/json",
+                      body='{"status": "unauthorized", "message": '
+                           '"Open the calendar from the app\'s tray icon"}')
+    page.route("**/api/**", refuse)
+    page.goto(base + path, wait_until="load")
+    return page
+
+
+def test_a_stale_tab_says_so_and_stops_asking(browser, base: str) -> None:
+    """A 401 means this tab's key cookie is from an earlier launch.
+
+    Nothing in the UI knew that. The boot card offered an LSM sign-in, Sign
+    in toasted "A browser window opened" and polled for six minutes, Scrape
+    spun for fifteen -- none of which a sign-in can fix.
+    """
+    hits: list = []
+    page = _stale_page(browser, base, "/", hits)
+    try:
+        page.wait_for_selector("#staleBanner")
+        ok("calendar: a stale tab says so",
+           "out of date" in page.inner_text("#staleBanner"))
+        page.wait_for_function("() => /out of date/.test("
+                               "document.getElementById('sessInfo').textContent)")
+        card = page.inner_text("#bootCard")
+        ok("calendar: the boot card names the fix, not a sign-in",
+           "tray icon" in card and "Sign in" not in card)
+        check("calendar: ...and offers no sign-in button",
+              page.eval_on_selector("#loginBtn", "el => el.style.display"), "none")
+        n = len(hits)
+        page.evaluate("async () => { await loadStatus(); await loadFree(); }")
+        check("calendar: ...and stops polling", len(hits), n)
+    finally:
+        page.close()
+
+    # Stale after boot: the app restarted under an open tab.
+    page = open_page(browser, base, "/")
+    try:
+        page.route("**/api/**", lambda route: route.fulfill(
+            status=401, content_type="application/json",
+            body='{"status": "unauthorized"}'))
+        race = ("async () => await Promise.race([{0}.then(() => 'done'),"
+                " new Promise(s => setTimeout(() => s('hung'), 5000))])")
+        check("calendar: Sign in gives up at once",
+              page.evaluate(race.format("doLogin()")), "done")
+        ok("calendar: ...saying why",
+           "out of date" in page.inner_text("#toast"))
+        check("calendar: ...and puts the button back",
+              page.inner_text("#loginBtn"), "Sign in to LSM")
+        check("calendar: Scrape gives up at once",
+              page.evaluate(race.format("triggerScrape()")), "done")
+        check("calendar: ...and puts the button back",
+              page.evaluate("() => { const b = document.getElementById('scrapeBtn');"
+                            " return b.textContent + (b.disabled ? ' off' : ''); }"),
+              "⟳")
+        ok("calendar: ...under the banner",
+           page.query_selector("#staleBanner") is not None)
+    finally:
+        page.close()
+
+    hits = []
+    page = _stale_page(browser, base, "/list", hits)
+    try:
+        page.wait_for_selector("#staleBanner")
+        page.wait_for_function("() => /out of date/.test("
+                               "document.getElementById('list').textContent)")
+        page.wait_for_function("() => /out of date/.test("
+                               "document.getElementById('sessBadge').textContent)")
+        ok("list: a stale tab says so, in the list and the badge", True)
+        n = len(hits)
+        page.evaluate("async () => { await loadStatus(); }")
+        check("list: ...and stops polling", len(hits), n)
+    finally:
+        page.close()
+
+
+def test_a_failed_boot_offers_retry(browser, base: str) -> None:
+    """A /api/bootstrap that failed left the calendar on "Loading…" forever.
+
+    It says so now, with a Retry -- and does not write the URL on the way, so
+    the retry reloads the link the user came in on, not the empty defaults.
+    """
+    page = browser.new_page()
+    page.set_default_timeout(PAGE_TIMEOUT_MS)
+    page.route("**/*", _guard)
+    page.route("**/api/bootstrap", lambda route: route.fulfill(
+        status=500, content_type="application/json", body="{}"))
+    try:
+        page.goto(base + "/?rooms=142&view=month", wait_until="load")
+        page.wait_for_function("() => /Couldn't load/.test("
+                               "(document.getElementById('bootCard') || {}).textContent || '')")
+        ok("calendar: a failed boot says so", True)
+        check("calendar: ...and keeps the link's filters", param(page, "rooms"), "142")
+        page.unroute("**/api/bootstrap")
+        with page.expect_navigation():
+            page.click("#bootCard button")
+        page.wait_for_function(
+            "() => /\\d+ events/.test(document.getElementById('evcnt').textContent)")
+        check("calendar: Retry loads the calendar the link named",
+              page.evaluate("() => [...activeRooms]"), ["142"])
+    finally:
+        page.close()
+
+
+def test_the_filter_panel_keeps_keyboard_focus(browser, base: str) -> None:
+    """Every change in the ⚙ panel rebuilds it, and focus fell to <body>.
+
+    The next Tab then started from the top of the page behind the modal,
+    because the suppression list left the search box, the sidebar's links and
+    every button in .main tabbable -- and the redraw a change causes made
+    fresh ones on top.
+    """
+    page = open_page(browser, base, "/")
+    try:
+        page.evaluate("() => openFilters()")
+        chip = '#filterBody [data-fkey^="floor:"]:not([data-fkey="floor:*"])'
+        key = page.get_attribute(chip, "data-fkey")
+        page.focus(chip)
+        page.keyboard.press("Enter")
+        check("panel: Enter on a floor chip applies it",
+              page.evaluate("() => advFloors.size"), 1)
+        check("panel: ...and focus stays on that chip",
+              page.evaluate("() => document.activeElement.dataset.fkey"), key)
+        page.keyboard.press(" ")
+        check("panel: Space takes it off again", page.evaluate("() => advFloors.size"), 0)
+        check("panel: ...and focus is still there",
+              page.evaluate("() => document.activeElement.dataset.fkey"), key)
+
+        page.evaluate("() => { const s = document.getElementById('seatSel');"
+                      " s.focus(); s.value = '20';"
+                      " s.dispatchEvent(new Event('change')); }")
+        check("panel: the seats select keeps focus through a change",
+              page.evaluate("() => document.activeElement.id"), "seatSel")
+
+        check("panel: nothing behind the modal is tabbable after the redraw",
+              page.evaluate(
+                  "() => [...document.querySelectorAll("
+                  "'#q, .side a, .side button, .main button, .main [role=\"button\"]')]"
+                  ".filter(e => e.tabIndex >= 0).map(e => e.id || e.className)"),
+              [])
+        page.keyboard.press("Tab")
+        ok("panel: Tab moves within the panel",
+           page.evaluate("() => !!document.activeElement.closest('#filterModal')"))
+
+        page.keyboard.press("Escape")
+        check("panel: closing gives the search box back to Tab",
+              page.eval_on_selector("#q", "el => el.tabIndex"), 0)
+        ok("panel: ...and the calendar's buttons",
+           page.evaluate("() => [...document.querySelectorAll('.main button')]"
+                         ".every(e => e.tabIndex === 0)"))
+    finally:
+        page.close()
+
+
 def test_every_control_has_an_accessible_name(browser, base: str) -> None:
     """Four icon-only controls had no name, and list.html had none anywhere.
 
@@ -3202,6 +3583,7 @@ TESTS = [
     test_a_hostile_title_is_not_code,
     test_code_prefix_is_parsed_out_of_titles,
     test_week_view_owns_all_seven_of_its_days,
+    test_week_view_bars_show_length_and_overlap,
     test_week_view_is_reachable_by_keyboard,
     test_preset_chips_are_real_buttons,
     test_nav_steps_the_view_you_are_looking_at,
@@ -3209,6 +3591,13 @@ TESTS = [
     test_a_link_with_rooms_and_groups_means_one_thing,
     test_removing_the_last_group_keeps_the_calendar_visible,
     test_a_preset_that_names_only_a_group_selects_its_rooms,
+    test_a_link_naming_only_stale_rooms_shows_every_room,
+    test_emptying_the_search_box_clears_the_search,
+    test_the_list_refresh_survives_a_failure_and_learns_new_rooms,
+    test_all_rooms_is_never_shown_under_a_lit_group,
+    test_a_stale_tab_says_so_and_stops_asking,
+    test_a_failed_boot_offers_retry,
+    test_the_filter_panel_keeps_keyboard_focus,
     test_chips_do_not_outlive_the_filters_they_name,
     test_room_list_clicks_select_one_room_at_a_time,
     test_a_renamed_group_does_not_eat_its_neighbour,

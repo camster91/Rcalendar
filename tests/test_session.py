@@ -465,6 +465,147 @@ def test_a_refused_account_is_no_access_not_expired() -> None:
         session.browser = real
 
 
+def _run_login(urls, probe_state, wait_error=None):
+    """Drive interactive_login() over a scripted window, with no browser.
+
+    The page shows urls[i], moving one along per wait_for_timeout call, on a
+    fake clock that advances by the wait. Once the script runs out, the
+    person closes the window: the next wait raises what Playwright raises.
+    wait_error, if given, is raised from the first wait with the window still
+    open — a real failure rather than a closed window.
+
+    Returns (state, saves, probes).
+    """
+    from contextlib import contextmanager
+
+    from app import session
+
+    class Clock:
+        t = 1000.0
+
+        def monotonic(self):
+            return self.t
+
+    clock = Clock()
+
+    class FakePage:
+        def __init__(self):
+            self.i, self.closed = 0, False
+
+        @property
+        def url(self):
+            return urls[min(self.i, len(urls) - 1)]
+
+        def goto(self, url, **kw):
+            pass
+
+        def is_closed(self):
+            return self.closed
+
+        def wait_for_timeout(self, ms):
+            if wait_error is not None:
+                raise wait_error
+            if self.i >= len(urls) - 1:
+                self.closed = True
+                raise RuntimeError("Page.wait_for_timeout: Target page, "
+                                   "context or browser has been closed")
+            self.i += 1
+            clock.t += ms / 1000.0
+
+    class FakeCtx:
+        def __init__(self):
+            self.pages = [FakePage()]
+
+    saves, probes = [], []
+
+    @contextmanager
+    def fake_browser(headless=True, restore=True):
+        yield FakeCtx()
+
+    def fake_probe(headless=True):
+        probes.append(headless)
+        return probe_state
+
+    real = (session.browser, session.probe, session._save_cookies, session.time)
+    session.browser = fake_browser
+    session.probe = fake_probe
+    session._save_cookies = lambda ctx: saves.append(ctx)
+    session.time = clock
+    try:
+        state = session.interactive_login()
+    finally:
+        (session.browser, session.probe, session._save_cookies,
+         session.time) = real
+    return state, len(saves), len(probes)
+
+
+def test_closing_the_sign_in_window_reaches_the_probe() -> None:
+    """Closing the window mid-wait is a normal finish, not a raw error.
+
+    The loop spends nearly all its time inside wait_for_timeout, so that is
+    where a close lands — and the exception it raises used to become
+    SessionState("error", "Target page, context or browser has been
+    closed"), skipping the probe that would have found the session.
+    """
+    print("\nclosing the sign-in window")
+
+    from app.session import SessionState
+
+    alive = SessionState("ok", session_id=SID)
+    expired = SessionState("expired")
+
+    state, saves, probes = _run_login([PORTAL], alive)
+    check("closed mid-wait, session good -> ok", state.state, "ok")
+    check("...because the probe ran", probes, 1)
+
+    state, saves, probes = _run_login([PORTAL], expired)
+    check("closed mid-wait, no session -> expired, not error",
+          state.state, "expired")
+    ok("...saying the window was closed", "closed" in state.message
+       and "Target page" not in state.message)
+
+    # Signed in via the IdP, then closed during the 2 s settle wait.
+    state, saves, probes = _run_login([PORTAL, WEBLOGIN, APEX], alive)
+    check("closed during the settle wait -> ok", state.state, "ok")
+    check("...and the cookies were still saved", saves, 1)
+    check("...and the probe ran", probes, 1)
+
+    # Anything that is not a closed window is still an error.
+    state, saves, probes = _run_login([PORTAL], alive,
+                                      wait_error=RuntimeError("boom"))
+    check("another failure while waiting is still an error",
+          (state.state, state.message), ("error", "boom"))
+    check("...and is not dressed up by a probe", probes, 0)
+
+
+def test_already_signed_in_needs_a_still_url() -> None:
+    """"Already signed in" means one APEX URL, unchanged, for 8 s.
+
+    stable_since used to be set once and never compared with the URL, so
+    8 s of navigating about the LSM host — or sitting on the portal page,
+    which carries no session id — counted as signed in.
+    """
+    print("\nalready-signed-in check")
+
+    from app.session import SessionState
+
+    expired = SessionState("expired")
+    page52 = APEX.replace("143:51:", "143:52:")
+
+    # Signed-in is observable as a save plus the "did not stick" wording
+    # (the probe is told to disagree); not signed in is neither.
+    state, saves, _ = _run_login([APEX] * 12, expired)
+    check("one APEX URL held for > 8 s counts as signed in", saves, 1)
+    ok("...and is reported as reaching LSM", "did not stick" in state.message)
+
+    state, saves, _ = _run_login([APEX, page52] * 10, expired)
+    check("hopping between LSM pages for 20 s does not", saves, 0)
+    ok("...and is reported as a closed window", "closed" in state.message)
+
+    state, saves, _ = _run_login([PORTAL] * 20, expired)
+    check("20 s on the portal page (no session id) does not", saves, 0)
+
+
 def main() -> int:
     print("=" * 60)
     print("  Rotman LSM Calendar — sign-in window tests")
@@ -480,6 +621,8 @@ def main() -> int:
     test_the_browser_is_edge_when_the_machine_has_it()
     test_install_browser_downloads_nothing_when_edge_is_there()
     test_a_refused_account_is_no_access_not_expired()
+    test_closing_the_sign_in_window_reaches_the_probe()
+    test_already_signed_in_needs_a_still_url()
 
     print("\n" + "=" * 60)
     print(f"  {PASS} passed, {FAIL} failed")

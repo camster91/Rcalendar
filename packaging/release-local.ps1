@@ -31,7 +31,9 @@ local run has to promise:
      The tag is still created through gh (never `git push` of a v*
      tag), because a release must name the commit it targets and the
      release IS the publish. Pushing the branch is fine and required -
-     the release targets master.
+     the release targets the exact commit this run built (--target
+     <sha>, not the branch name), and the run refuses to start unless
+     the tree is clean and that commit IS origin/master.
 
   2. The hash is taken AFTER signing. build.ps1 signs the installer
      before this script hashes it, so sha256.txt and the release body
@@ -78,6 +80,35 @@ try {
 if (-not $AppVersion) { throw "could not read APP_VERSION from app\config.py" }
 if ($Version -ne $AppVersion) {
     throw "version mismatch: -Version $Version but app\config.py says $AppVersion"
+}
+
+# The tag must name what was built. `--target master` named whatever master
+# was on GitHub at publish time - a local edit, an unpushed commit or a push
+# made mid-build all shipped binaries under a tag pointing at other source.
+# So: a clean tree, HEAD equal to origin/master, and that exact SHA passed
+# to gh below.
+Push-Location $Root
+try {
+    $dirty = (& git status --porcelain)
+    if ($LASTEXITCODE -ne 0) { throw "git status failed (exit $LASTEXITCODE)" }
+    if ($dirty) {
+        throw ("the working tree has uncommitted changes - a release is " +
+               "built from a commit, so commit or discard them first")
+    }
+    & git fetch --quiet origin master
+    if ($LASTEXITCODE -ne 0) { throw "git fetch origin master failed (exit $LASTEXITCODE)" }
+    $Head = (& git rev-parse HEAD)
+    if ($LASTEXITCODE -ne 0 -or -not $Head) { throw "git rev-parse HEAD failed" }
+    $Head = $Head.Trim()
+    $Remote = (& git rev-parse origin/master)
+    if ($LASTEXITCODE -ne 0 -or -not $Remote) { throw "git rev-parse origin/master failed" }
+    $Remote = $Remote.Trim()
+} finally {
+    Pop-Location
+}
+if ($Head -ne $Remote) {
+    throw ("HEAD ($Head) is not origin/master ($Remote) - push or pull " +
+           "until they match; a release tags the commit it was built from")
 }
 
 # Inno Setup is a hard failure here. build.ps1 treats a missing ISCC as a
@@ -143,13 +174,15 @@ if (-not (Test-Path $certPath)) { throw "no code-signing .cer in dist\ - build.p
 Write-Host "  publishing v$Version to $Repo" -ForegroundColor Cyan
 Write-Host "    installer: $($Setup.Name)"
 Write-Host "    sha256:    $hash"
+Write-Host "    commit:    $Head"
 Write-Host ""
 
 # The tag is created by this call, through the API. It fires the push event
 # exactly like a pushed tag would (measured 2026-09-25 - see the header);
 # what keeps that event from starting release.yml is the workflow's
-# workflow_dispatch-only trigger, not the way this tag is made.
-& gh release create "v$Version" --target master --title "v$Version" `
+# workflow_dispatch-only trigger, not the way this tag is made. It targets
+# the SHA checked above, never the branch, which may have moved since.
+& gh release create "v$Version" --target $Head --title "v$Version" `
     --repo $Repo --notes-file $bodyPath `
     $Setup.FullName $shaPath $certPath
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

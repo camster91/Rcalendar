@@ -412,6 +412,41 @@ def test_a_window_that_crosses_midnight() -> None:
           set(batch["days"][NEXT]["free"]), {"142", "147", "200", "368"})
 
 
+def test_last_nights_booking_still_holds_its_room() -> None:
+    """A booking that ran past midnight keeps its room busy after midnight.
+
+    parse now rolls an 18:00-24:00 (or 22:00-01:00) end into the next day,
+    and the row is stored under the day it started. /api/today read only the
+    asked-about day onward, so "free now" at 00:30 never saw last night's
+    booking and called its room free while it was still in use.
+    """
+    print("\n/api/today — last night's booking, after midnight")
+    late, morning = "2026-10-20", "2026-10-21"
+    # Its own window, so the shared seed above is left alone.
+    store.replace_events([
+        booking(iso(late, "22:00"), iso(morning, "01:00"), room="142",
+                title="Late Gala"),
+    ], late, morning, run_id=902, trigger="manual")
+    client = create_app(StubOrch()).test_client()
+
+    def free_rooms(payload: dict) -> set:
+        return {r["room"] for r in payload["rooms"] if r["status"] == "free"}
+
+    check("the room is busy at 00:30 the next morning",
+          "142" in free_rooms(client.get(
+              f"/api/today?date={morning}&at=00:30").get_json()), False)
+    check("...and free once the booking has ended",
+          "142" in free_rooms(client.get(
+              f"/api/today?date={morning}&at=01:30").get_json()), True)
+    check("the batch form agrees",
+          "142" in client.get(
+              f"/api/today?dates={morning}&at=00:30").get_json()
+          ["days"][morning]["free"], False)
+    check("the morning's own count does not take in last night's booking",
+          client.get(f"/api/today?date={morning}&at=00:30").get_json()
+          ["total_bookings"], 0)
+
+
 # ── 2.8 the feed ─────────────────────────────────────────────────────────
 
 def test_changes_filters() -> None:
@@ -683,6 +718,24 @@ def test_next_rooms_is_one_rule_for_both_pages() -> None:
                   page.evaluate("""(rooms) => { const cur = new Set(['142']);
                                      nextRooms(cur, '157', 'pick', rooms);
                                      return [...cur]; }""", rooms), ["142"])
+
+            # parseFilters: a list that names only rooms or groups the data
+            # no longer has is no opinion (null), not a selection of nothing.
+            # The emptiness check used to run before the intersection, so a
+            # stale link came back rooms: [] and blanked the page.
+            ctx = {"rooms": rooms, "groups": {"North": ["142"]}}
+            pf = lambda raw: page.evaluate(  # noqa: E731
+                "([raw, ctx]) => { const f = parseFilters(raw, ctx);"
+                " return [f.rooms, f.groups]; }", [raw, ctx])
+            check("parseFilters: only stale rooms is no opinion",
+                  pf({"rooms": "999"}), [None, None])
+            check("parseFilters: ...as an array too",
+                  pf({"rooms": ["999", "998"]}), [None, None])
+            check("parseFilters: only a stale group is no opinion",
+                  pf({"groups": "Gone"}), [None, None])
+            check("parseFilters: a stale room beside a real one keeps the real one",
+                  pf({"rooms": "999,157", "groups": "Gone,North"}),
+                  [["157"], ["North"]])
         finally:
             browser.close()
 
@@ -703,6 +756,9 @@ def main() -> int:
     test_a_window_that_crosses_midnight()
     test_changes_filters()
     test_search_wildcards_are_literal()
+    # After the wildcard test, which counts every stored row: this one adds
+    # a row of its own in a window of its own.
+    test_last_nights_booking_still_holds_its_room()
     test_groups()
     test_presets()
     test_next_rooms_is_one_rule_for_both_pages()
