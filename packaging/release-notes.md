@@ -31,6 +31,14 @@ this app's publisher signed them.
   certificate — before anything runs.
 - It then installs **silently** (a progress bar, no wizard pages, your
   previous choices kept) and starts the app again when it is done.
+- The signature check asks Windows itself whether the signature is
+  intact, not just whose certificate it names, and the installer's own
+  signed version must match the release: an old installer can no longer
+  be passed off as a new one. Both checks run again right before it starts.
+- A GitHub token, if you set one, is only ever sent to GitHub's API, never
+  to the download servers it redirects to.
+- Upgrades now clear out the previous version's program files, and turning
+  off "start at sign-in" during a reinstall really removes it.
 
 ### Installer
 
@@ -38,6 +46,49 @@ this app's publisher signed them.
   only happens while the app runs); the desktop shortcut is now opt-in.
 - Add/Remove Programs links to the public releases page instead of a
   private repository nobody else can open.
+
+### Bookings are read more carefully
+
+- **No more lost bookings from one quoted comment.** A comment written in
+  single quotes near the top of the report could make the app misread
+  every later booking with a comma in it, drop those rows, and list them
+  as cancelled. Fixed.
+- **Late bookings keep their real end.** A booking that runs to or past
+  midnight used to be stored as one hour long; **Free now** after midnight
+  now sees it too.
+- Numbers in comments such as "MBA 2026-2027" are no longer read as times.
+- The **Changes** feed no longer lists a whole new month as "added" on the
+  1st, and a booking the report marks cancelled is removed even when only
+  part of the report could be read.
+
+### The morning refresh
+
+- A refresh that fails (no network yet, LSM down) is retried later that
+  day as soon as the session answers, instead of waiting until tomorrow.
+- Only a refresh at or after 6 AM counts as the day's, so an overnight
+  sign-in no longer cancels it, and restarting the app does not run it
+  twice.
+
+### Window and tray
+
+- The app no longer holds up Windows sign-out or shutdown.
+- Opening it from the Start menu while it is already running shows the
+  calendar instead of an "already running" message.
+- The tray's status line now updates.
+- Starts on PCs that use a network proxy.
+- An open calendar tab left over from before a restart or update says so
+  plainly, instead of asking you to sign in.
+
+### Calendar and list
+
+- **Week view:** bookings show their full length, bookings at the same
+  time sit side by side instead of hiding each other, and late-evening
+  bookings appear.
+- An old link or saved filter naming rooms that no longer exist shows
+  every room instead of a blank page.
+- Clearing the search box clears the search; a failed "free at" check no
+  longer blanks the calendar; the Changes view follows a background
+  refresh; the copy button and the filter panel work from the keyboard.
 
 ### Also fixed
 
@@ -52,7 +103,7 @@ this app's publisher signed them.
   calendar's room and group rules, so a filter means the same thing on
   both pages.
 
-The test suite now stands at 1196 assertions across eight
+The test suite now stands at more than 1,450 assertions across eight
 suites; each fix was verified by breaking it on purpose first.
 
 ## Install (per-user, no admin)
