@@ -1,11 +1,19 @@
 # The release build, run where compiling an exe costs nothing.
 #
-# NOT the release path any more, and manual-only on purpose. A release
-# has to ship signed binaries, and the signing certificate is a
-# per-user self-signed certificate in the build machine's user store
-# (packaging/sign.ps1): a runner cannot hold it, and a runner build
-# signs with an ephemeral certificate build.ps1 mints for itself, which
-# dies with the runner -- every importable trace of the signature gone.
+# THIS IS NOT THE RELEASE PATH, AND AS IT STANDS IT CANNOT SUCCEED.
+# packaging/release-local.ps1 is the release path. Run by hand, this
+# workflow stops at the build step: packaging/sign.ps1 throws unless a
+# certificate pinned in app/config.py SIGNING_THUMBPRINTS is in the
+# user store, and a runner never has one. Even past that, it publishes
+# only to this private repo, not to the public releases mirror the
+# installed apps' updater reads.
+#
+# Manual-only on purpose. A release has to ship signed binaries, and
+# the signing certificate is a per-user self-signed certificate in the
+# build machine's user store (packaging/sign.ps1): a runner cannot hold
+# it. Before sign.ps1 refused unpinned certificates, a runner build
+# signed with an ephemeral certificate minted for itself, which died
+# with the runner -- every importable trace of the signature gone.
 # Measured 2026-09-25: the first v1.1.2 publish (gh release create
 # --target master, a tag made through the API) fired this workflow
 # through its push:tags trigger -- an API-created tag is a tag push to
@@ -24,9 +32,8 @@
 #   1. the eight suites, because a release must not be built from code
 #      the suites have not passed;
 #   2. packaging/build.ps1, which compiles the onedir bundle, signs
-#      both binaries (on a runner, with an ephemeral certificate --
-#      see above) and then the Inno Setup installer from the same
-#      bundle;
+#      both binaries (on a runner, this is where it stops -- see
+#      above) and then the Inno Setup installer from the same bundle;
 #   3. the packaged exe's own --selftest (the "does the bundle work" half of
 #      verify-build.ps1; the "does it survive this machine's agents" half
 #      has no meaning on a runner with no agents -- the survival question
@@ -92,12 +99,17 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # The ref name arrives through env, not ${{ }} in the script: an
+      # expression is pasted into the PowerShell text before it runs, so a
+      # ref name containing a quote would be run as code.
       - name: The tag must name the version being built
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $tag = $env:REF_NAME.TrimStart("v")
           $app = (& .venv\Scripts\python.exe -c "import app.config as c; print(c.APP_VERSION)").Trim()
           if ($tag -ne $app) {
-            throw "tag ${{ github.ref_name }} names version $tag but APP_VERSION is $app"
+            throw "tag $env:REF_NAME names version $tag but APP_VERSION is $app"
           }
           Write-Host "tag matches APP_VERSION: $app"
 
@@ -176,8 +188,10 @@ jobs:
           Write-Host "$($setup.Name)"
           Write-Host "sha256 $hash"
 
+      # Pinned to a commit, not the movable v2 tag: this step holds a
+      # contents: write token, and a tag can be repointed at other code.
       - name: Publish the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             dist\RotmanLSMCalendar-Setup-*.exe

@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -79,7 +80,11 @@ def parse_version(tag: str) -> tuple[int, ...] | None:
     if tag[:1] in ("v", "V"):
         tag = tag[1:]
     parts = tag.split(".")
-    if not parts or not all(p.isdigit() for p in parts):
+    # isascii() as well as isdigit(): isdigit() alone accepts any Unicode
+    # digit, so a tag with an Arabic-Indic two parsed as (2, 0, 0), and a
+    # superscript passes isdigit() but makes int() raise instead of
+    # returning None.
+    if not parts or not all(p.isascii() and p.isdigit() for p in parts):
         return None
     return tuple(int(p) for p in parts)
 
@@ -439,8 +444,15 @@ _SIGNATURE_PS = (
 
 def _signature_facts(path: Path) -> dict[str, Any]:
     env = dict(os.environ, LSM_SIGNED_FILE=str(path))
+    # By full path, not bare name: CreateProcess searches the exe's own
+    # folder and the current directory before System32, and the install
+    # folder is per-user writable, so a powershell.exe dropped there would
+    # be the one asked whether the installer is genuine.
+    powershell = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                              "System32", "WindowsPowerShell", "v1.0",
+                              "powershell.exe")
     out = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+        [powershell, "-NoProfile", "-NonInteractive", "-Command",
          _SIGNATURE_PS],
         capture_output=True, text=True, timeout=60, env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -606,7 +618,15 @@ def purge_staging() -> None:
         log.warning("update staging purge could not remove %s (%s)",
                     path, exc)
 
-    shutil.rmtree(STAGE_DIR, onexc=_note)
+    # onexc is 3.12+, and setup.ps1 accepts 3.11, where passing it raised
+    # TypeError before anything was removed - so every start logged an
+    # error and the purge never happened. onerror is the older spelling;
+    # it hands over an exc_info tuple instead of the exception.
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(STAGE_DIR, onexc=_note)
+    else:
+        shutil.rmtree(STAGE_DIR,
+                      onerror=lambda func, path, ei: _note(func, path, ei[1]))
 
 
 # ── The GitHub token ──────────────────────────────────────────────────────

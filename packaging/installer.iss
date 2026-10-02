@@ -139,6 +139,18 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Name: "autostart"; Description: "Start {#AppName} in the tray when I sign in (keeps the morning refresh running)"; GroupDescription: "Options:"
 Name: "browser"; Description: "Set up the browser (uses Microsoft Edge; downloads Chromium, about 150 MB, only if Edge is missing)"; GroupDescription: "Options:"; Flags: checkedonce
 
+[InstallDelete]
+; An upgrade copies the new bundle over the old one, and [Files] only ever
+; adds or replaces: a .pyd or dist-info the new build no longer has would stay
+; in _internal\ and be importable beside its replacement. _internal\ is
+; entirely build output (the data lives in LOCALAPPDATA\RotmanLSMCalendar),
+; so it is cleared and laid down fresh.
+Type: filesandordirs; Name: "{app}\_internal"
+; [Icons] only creates the Startup shortcut when the task is ticked; it never
+; removes one. Unticking autostart on a reinstall has to remove the shortcut
+; the previous install left, or the choice does nothing.
+Type: files; Name: "{userstartup}\{#AppName}.lnk"; Tasks: not autostart
+
 [Files]
 ; The whole onedir build. _internal\ must travel with the exe — the exe alone
 ; is not the app — and it is one folder, not a single self-extracting file,

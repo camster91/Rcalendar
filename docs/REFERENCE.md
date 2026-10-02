@@ -801,8 +801,10 @@ Releases are **built locally, not by Actions** — because of the certificate,
 not because of billing. A release has to ship binaries signed with the
 project's code-signing certificate, and that certificate is a per-user,
 self-signed one in the build machine's user store: a runner cannot hold
-it, and what a runner build signs with is an ephemeral certificate
-`build.ps1` mints for it, which dies with the runner — measured
+it. A runner build now stops at `sign.ps1`, which refuses any certificate
+not pinned in `SIGNING_THUMBPRINTS`, so `release.yml` cannot succeed as it
+stands; before that refusal, a runner build signed with an ephemeral
+certificate minted for it, which died with the runner — measured
 2026-09-25, when the first v1.1.2 publish fired `release.yml` (an
 API-created tag fires the push event exactly like a pushed one, a premise
 this repo had assumed the other way) and the runner overwrote the signed
