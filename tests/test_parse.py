@@ -233,6 +233,23 @@ def test_rooms() -> None:
     check("bare number", normalise_room("142"), "142")
     check("named space preserved", normalise_room("Event North"), "Event North")
     check("empty", normalise_room(""), "")
+    check("RT run into the number", normalise_room("RT142"), "142")
+    check("ROT dash", normalise_room("ROT-142"), "142")
+    check("ROT space", normalise_room("ROT L1060"), "L1060")
+    check("rotman dash, lower case", normalise_room("rotman-134a"), "134a")
+    # The prefix has to end there: these are words that start with it.
+    check("Rotunda is not ROT + unda", normalise_room("Rotunda"), "Rotunda")
+    check("Rotman-less word starting RT", normalise_room("RTV Studio"),
+          "RTV Studio")
+
+    print("\nfloor guesses")
+    from app.rooms import floor_for
+    check("L + digit is the Lower Level", floor_for("L1099"), "Lower Level")
+    check("Lounge is not", floor_for("Lounge"), "")
+    check("Library is not", floor_for("Library"), "")
+    check("M + digit is the Mezzanine", floor_for("M101"), "Mezzanine")
+    check("Main Hall is not", floor_for("Main Hall"), "")
+    check("Meeting Room A is not", floor_for("Meeting Room A"), "")
 
 
 def test_cleanup() -> None:

@@ -105,8 +105,11 @@ _MIN_RECOVERED_SPAN = timedelta(minutes=30)
 # mis-keyed than overnight, and keeps the default length it always had.
 _MAX_SPAN = timedelta(hours=16)
 # Longest alternative first — otherwise "ROTMAN" matches as "RT" and
-# leaves "MAN L1060" behind.
-_ROOM_PREFIX_RE = re.compile(r"^(?:ROTMAN|ROT|RT)\s*[- ]?\s*", re.IGNORECASE)
+# leaves "MAN L1060" behind. The prefix must end at a separator or run
+# straight into a digit ("RT142"): with neither, it is the start of a word,
+# and "Rotunda" came out as "unda".
+_ROOM_PREFIX_RE = re.compile(r"^(?:ROTMAN|ROT|RT)(?:\s*-\s*|\s+|(?=\d))",
+                             re.IGNORECASE)
 
 
 def _pick(row: dict[str, str], field: str) -> str:

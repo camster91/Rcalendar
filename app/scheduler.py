@@ -779,9 +779,16 @@ class Orchestrator:
                     e for e in result.events
                     if e.get("room") not in excluded and not e.get("cancelled")
                 ]
+                # Named, not just dropped: absence is no evidence on a partial
+                # or empty report, but the report saying CANCLD is.
+                cancelled = [
+                    store.event_uid(e) for e in result.events
+                    if e.get("room") not in excluded and e.get("cancelled")
+                ]
                 store.replace_events(kept, result.date_from, result.date_to,
                                      run_id=run_id, trigger=trigger,
-                                     complete=result.complete)
+                                     complete=result.complete,
+                                     cancelled=cancelled)
                 store.replace_rooms(
                     [describe(r) for r in _rooms_from(kept, result.rooms)]
                 )

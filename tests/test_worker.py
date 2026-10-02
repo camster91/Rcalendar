@@ -1065,6 +1065,60 @@ def test_a_partial_scrape_does_not_delete_stored_bookings() -> None:
         _session.shutdown = real["shutdown"]
 
 
+def test_a_cancellation_on_a_partial_scrape_is_removed() -> None:
+    """The other wire: a CANCLD row has to reach the store as a cancellation.
+
+    `_do_scrape` drops cancelled rows from what it stores; if it drops them
+    silently, a page-read report (no deletes) leaves the cancelled booking
+    on the calendar. It must name them to replace_events instead.
+    """
+    print("\ncancellation on a partial scrape")
+
+    from datetime import date as _date
+
+    from app import session as _session
+
+    scheduler.store.init_db()
+    room = "P51CANC"
+    d1 = _date.today().isoformat()
+    window = (f"{_date.today():%d/%m/%Y}",) * 2
+
+    def booking(title: str, cancelled: bool = False) -> dict:
+        return {"title": title, "room": room,
+                "start": f"{d1}T09:00:00", "end": f"{d1}T11:00:00",
+                "description": "Lecture", "class_code": "A",
+                "cancelled": cancelled}
+
+    scheduler.store.replace_events([booking("Canc Kept"),
+                                    booking("Canc Gone"),
+                                    booking("Canc Omitted")],
+                                   *window, run_id=710)
+
+    real = {"probe": _session.probe, "scrape": scheduler.scrape,
+            "shutdown": _session.shutdown}
+    try:
+        _session.probe = lambda headless=True: _session.SessionState("ok")
+        _session.shutdown = lambda: None
+        scheduler.scrape = lambda **kw: scrape.ScrapeResult(  # type: ignore[assignment]
+            "ok", events=[booking("Canc Kept"),
+                          booking("Canc Gone", cancelled=True)],
+            date_from=window[0], date_to=window[1],
+            rooms=[room], complete=False,
+        )
+        scheduler.Orchestrator()._do_scrape(trigger="manual")
+
+        check("the cancelled booking is gone, the omitted one survives",
+              sorted(e["title"] for e in scheduler.store.get_events(room=room)),
+              ["Canc Kept", "Canc Omitted"])
+        check("...and the cancellation is in the feed",
+              [r["title"] for r in scheduler.store.get_changes(
+                  kind="removed", room=room, limit=100)], ["Canc Gone"])
+    finally:
+        _session.probe = real["probe"]
+        scheduler.scrape = real["scrape"]
+        _session.shutdown = real["shutdown"]
+
+
 def test_a_page_read_backfill_does_not_retire_the_history_fill() -> None:
     """A fill that could only read page one of a month is still owed.
 
@@ -1658,6 +1712,7 @@ def main() -> int:
     test_a_failed_command_does_not_kill_the_worker()
     test_a_report_read_off_the_page_is_marked_incomplete()
     test_a_partial_scrape_does_not_delete_stored_bookings()
+    test_a_cancellation_on_a_partial_scrape_is_removed()
     test_a_page_read_backfill_does_not_retire_the_history_fill()
     test_an_empty_report_has_to_be_the_report()
     test_the_no_data_probe_reads_the_message_not_the_phrase()

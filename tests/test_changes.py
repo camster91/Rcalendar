@@ -297,6 +297,51 @@ def test_empty_report_does_not_wipe() -> None:
                if r["room"] == "L1030"]), 0)
 
 
+def test_explicit_cancellation_is_removed() -> None:
+    """A row the report marks cancelled is evidence, not absence.
+
+    The scheduler drops cancelled rows before replace_events, so without the
+    `cancelled` uids the store could not tell "cancelled" from "not seen" —
+    and both guards above exist for "not seen". A partial report or a window
+    where every row was cancelled left the cancelled booking live.
+    """
+    print("\nan explicit cancellation is removed whatever the guards say")
+    w_from, w_to = win(-45, -5)
+    a, b, c = (ev("Mu Cancel A", "L1040", -40), ev("Mu Cancel B", "L1040", -35),
+               ev("Mu Cancel C", "L1040", -30))
+    store.replace_events([a, b, c], w_from, w_to, run_id=70)
+
+    def removed() -> list[str]:
+        return sorted(r["title"] for r in store.get_changes(
+            kind="removed", room="L1040", limit=500))
+
+    def live() -> list[str]:
+        return sorted(e["title"] for e in store.get_events(room="L1040"))
+
+    # Partial report: A seen, B marked cancelled, C simply missing.
+    store.replace_events([a], w_from, w_to, run_id=71, complete=False,
+                         cancelled=[store.event_uid(b)])
+    check("a partial report removes the booking it marks cancelled",
+          live(), ["Mu Cancel A", "Mu Cancel C"])
+    check("...and logs it, but not the one it merely omitted",
+          removed(), ["Mu Cancel B"])
+
+    # Every row in the window cancelled: the empty-report guard still holds
+    # for the rows not named, but the named ones go.
+    store.replace_events([], w_from, w_to, run_id=72,
+                         cancelled=[store.event_uid(a)])
+    check("an all-cancelled report removes what it names",
+          live(), ["Mu Cancel C"])
+    check("...and logs it", removed(), ["Mu Cancel A", "Mu Cancel B"])
+
+    # A uid both reported live and named cancelled stays: live wins.
+    store.replace_events([c], w_from, w_to, run_id=73,
+                         cancelled=[store.event_uid(c)])
+    check("a booking also reported live is kept", live(), ["Mu Cancel C"])
+    check("...and nothing new is logged", removed(),
+          ["Mu Cancel A", "Mu Cancel B"])
+
+
 def test_window_moving_forward_is_not_a_flood() -> None:
     """A month the window has just reached holds first observations, not adds.
 
@@ -360,16 +405,35 @@ def test_stats_are_recomputed_only_when_the_events_change() -> None:
     print("\nstats cache")
 
     import sqlite3
+    import threading
 
     first = store.stats()
-    queries: list[str] = []
-    conn = store._conn()
-    conn.set_trace_callback(queries.append)
+    computed: list[int] = []
+    real_compute = store._compute_stats
+
+    def counting(conn):
+        computed.append(1)
+        return real_compute(conn)
+
+    store._compute_stats = counting
     try:
         again = store.stats()
         check("an unchanged store answers the same", again, first)
-        ok("...without scanning the events table again",
-           not any("FROM events" in q for q in queries))
+        check("...without scanning the events table again", len(computed), 0)
+
+        # The server answers each poll on a fresh thread, and the cache used
+        # to be per thread, so it never hit. Two threads, one computation.
+        store.set_kv("stats_probe", 1)       # a write: the next read recounts
+        answers: list[dict] = []
+        threads = [threading.Thread(target=lambda: answers.append(store.stats()))
+                   for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        check("two threads after a write share one computation",
+              len(computed), 1)
+        check("...and agree", answers[0] == answers[1] == first, True)
 
         # A write through this connection.
         store.replace_events(
@@ -390,8 +454,83 @@ def test_stats_are_recomputed_only_when_the_events_change() -> None:
             other.close()
         check("a write through another connection is seen",
               store.stats()["total_events"], first["total_events"])
+
+        # And a write from another *thread* through the store, as the
+        # scheduler's would be.
+        t = threading.Thread(target=lambda: store.replace_events(
+            [{"title": "Stats probe 2", "room": "STATS2",
+              "start": "2026-05-05T09:00:00", "end": "2026-05-05T10:00:00",
+              "description": "", "class_code": "A", "cancelled": False}],
+            "05/05/2026", "05/05/2026", run_id=None, record_changes=False))
+        t.start()
+        t.join()
+        check("a write from another thread is seen",
+              store.stats()["total_events"], first["total_events"] + 1)
+        with sqlite3.connect(store.DB_PATH) as other:
+            other.execute("DELETE FROM events WHERE room = 'STATS2'")
+        other.close()
     finally:
-        conn.set_trace_callback(None)
+        store._compute_stats = real_compute
+
+
+def test_presets_and_groups() -> None:
+    print("\npresets and groups")
+    import threading
+
+    store.set_kv(store.PRESETS_KEY, [])
+    store.save_preset("Lab", {"rooms": "142"})
+    names = [p["name"] for p in store.save_preset("lab", {"rooms": "147"})]
+    check("a preset name differing only in case replaces the old one",
+          names, ["lab"])
+    check("...with the new filters",
+          store.load_presets()[0]["filters"], {"rooms": "147"})
+
+    # Concurrent saves: each one is a read-modify-write of the whole list, so
+    # without the lock two racing saves each read the old list and the later
+    # write drops the other's preset.
+    store.set_kv(store.PRESETS_KEY, [])
+    barrier = threading.Barrier(8)
+
+    def save(i: int) -> None:
+        barrier.wait()
+        store.save_preset(f"Race {i}", {"seats": i})
+
+    threads = [threading.Thread(target=save, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check("eight concurrent preset saves all land",
+          sorted(p["name"] for p in store.load_presets()),
+          [f"Race {i}" for i in range(8)])
+    store.set_kv(store.PRESETS_KEY, [])
+
+    # Groups: concurrent saves must not collide on one temp file (which
+    # raised, or renamed another save's half-written file into place).
+    errors: list[BaseException] = []
+    gbarrier = threading.Barrier(8)
+
+    def save_groups(i: int) -> None:
+        gbarrier.wait()
+        try:
+            store.save_groups({f"G{i}": [str(100 + i)]})
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=save_groups, args=(i,))
+               for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check("concurrent group saves do not fail", errors, [])
+    loaded = store.load_groups()
+    ok("...and the file holds one whole save",
+       len(loaded) == 1 and next(iter(loaded)).startswith("G"))
+    check("no temp files are left behind",
+          [p.name for p in store.GROUPS_PATH.parent.iterdir()
+           if p.name.endswith(".tmp")], [])
+    store.GROUPS_PATH.unlink()
 
 def test_runs_and_retention() -> None:
     print("\nruns and retention")
@@ -814,8 +953,10 @@ def main() -> int:
     test_backfill_logs_no_changes()
     test_partial_report_adds_but_never_deletes()
     test_empty_report_does_not_wipe()
+    test_explicit_cancellation_is_removed()
     test_window_moving_forward_is_not_a_flood()
     test_stats_are_recomputed_only_when_the_events_change()
+    test_presets_and_groups()
     test_runs_and_retention()
     test_prune()
     test_backfill_windows()

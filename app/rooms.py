@@ -90,7 +90,9 @@ def floor_for(room: str) -> str:
         return info["floor"]
     if not room:
         return ""
-    if room.startswith("L"):
+    # A letter is only a floor when a room number follows it: "L1060" is the
+    # Lower Level, "Lounge" and "Library" are not.
+    if re.match(r"L\d", room):
         return "Lower Level"
     if re.fullmatch(r"1\d{2}", room):
         return "Ground Floor"
@@ -112,7 +114,7 @@ def floor_for(room: str) -> str:
         return "8th Floor"
     if re.fullmatch(r"9\d{3}", room):
         return "9th Floor"
-    if room[:1].upper() == "M":
+    if re.match(r"M\d", room, re.IGNORECASE):     # not "Main Hall"
         return "Mezzanine"
     return ""
 

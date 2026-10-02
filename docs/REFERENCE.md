@@ -308,7 +308,10 @@ reading the page as if it were the report would erase everything past the first
 page and file it as a cancellation. `scrape()` therefore marks a page-read
 result incomplete, and an incomplete report adds and updates but deletes
 nothing — seeing a booking is evidence it exists, whereas not seeing one says
-nothing at all. The export path is asserted from both ends: that `scrape()`
+nothing at all. A row the report explicitly marks cancelled (CANCLD) is
+evidence too, so `_do_scrape` passes those uids through and the store removes
+and logs them even from an incomplete report, or one whose every row in the
+window is cancelled. The export path is asserted from both ends: that `scrape()`
 sets the flag, and that the flag reaches the store through `_do_scrape`.
 Verified by removal in all three places — dropping the store's guard, the
 scrape-side flag, or the scheduler's pass-through each turns the suite red.
@@ -616,14 +619,15 @@ Saved filters live in the database rather than in browser storage, so they
 follow the app rather than one browser profile. Two limits come with that: at
 most **20** are kept — saving a 21st drops the oldest — and a name must be
 **1–60 characters**, checked on the server as well as in the panel. Saving
-under a name that already exists overwrites that one rather than adding a
-second. Applying one makes the same inference a link does: a filter that names
+under a name that already exists — ignoring case, so "lab" replaces "Lab" and
+keeps the new spelling — overwrites that one rather than adding a second. Applying one makes the same inference a link does: a filter that names
 a group but no rooms selects that group's rooms, so what lands on the calendar
 is what its URL and the List tab both say it is.
 
 The groups are editable in the panel and saved to `room_groups.json` in one
-atomic write, so an interrupted save cannot leave truncated JSON behind and
-take every group with it. Saving replaces the whole set — the file is the
+atomic write (a unique temp file, fsynced, then renamed into place, one save
+at a time), so an interrupted save or a power cut cannot leave truncated JSON
+behind and take every group with it. Saving replaces the whole set — the file is the
 source of truth — so the calendar no longer synthesizes `Classroom` in the
 browser; it is seeded in `app/config.py` and the server is the single source.
 A group name cannot contain a **comma**: the shared-link vocabulary joins and
