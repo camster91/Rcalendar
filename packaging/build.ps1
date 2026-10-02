@@ -27,10 +27,20 @@
 
     Ship the whole folder. _internal\ must travel with the exe; the exe on its
     own is not the app. Run .\packaging\verify-build.ps1 to check the result.
+
+.PARAMETER Unsigned
+    Skip both signing steps. For a TEST build only, on a machine (such as a
+    CI runner) that does not hold the pinned certificate. An unsigned build
+    must never be published where the updater looks: every installed copy
+    from v1.3.0 on refuses an installer that is not signed by a pinned
+    certificate, and a copy that installed an unsigned build by hand still
+    only accepts signed updates after it.
 #>
 
 [CmdletBinding()]
-param()
+param(
+    [switch]$Unsigned
+)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -144,7 +154,12 @@ if (Test-Path $StaleOnefile) {
 # release that claims to be signed must be signed, and one that fails here
 # must not reach verify-build, whose signature checks would only rediscover
 # the same missing signature further from its cause.
-& (Join-Path $PSScriptRoot "sign.ps1") -Path $DistExe
+if ($Unsigned) {
+    Write-Host ""
+    Write-Host "  -Unsigned: NOT signing the app exe. Test build only - do not publish." -ForegroundColor Yellow
+} else {
+    & (Join-Path $PSScriptRoot "sign.ps1") -Path $DistExe
+}
 
 # -- The installer ---------------------------------------------------------
 #
@@ -212,8 +227,12 @@ if (-not $Setup) { throw "ISCC exited 0 but produced no setup exe in dist\" }
 # signed binary - an unsigned-then-hashed release would describe a file
 # nobody can download, because downloading replaces nothing and the
 # published installer would be the unsigned one.
-& (Join-Path $PSScriptRoot "sign.ps1") -Path $Setup.FullName `
-    -ExportTo (Join-Path $Root "dist\RotmanLSMCalendar-CodeSigning.cer")
+if ($Unsigned) {
+    Write-Host "  -Unsigned: NOT signing the installer. Test build only - do not publish." -ForegroundColor Yellow
+} else {
+    & (Join-Path $PSScriptRoot "sign.ps1") -Path $Setup.FullName `
+        -ExportTo (Join-Path $Root "dist\RotmanLSMCalendar-CodeSigning.cer")
+}
 
 Write-Host ""
 Write-Host "  Installer: $($Setup.FullName)" -ForegroundColor Green
