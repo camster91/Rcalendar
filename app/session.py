@@ -411,6 +411,27 @@ def heartbeat() -> "SessionState":
 
 # ── Interactive login ────────────────────────────────────────────────────
 
+def _wait_unless_closed(page: Any, ms: int) -> bool:
+    """Wait on the sign-in window; False if the person closed it meanwhile.
+
+    Playwright answers a closed window with "Target page, context or browser
+    has been closed". Left to the caller's handler, that raw text became the
+    sign-in result and the probe that could have found a perfectly good
+    session never ran. Any other failure is still a failure and is raised.
+    """
+    try:
+        page.wait_for_timeout(ms)
+        return True
+    except Exception as exc:
+        try:
+            closed = page.is_closed()
+        except Exception:
+            closed = True
+        if closed or "has been closed" in str(exc):
+            return False
+        raise
+
+
 def interactive_login(on_status=None) -> SessionState:
     """
     Open a visible Chromium window and let the user authenticate.
@@ -454,6 +475,7 @@ def interactive_login(on_status=None) -> SessionState:
                 deadline = time.monotonic() + MFA_WAIT_MS / 1000.0
                 saw_login = False
                 stable_since = None
+                stable_url = None
                 signed_in = False
                 closed_early = False
 
@@ -473,25 +495,35 @@ def interactive_login(on_status=None) -> SessionState:
                     elif step == "signed_in":
                         signed_in = True
                         break
-                    elif LSM_HOST in url:
-                        # Waiting on the LSM host with no IdP bounce at all:
+                    elif LSM_HOST in url and _session_id(url):
+                        # Waiting on an APEX page with no IdP bounce at all:
                         # the profile's cookie is probably still good and the
-                        # app loaded straight away. Require the URL to sit
-                        # still before believing that, or this is the same
-                        # false positive in another shape.
-                        if stable_since is None:
+                        # app loaded straight away. Require that same URL to
+                        # sit still before believing that, or this is the same
+                        # false positive in another shape. "Same URL" is the
+                        # point: the clock restarts on every navigation, so
+                        # wandering about the LSM host does not add up to 8 s.
+                        # The portal landing page carries no session id and
+                        # proves nothing, so it never starts the clock.
+                        if stable_since is None or url != stable_url:
                             stable_since = time.monotonic()
+                            stable_url = url
                         elif time.monotonic() - stable_since > ALREADY_SIGNED_IN_S:
                             signed_in = True
                             break
                     else:
                         stable_since = None
-                    page.wait_for_timeout(1000)
+                    if not _wait_unless_closed(page, 1000):
+                        # Closed mid-wait, which is where the loop spends
+                        # nearly all its time. Same as the check above.
+                        closed_early = True
+                        break
 
                 if signed_in:
                     # Give the portal a moment to finish writing cookies
-                    # before the context goes away.
-                    page.wait_for_timeout(2000)
+                    # before the context goes away. Closing the window now
+                    # is fine: save what is there and let the probe judge.
+                    _wait_unless_closed(page, 2000)
                     _save_cookies(ctx)
         except Exception as exc:
             log.exception("interactive login failed")

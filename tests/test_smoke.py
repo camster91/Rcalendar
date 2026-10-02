@@ -483,12 +483,53 @@ def test_cross_site_writes() -> None:
                       headers={"Referer": "https://evil.example/x"}).status_code,
           403)
 
-    # The app's own calls keep working, under either spelling of loopback.
+    # The app's own calls keep working, under either spelling of loopback: the
+    # page's Origin is whatever host it was opened as, and so is its Host.
     for origin in ("http://127.0.0.1:8765", "http://localhost:8765"):
         orch.calls.clear()
-        r = client.post("/api/scrape", headers={"Origin": origin})
-        check(f"loopback origin accepted ({origin})", r.status_code, 200)
+        r = client.post("/api/scrape", base_url=origin,
+                        headers={"Origin": origin,
+                                 "Sec-Fetch-Site": "same-origin"})
+        check(f"same-origin post accepted ({origin})", r.status_code, 200)
         check(f"...and the call landed ({origin})", orch.calls, ["scrape"])
+
+    # Cookies and SameSite ignore the port, so a page on another local server
+    # (a dev server, Jupyter) arrives with the key cookie. Only the origin
+    # check can tell it apart, and only by the port.
+    orch.calls.clear()
+    here = "http://127.0.0.1:8765"
+    for label, headers in (
+            ("another port's origin", {"Origin": "http://127.0.0.1:8888"}),
+            ("the other loopback spelling",
+             {"Origin": "http://localhost:8765"}),
+            ("another port's referer",
+             {"Referer": "http://127.0.0.1:8888/tree"}),
+            ("Sec-Fetch-Site same-site", {"Sec-Fetch-Site": "same-site"}),
+            ("Sec-Fetch-Site cross-site", {"Origin": here,
+                                           "Sec-Fetch-Site": "cross-site"})):
+        for path in ("/api/logout", "/api/login", "/api/update/install"):
+            check(f"{label} refused on {path}",
+                  client.post(path, base_url=here, headers=headers).status_code,
+                  403)
+    check("...and none of them landed", orch.calls, [])
+    check("Sec-Fetch-Site none (typed by the person) is allowed",
+          client.post("/api/scrape", base_url=here,
+                      headers={"Sec-Fetch-Site": "none"}).status_code, 200)
+
+    # And with the key on, which is how the app actually runs: the cookie a
+    # page on another port would carry does not get it past the check.
+    key = "k" * 32
+    keyed = create_app(orch, access_key=key).test_client()
+    keyed.set_cookie("lsm_key_8765", key, domain="127.0.0.1")
+    orch.calls.clear()
+    check("keyed: same-origin post with the cookie accepted",
+          keyed.post("/api/scrape", base_url=here,
+                     headers={"Origin": here}).status_code, 200)
+    check("keyed: another port's post with the cookie refused",
+          keyed.post("/api/logout", base_url=here,
+                     headers={"Origin": "http://127.0.0.1:8888"}).status_code,
+          403)
+    check("...and only the same-origin one landed", orch.calls, ["scrape"])
 
     # An absent origin is allowed on purpose. curl, the packaged --selftest and
     # this test client all send none; treating "unknown" as "hostile" would

@@ -738,15 +738,23 @@ the cursor.
   the worker's thread cannot offer. (`POST /api/scrape` does accept
   `interactive=1` to ask for that window; nothing in this repository posts it,
   and the page sends no body at all.)
-- The web UI binds to `127.0.0.1` only and has **no authentication** — loopback
-  *is* the access control. Anything on this machine running as this user can
-  read the calendar and drive the app. The one check there is refuses a
-  state-changing request that announces a foreign origin, which is what stops a
-  page you merely have open from starting a scrape or ending your session; it
-  does not authenticate anyone and does not hide anything. Do not change the
-  host to `0.0.0.0` — the process holds a live LSM session, and
-  reachable-from-the-network would mean an unauthenticated calendar that anyone
-  could read and a scrape anyone could start.
+- The web UI binds to `127.0.0.1` only, and every request but the favicon
+  needs the **per-launch key** (see [Where the data lives](#where-the-data-lives)):
+  as `?k=` on the URL the window or tray opens, then as the `lsm_key_<port>`
+  HttpOnly cookie it is traded for, or as the `X-LSM-Key` header. On top of
+  that, a state-changing request that announces any origin but the server's
+  own — scheme, host **and port**, so `http://127.0.0.1:8888` is as foreign as
+  any website — is refused, and so is one whose `Sec-Fetch-Site` is anything
+  but `same-origin` or `none`. That is what stops a page you merely have open,
+  including one on another local server, from starting a scrape or ending your
+  session. **Known residual risk:** cookies are not isolated by port, so the
+  browser that holds the key cookie also sends it to every other server on
+  `127.0.0.1`/`localhost` it visits (a dev server, Jupyter). A process
+  listening there can read the key and call this API directly; pages it serves
+  still cannot make the browser write here. There is no small fix (a cookie has
+  no port attribute), and the key changes every launch. Do not change the host
+  to `0.0.0.0` — the process holds a live LSM session, and the key is not built
+  to be the only thing between it and the network.
 
 ## Versions and releases
 

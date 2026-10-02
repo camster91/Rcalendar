@@ -4,16 +4,18 @@ Local web UI — serves the calendar and a small JSON API on 127.0.0.1.
 Bound to loopback only. This process has a live LSM session behind it, so
 it must not be reachable from the network.
 
-There is no *authentication* here, and that is still the right call — but
-loopback is a reachability boundary, not an authentication one, and the two
-are not the same thing. A page the user happens to have open elsewhere can
-POST a form to this port, and a form POST is not subject to a CORS
-preflight, so nothing in the browser stops it. That does not reach the LSM
-session (which lives in the Chromium profile, not in this process), but it
-does reach the control plane.
+Loopback is a reachability boundary, not an authentication one, and the two
+are not the same thing. Two checks stand on top of it: a per-launch key
+(below) and an origin check. The key alone does not stop the browser that
+holds it being steered: a page the user happens to have open elsewhere can
+POST a form to this port, a form POST is not subject to a CORS preflight,
+and the key cookie may ride along (see KEY_PARAM). That does not reach the
+LSM session (which lives in the Chromium profile, not in this process), but
+it does reach the control plane.
 
-So one check is enforced, on state-changing methods only: a request that
-announces a foreign origin is refused. See _refuse_cross_site_writes.
+So on state-changing methods a request that announces any origin but this
+server's own — scheme, host and port — is refused. See
+_refuse_cross_site_writes.
 
 What that guards is worth naming, because the endpoints are not all the same
 size. A cross-site POST could start a scrape, or pop a real login window at
@@ -65,12 +67,38 @@ _FAVICON: bytes | None = None
 # is traded for is named per port, because cookies are scoped to the host and
 # not the port: two instances one person runs side by side (LSM_PORT) must not
 # overwrite each other's.
+#
+# The same fact is a known leak, left in place deliberately: the browser
+# sends lsm_key_<port> with every request to 127.0.0.1 or localhost on ANY
+# port (RFC 6265 §8.5), and SameSite treats every port as the same site. So a
+# local server the same browser visits — a dev server, Jupyter — receives the
+# key in its Cookie header, and a process holding it can call this API
+# directly. Pages on such a server still cannot make the *browser* write here
+# (the origin check refuses another port); the leak is to the process. There
+# is no small fix: cookies have no port attribute (even __Host- is not
+# port-bound), and scoping by Path would mean moving every route under a
+# per-launch prefix. The key is per launch, and in the shared-PC case it
+# guards, the other account's server would also need this browser to visit it.
 KEY_PARAM = "k"
 KEY_HEADER = "X-LSM-Key"
 
 
 def key_cookie_name(port: int | None) -> str:
     return f"lsm_key_{port}" if port else "lsm_key"
+
+
+def _origin_of(url: str) -> tuple[str, str, int | None]:
+    """(scheme, host, port) of a URL, with the scheme's default port filled in,
+    so "http://localhost" and "http://localhost:80" compare equal."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return ("", "", None)
+    scheme = parts.scheme.lower()
+    if port is None:
+        port = {"http": 80, "https": 443}.get(scheme)
+    return (scheme, (parts.hostname or "").lower(), port)
 
 
 def create_app(orchestrator: Any, *, access_key: str | None = None,
@@ -129,8 +157,17 @@ def create_app(orchestrator: Any, *, access_key: str | None = None,
         A page open elsewhere can POST a form to this port, and a form POST is
         not subject to a CORS preflight, so the browser will not stop it. What
         the browser *does* do is announce the origin: Origin is sent on every
-        non-GET request, this app's own fetches included, so a foreign one is
-        grounds to refuse.
+        non-GET request, this app's own fetches included, so anything but
+        this server's own origin is grounds to refuse.
+
+        "Own origin" means scheme, host AND port. Any loopback host used to
+        pass, which let a page on another local server — a dev server, a
+        Jupyter notebook on 127.0.0.1:8888 — post here with the key cookie
+        attached, since cookies and SameSite both ignore the port. Comparing
+        with request.host_url keeps 127.0.0.1 and localhost both working: a
+        page's Origin is whatever host it was opened as, and so is its Host.
+        Sec-Fetch-Site, where the browser sends it, is checked as well: a
+        page on another port is "same-site", which is not "same-origin".
 
         An ABSENT origin is left alone rather than guessed at. `curl`, the
         Flask test client and the packaged `--selftest` all send nothing, and
@@ -147,14 +184,18 @@ def create_app(orchestrator: Any, *, access_key: str | None = None,
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return None
         origin = request.headers.get("Origin") or request.headers.get("Referer") or ""
-        if not origin:
+        fetch_site = request.headers.get("Sec-Fetch-Site")
+        if not origin and fetch_site is None:
             return None
-        # "Origin: null" (a sandboxed frame) splits to no host at all, so it
-        # lands here and is refused, which is what it deserves.
-        if (urlsplit(origin).hostname or "") in _LOOPBACK_HOSTS:
+        own = _origin_of(request.host_url)
+        # "Origin: null" (a sandboxed frame) parses to no host at all, so it
+        # never equals our own and is refused, which is what it deserves.
+        if ((not origin or _origin_of(origin) == own)
+                and own[1] in _LOOPBACK_HOSTS
+                and fetch_site in (None, "same-origin", "none")):
             return None
-        log.warning("refused %s %s from origin %s",
-                    request.method, request.path, origin[:120])
+        log.warning("refused %s %s from origin %s (Sec-Fetch-Site %s)",
+                    request.method, request.path, origin[:120], fetch_site)
         return jsonify({"status": "forbidden",
                         "message": "Cross-site request refused"}), 403
 
