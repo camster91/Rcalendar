@@ -1069,8 +1069,12 @@ def test_signature() -> None:
     # read the answers judge_signature depends on, or every update would be
     # refused (or, worse, waved through) on the strength of a bad struct.
     if sys.platform == "win32":
-        check("WinVerifyTrust reads an unsigned file as unsigned",
-              updater.win_verify_trust(stray), 0x800B0100)  # TRUST_E_NOSIGNATURE
+        # Not a code this pins: the stray is not even a real PE, so Windows
+        # answers TRUST_E_SUBJECT_FORM_UNKNOWN rather than NOSIGNATURE. What
+        # matters is that it is neither of the two the gate accepts.
+        ok("WinVerifyTrust does not pass an unsigned file",
+           updater.win_verify_trust(stray)
+           not in (updater.TRUST_OK, updater.CERT_E_UNTRUSTEDROOT))
         signed = Path(sys.executable)
         if updater.win_verify_trust(signed) == updater.TRUST_OK:
             # A file Windows trusts, then the same bytes with one changed: the
