@@ -94,6 +94,15 @@ def test_versions() -> None:
           updater.parse_version("1.2.0-rc1"), None)
     check("garbage is ignored", updater.parse_version("latest"), None)
     check("empty is ignored", updater.parse_version(""), None)
+    # isdigit() alone accepts every Unicode digit: an Arabic-Indic two used
+    # to parse as 2, and a superscript passed isdigit() and then made int()
+    # raise. Built with chr() so this file stays ASCII.
+    check("a non-ASCII digit is ignored",
+          updater.parse_version("v" + chr(0x0662) + ".0.0"), None)
+    check("a superscript is ignored, not a ValueError",
+          updater.parse_version("v1." + chr(0x00B2)), None)
+    check("a fullwidth digit is ignored",
+          updater.parse_version("v" + chr(0xFF11) + ".0"), None)
 
     check("a newer patch is newer", updater.is_newer("v1.1.10", "v1.1.9"), True)
     check("a newer minor is newer", updater.is_newer("v1.2.0", "v1.1.9"), True)
@@ -219,6 +228,51 @@ def test_download() -> None:
     updater.purge_staging()
     ok("purge empties the staging directory", not updater.STAGE_DIR.exists())
     updater.purge_staging()  # and is safe on a directory that is already gone
+
+    # A file the purge cannot remove is logged, not raised - on both sides of
+    # 3.12, where rmtree's onexc arrived. setup.ps1 accepts 3.11, which has
+    # only onerror; passing onexc there was a TypeError on every start.
+    import types
+    real_unlink = os.unlink
+
+    def refuse(path, *a, **kw):
+        if str(path).endswith("locked.exe"):
+            raise PermissionError("in use by another process")
+        return real_unlink(path, *a, **kw)
+
+    class FakeLog:
+        def __init__(self):
+            self.warned: list[str] = []
+
+        def warning(self, msg, *args):
+            self.warned.append(msg % args)
+
+    # The pre-3.12 branch runs on any interpreter (onerror still exists,
+    # deprecated); the onexc one only where rmtree knows the keyword.
+    vers = [(3, 11, 0)]
+    if sys.version_info >= (3, 12):
+        vers.append((3, 12, 0))
+    for ver in vers:
+        updater.STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        (updater.STAGE_DIR / "locked.exe").write_bytes(b"x")
+        (updater.STAGE_DIR / "stale.exe").write_bytes(b"x")
+        fake_log = FakeLog()
+        name = "%d.%d" % ver[:2]
+        try:
+            with patched(updater, log=fake_log,
+                         sys=types.SimpleNamespace(version_info=ver)), \
+                    patched(os, unlink=refuse):
+                updater.purge_staging()
+            ok(f"purge with a locked file does not raise ({name} path)", True)
+        except Exception as exc:
+            ok(f"purge with a locked file does not raise ({name} path): "
+               f"{type(exc).__name__}", False)
+        ok(f"...the locked file is logged by name ({name} path)",
+           any("locked.exe" in w for w in fake_log.warned))
+        ok(f"...and the rest is still removed ({name} path)",
+           not (updater.STAGE_DIR / "stale.exe").exists())
+    updater.purge_staging()
+    ok("once unlocked, the next purge clears it", not updater.STAGE_DIR.exists())
 
     # A release whose setup asset is not an installer is refused before a
     # byte is fetched.
@@ -1173,6 +1227,27 @@ def test_signature() -> None:
         else:
             print("  (skip) this Python is not Authenticode-signed; "
                   "no tamper check")
+
+    # PowerShell by full path: a bare name is searched for in the exe's own
+    # (per-user writable) folder and the current directory before System32.
+    ran: list = []
+
+    class FakeRun:
+        stdout = "{}"
+
+    def fake_run(argv, **kw):
+        ran.append(argv)
+        return FakeRun()
+
+    import subprocess as _sp
+    with patched(_sp, run=fake_run), \
+            patched(updater, win_verify_trust=lambda p: updater.TRUST_OK):
+        updater._signature_facts(stray)
+    exe = (ran[-1][0] if ran else "").replace("\\", "/").lower()
+    ok("PowerShell is run from System32 by full path, not found by search",
+       exe.endswith("/system32/windowspowershell/v1.0/powershell.exe")
+       and exe.startswith(os.environ.get("SystemRoot", r"C:\Windows")
+                          .replace("\\", "/").lower()))
 
     def broken(path):
         raise OSError("no PowerShell here")

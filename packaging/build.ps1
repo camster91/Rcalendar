@@ -55,7 +55,16 @@ if (-not (Test-Path $VenvPy)) {
 # supported path and setup is. Without this check the missing module surfaces as
 # a bare "PyInstaller failed" from the invocation below, which does not say what
 # to do about it.
-& $VenvPy -c "import PyInstaller" 2>$null
+# 'Continue' around the probe: under 'Stop', PowerShell 5.1 turns a native
+# command's redirected stderr (the ModuleNotFoundError traceback) into a
+# terminating error, so the missing-packer case threw before this message.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    & $VenvPy -c "import PyInstaller" 2>$null
+} finally {
+    $ErrorActionPreference = $prevEap
+}
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  PyInstaller is not installed in this venv." -ForegroundColor Red
     Write-Host "  Install it if you mean to build:"
@@ -84,6 +93,14 @@ if (Test-Path $StaleOnefile) {
     Write-Host "  Removing stale single-file build from the previous layout..."
     Remove-Item $StaleOnefile -Force
 }
+
+# Regenerate the icon first: it is a committed build output, so it is only as
+# current as the last time this ran, and the exe and the shortcuts both get
+# whatever is on disk. Cheap, and it makes a stale icon impossible -- but only
+# before PyInstaller, which embeds the .ico into the exe. It used to run just
+# before ISCC, so the installer had the new icon and the exe the old one.
+& $VenvPy (Join-Path $PSScriptRoot "make-icon.py")
+if ($LASTEXITCODE -ne 0) { throw "make-icon.py failed" }
 
 # COLLECT warns about a source it cannot read, *skips* it, and still exits 0.
 # Under onedir the build assembles into build\ and then copies to dist\, so a
@@ -180,12 +197,6 @@ try {
 if (-not $AppVersion) { throw "could not read APP_VERSION from app\config.py" }
 
 Write-Host "  Compiling the installer (version $AppVersion)..."
-
-# Regenerate the icon first: it is a committed build output, so it is only as
-# current as the last time this ran, and the exe and the shortcuts both get
-# whatever is on disk. Cheap, and it makes a stale icon impossible.
-& $VenvPy (Join-Path $PSScriptRoot "make-icon.py")
-if ($LASTEXITCODE -ne 0) { throw "make-icon.py failed" }
 
 & $Iscc "/DAppVersion=$AppVersion" (Join-Path $PSScriptRoot "installer.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }

@@ -235,6 +235,76 @@ def test_the_session_cookie_is_never_written_in_cleartext() -> None:
             logger.removeHandler(capture)
 
 
+def test_the_snapshot_is_replaced_whole_or_not_at_all() -> None:
+    """session.bin is written atomically, and read back only in its own shape.
+
+    write_bytes truncated the file before writing it, so a power cut in the
+    middle left half a DPAPI blob — undecryptable, and the good snapshot it
+    was replacing already gone. And a snapshot that decrypted to valid JSON
+    that was not an object raised AttributeError out of `data.get`.
+
+    DPAPI is stubbed (an identity cipher) because off Windows protect()
+    refuses — which is the right answer there, and not the one under test.
+    """
+    print("\nthe cookie snapshot is replaced whole, and read only in its shape")
+    import tempfile
+    from pathlib import Path as _Path
+
+    from app import dpapi, session
+
+    class FakeCtx:
+        def cookies(self):
+            return [{"name": "_shibsession_1", "value": "v",
+                     "domain": "lsm.utoronto.ca", "path": "/"}]
+
+    real = (dpapi.available, dpapi.protect, dpapi.unprotect,
+            session.SESSION_FILE, os.fsync)
+    with tempfile.TemporaryDirectory() as tmp:
+        target = _Path(tmp) / "session.bin"
+        target.write_bytes(b"the old, good snapshot")
+        session.SESSION_FILE = target
+        dpapi.available = lambda: True
+        dpapi.protect = lambda b: b
+        dpapi.unprotect = lambda b: b
+        try:
+            session._save_cookies(FakeCtx())
+            check("a save replaces the snapshot",
+                  len(session._load_cookies()), 1)
+            check("...and leaves no temp file behind",
+                  sorted(p.name for p in _Path(tmp).iterdir()),
+                  ["session.bin"])
+
+            # A write that dies before the rename: the file on disk is the
+            # one that was there before, not a truncated half of the new one.
+            target.write_bytes(b"the old, good snapshot")
+
+            def dying_fsync(fd):
+                raise OSError("power cut")
+
+            os.fsync = dying_fsync
+            session._save_cookies(FakeCtx())
+            os.fsync = real[4]
+            check("an interrupted save leaves the old snapshot intact",
+                  target.read_bytes(), b"the old, good snapshot")
+            check("...and no temp file behind",
+                  sorted(p.name for p in _Path(tmp).iterdir()),
+                  ["session.bin"])
+
+            for label, raw in (("a JSON list", b"[1]"),
+                               ("a JSON string", b'"cookies"'),
+                               ("cookies that are not a list",
+                                b'{"cookies": "x"}')):
+                target.write_bytes(raw)
+                try:
+                    got = session._load_cookies()
+                except Exception as exc:
+                    got = f"raised {type(exc).__name__}"
+                check(f"a snapshot holding {label} reads as none", got, [])
+        finally:
+            (dpapi.available, dpapi.protect, dpapi.unprotect,
+             session.SESSION_FILE, os.fsync) = real
+
+
 def test_logout_clears_and_reports() -> None:
     """Signing out has to clear the live session, and admit it when it cannot.
 
@@ -617,6 +687,7 @@ def main() -> int:
     test_junk()
     test_snapshot_guard()
     test_the_session_cookie_is_never_written_in_cleartext()
+    test_the_snapshot_is_replaced_whole_or_not_at_all()
     test_logout_clears_and_reports()
     test_the_browser_is_edge_when_the_machine_has_it()
     test_install_browser_downloads_nothing_when_edge_is_there()

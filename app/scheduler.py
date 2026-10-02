@@ -52,6 +52,12 @@ CMD_STOP = "stop"
 class Orchestrator:
     def __init__(self) -> None:
         self._q: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        # Set by stop(), read by the loop before each command. CMD_STOP alone
+        # queues behind whatever is already waiting — a first-run backfill is
+        # a dozen report runs — so Quit waited out stop()'s join and the
+        # process exited with the worker still inside Playwright. The flag
+        # jumps the queue; CMD_STOP is still sent to wake an idle get().
+        self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._status_lock = threading.Lock()
 
@@ -98,12 +104,20 @@ class Orchestrator:
         # the sidebar is the durable record either way.
         self._update_notify = None
         self._update_quit = None
+        # (path, sha256) of the installer _stage_update last verified. The
+        # staged file sits in a user-writable directory between the check
+        # and the click — hours, sometimes — so the install re-hashes it
+        # against this before running it rather than trusting the earlier
+        # verdict. Private, not in the status dict: /api/status has no use
+        # for it.
+        self._staged_sha256: tuple[str, str] | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, name="lsm-worker", daemon=True
         )
@@ -111,6 +125,7 @@ class Orchestrator:
         log.info("orchestrator started")
 
     def stop(self) -> None:
+        self._stop.set()
         self._q.put((CMD_STOP, {}))
         # The update path calls the quit hook from this worker's own thread,
         # and a thread joining itself raises RuntimeError. It also does not
@@ -205,13 +220,17 @@ class Orchestrator:
             log.exception("session bootstrap failed; the worker will keep running")
 
         while True:
-            timeout = self._seconds_until_next_tick()
-            try:
-                command, kwargs = self._q.get(timeout=timeout)
-            except queue.Empty:
-                command, kwargs = ("", {})
+            # Checked before the get as well as after it: work queued ahead
+            # of CMD_STOP is skipped, not run, once Quit has been asked for.
+            command, kwargs = (CMD_STOP, {})
+            if not self._stop.is_set():
+                timeout = self._seconds_until_next_tick()
+                try:
+                    command, kwargs = self._q.get(timeout=timeout)
+                except queue.Empty:
+                    command, kwargs = ("", {})
 
-            if command == CMD_STOP:
+            if command == CMD_STOP or self._stop.is_set():
                 log.info("worker stopping")
                 # Guarded too, and for the same reason: raising here would
                 # kill the thread on its way out rather than stop it, so the
@@ -289,7 +308,10 @@ class Orchestrator:
     def _due_for_heartbeat(self, now: datetime) -> bool:
         if self._last_heartbeat is None:
             return False
-        return now - self._last_heartbeat >= timedelta(hours=HEARTBEAT_HOURS)
+        age = now - self._last_heartbeat
+        # A negative age is a stamp taken while the clock ran ahead. Read as
+        # "not yet", it would hold the keep-alive off until that future time.
+        return age < timedelta(0) or age >= timedelta(hours=HEARTBEAT_HOURS)
 
     def _due_for_update_check(self, now: datetime) -> bool:
         """Due when the last check is unknown or older than 24 hours.
@@ -298,16 +320,18 @@ class Orchestrator:
         this object: the cadence is a fact about the machine, not the process,
         so a restart must not reset it — otherwise an app that is relaunched
         often would check GitHub on every launch instead of once a day. A
-        corrupt timestamp reads as due; the cost is one check.
+        corrupt timestamp reads as due; the cost is one check. So does one in
+        the future — stamped while the clock was set ahead, it would
+        otherwise stop every check until the clock caught up with it.
         """
         last = store.load_update_state().get("last_check")
         if not last:
             return True
         try:
-            return now - datetime.fromisoformat(last) >= timedelta(
-                hours=UPDATE_CHECK_HOURS)
-        except ValueError:
+            age = now - datetime.fromisoformat(last)
+        except (TypeError, ValueError):
             return True
+        return age < timedelta(0) or age >= timedelta(hours=UPDATE_CHECK_HOURS)
 
     # ── Operations (worker thread only) ──────────────────────────────────
 
@@ -539,7 +563,29 @@ class Orchestrator:
         problem = updater.verify_signature(path)
         if problem:
             raise updater.UpdateError(problem)
+        self._staged_sha256 = (str(path), expected)
         return str(path)
+
+    def _reverify_staged(self, staged: str) -> str | None:
+        """None when the staged installer still passes both checks, else why.
+
+        The verdict _stage_update reached is about the bytes as they were at
+        check time, and the staging directory is writable by anything running
+        as this user. So the checks are asked again right before the launch.
+        The hash needs the expected value _stage_update kept; a path it did
+        not stage (none is, in the app) gets the signature check alone.
+        """
+        path = Path(staged)
+        try:
+            known = self._staged_sha256
+            if known and known[0] == staged and not updater.verify_sha256(
+                    path, known[1]):
+                return ("The staged installer has changed since it was "
+                        "verified — it will not be run. Try again.")
+        except OSError:
+            return ("The staged installer could not be read — it will not "
+                    "be run. Try again.")
+        return updater.verify_signature(path)
 
     def _do_install_update(self) -> None:
         """Put the release's installer on disk verified (unless the check
@@ -603,8 +649,15 @@ class Orchestrator:
                 self._set(busy=False, busy_action="", progress="")
 
         # The state above (or the one we just built) says the staged file
-        # was verified against the release's own checksum — from here on,
-        # the app's job is to get out of the installer's way.
+        # was verified against the release's own checksum — but that was at
+        # check time, so both checks are asked again on the bytes about to
+        # run. A refusal clears `staged`, so the next click downloads afresh.
+        problem = self._reverify_staged(staged)
+        if problem:
+            log.error("update install refused: %s", problem)
+            self._set_update(state="failed", message=problem, staged="")
+            return
+        # From here on, the app's job is to get out of the installer's way.
         self._set_update(state="installing",
                          message="The installer is running — the app will "
                                  "close now.")
@@ -615,6 +668,13 @@ class Orchestrator:
             self._set_update(state="failed",
                              message="The installer could not be started.")
             return
+        # Close the browser driver here, on the thread that owns it. The quit
+        # hook ends the process, and the CMD_STOP it queues — whose handler
+        # would otherwise do this — is never reached by this same thread.
+        try:
+            session.shutdown()
+        except Exception:
+            log.exception("session shutdown failed")
         if self._update_quit:
             self._update_quit()
 
@@ -719,9 +779,16 @@ class Orchestrator:
                     e for e in result.events
                     if e.get("room") not in excluded and not e.get("cancelled")
                 ]
+                # Named, not just dropped: absence is no evidence on a partial
+                # or empty report, but the report saying CANCLD is.
+                cancelled = [
+                    store.event_uid(e) for e in result.events
+                    if e.get("room") not in excluded and e.get("cancelled")
+                ]
                 store.replace_events(kept, result.date_from, result.date_to,
                                      run_id=run_id, trigger=trigger,
-                                     complete=result.complete)
+                                     complete=result.complete,
+                                     cancelled=cancelled)
                 store.replace_rooms(
                     [describe(r) for r in _rooms_from(kept, result.rooms)]
                 )
@@ -880,6 +947,23 @@ class Orchestrator:
                 return
 
             for i, (win_from, win_to) in enumerate(windows, 1):
+                if self._stop.is_set():
+                    # Quit was asked for. The months already fetched are
+                    # committed; the rest stay owed (an `error` run does not
+                    # retire the fill), and the worker gets to its shutdown
+                    # inside stop()'s join instead of a dozen reports later.
+                    store.finish_run(
+                        run_id, "error", events_count=stored,
+                        date_from=reach_from, date_to=reach_to,
+                        message=f"Stopped after {i - 1}/{len(windows)} "
+                                f"months — the app was closing")
+                    self._set_backfill(running=False,
+                                       finished_at=datetime.now().isoformat(),
+                                       message="Stopped — the app was closing",
+                                       failed=len(errored)
+                                             + (len(windows) - (i - 1)))
+                    log.info("backfill stopped: the app is closing")
+                    return
                 self._set(progress=f"Backfill {i}/{len(windows)}: "
                                    f"{win_from} → {win_to}")
                 try:

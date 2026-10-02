@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import tempfile
 import threading
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -24,6 +25,9 @@ from app.config import (
 )
 
 _local = threading.local()
+# Serialises the read-modify-write saves (presets, room groups): the server
+# answers each request on its own thread.
+_save_lock = threading.Lock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -179,6 +183,7 @@ def replace_events(
     trigger: str = "manual",
     record_changes: bool = True,
     complete: bool = True,
+    cancelled: Iterable[str] | None = None,
 ) -> int:
     """
     Upsert a scraped window and record what changed in it.
@@ -212,6 +217,15 @@ def replace_events(
     of the two, because it destroys bookings that are still real and logs them
     as cancellations, so `scrape` marks a report incomplete whenever it reads
     the rendered page instead of the export.
+
+    `cancelled` is the uids (event_uid) of rows the report *explicitly* marks
+    cancelled, which the caller drops from `events`. Those are positive
+    evidence, not absence, so neither guard applies to them: a stored booking
+    named here is deleted and logged as removed even when `complete=False` or
+    the report is otherwise empty. Without it a cancellation read off the
+    rendered page, or a window where every row was cancelled, left the
+    booking live on the calendar. A uid that is also in `events` is live and
+    wins.
 
     Note that a booking whose time is edited gets a different uid, so it is
     recorded as one removal and one addition rather than a "move". The report
@@ -273,7 +287,14 @@ def replace_events(
             )
 
         added = [u for u in seen if u not in before] if have_window else []
-        removed = [u for u in before if u not in seen] if have_window else []
+        # Explicit cancellations are kept apart from mere absences so the
+        # guards below, which exist for absences, cannot swallow them.
+        cancelled_set = set(cancelled or ()) - seen
+        explicit = ([u for u in before if u in cancelled_set]
+                    if have_window else [])
+        removed = ([u for u in before
+                    if u not in seen and u not in cancelled_set]
+                   if have_window else [])
 
         # A booking past the reach of the last good scrape was never looked
         # for, so finding it is a first observation, not an addition — the
@@ -311,6 +332,9 @@ def replace_events(
                 )
             removed = []
 
+        # The report saying "cancelled" is evidence whatever else was missed.
+        removed += explicit
+
         if record_changes and (added or removed):
             conn.executemany(
                 """INSERT INTO changes
@@ -331,6 +355,11 @@ def replace_events(
                 f"AND uid NOT IN ({placeholders})",
                 (iso_from, iso_to, *seen),
             )
+        # Redundant after the reconcile above; the only delete when it is
+        # skipped (incomplete or empty report).
+        if explicit:
+            conn.executemany("DELETE FROM events WHERE uid = ?",
+                             [(u,) for u in explicit])
         conn.executemany(
             """INSERT INTO events
                  (uid, title, room, start_iso, end_iso, date, description,
@@ -807,39 +836,62 @@ def _row_to_event(r: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+# stats()'s own connection and its last answer, shared by every thread.
+_stats_lock = threading.Lock()
+_stats_state: dict[str, Any] = {}
+
+
 def stats() -> dict[str, Any]:
     """Counts and date range of the stored events, recomputed only on change.
 
     /api/status calls this on every poll — every 60 s per open page, every
     few seconds while the worker is busy — and the answer only moves when the
-    events table does. So the answer is kept per connection (connections are
-    per thread) with a key that moves on any write: `total_changes` counts
-    this connection's own writes, and `PRAGMA data_version` moves when any
-    *other* connection commits (measured: it does not move for our own). A
-    write made through another connection — the scheduler's thread, or a
-    test's raw sqlite3 handle — therefore invalidates it too, which a cache
-    cleared only by this module's writers would miss.
-    """
-    conn = _conn()
-    key = (conn.total_changes,
-           conn.execute("PRAGMA data_version").fetchone()[0])
-    cached = getattr(_local, "stats", None)
-    if cached and cached[0] is conn and cached[1] == key:
-        return dict(cached[2])
+    events table does. The cache used to be per thread, and the server makes a
+    thread per request, so it never hit: every poll opened a connection and
+    recounted the table.
 
+    So the cache is module-wide, behind a lock, and read through one
+    connection of its own that never writes. Its `PRAGMA data_version` moves
+    whenever *any other* connection commits (measured: it does not move for a
+    connection's own writes, which is why this one must not write). Every
+    writer is another connection — this module's per-thread ones, the
+    scheduler's, a test's raw sqlite3 handle — so any write invalidates it,
+    which a cache cleared only by this module's writers would miss. The lock
+    is held across the recount, so concurrent polls after a write share one.
+    """
+    with _stats_lock:
+        path = str(DB_PATH)
+        conn = _stats_state.get("conn")
+        # Follow DB_PATH if it moves (the tests repoint it).
+        if conn is None or _stats_state.get("path") != path:
+            if conn is not None:
+                conn.close()
+            conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            _stats_state.clear()
+            _stats_state.update(conn=conn, path=path)
+        # Read before counting: a write that lands mid-count leaves a key
+        # that is already behind, so the next call recounts — never stale.
+        key = conn.execute("PRAGMA data_version").fetchone()[0]
+        if "result" in _stats_state and _stats_state["key"] == key:
+            return dict(_stats_state["result"])
+        result = _compute_stats(conn)
+        _stats_state.update(key=key, result=result)
+        return dict(result)
+
+
+def _compute_stats(conn: sqlite3.Connection) -> dict[str, Any]:
     total = conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
     rooms = conn.execute("SELECT COUNT(DISTINCT room) c FROM events").fetchone()["c"]
     rng = conn.execute(
         "SELECT MIN(date) a, MAX(date) b FROM events WHERE date IS NOT NULL"
     ).fetchone()
-    result = {
+    return {
         "total_events": total,
         "rooms": rooms,
         "date_from": rng["a"],
         "date_to": rng["b"],
     }
-    _local.stats = (conn, key, result)
-    return dict(result)
 
 
 # ── Key/value ────────────────────────────────────────────────────────────
@@ -893,10 +945,31 @@ def save_groups(groups: dict[str, list[str]]) -> None:
     the failure mode of a half-write is losing *every* user group at once.
     os.replace is atomic within a filesystem, so a reader sees the old file or
     the new one, never a partial one.
+
+    The rename is only as good as what it renames, so the data is fsynced
+    first: otherwise a power cut can land the rename before the contents,
+    leaving an empty file that loads as the defaults. The temp name is unique
+    per save and the lock serialises savers, so two concurrent saves cannot
+    write into, or rename away, each other's temp file.
     """
-    tmp = GROUPS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(groups, indent=2), encoding="utf-8")
-    os.replace(tmp, GROUPS_PATH)
+    data = json.dumps(groups, indent=2)
+    with _save_lock:
+        fd, tmp = tempfile.mkstemp(dir=GROUPS_PATH.parent,
+                                   prefix=GROUPS_PATH.name + ".",
+                                   suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, GROUPS_PATH)
+        except BaseException:
+            # Do not leave a stray temp file behind for every failed save.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def valid_groups(groups: Any) -> bool:
@@ -944,19 +1017,28 @@ def load_presets() -> list[dict[str, Any]]:
 
 
 def save_preset(name: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
-    """Add a preset, or overwrite the one with the same name. Name-insensitive."""
-    presets = [p for p in load_presets() if p["name"] != name]
-    presets.append({"name": name, "filters": filters})
-    # Oldest first, so the newest arrival is the one dropped at the cap.
-    presets = presets[-PRESET_LIMIT:]
-    set_kv(PRESETS_KEY, presets)
-    return presets
+    """Add a preset, or overwrite the one with the same name. Name-insensitive.
+
+    "Lab" replaces "lab" (casefold, not ==), and the new spelling is kept.
+    Read-modify-write under the lock: two saves racing each read the old
+    list, and the later write dropped the earlier preset.
+    """
+    with _save_lock:
+        key = name.casefold()
+        presets = [p for p in load_presets() if p["name"].casefold() != key]
+        presets.append({"name": name, "filters": filters})
+        # Oldest first, so the oldest preset is the one dropped at the cap.
+        presets = presets[-PRESET_LIMIT:]
+        set_kv(PRESETS_KEY, presets)
+        return presets
 
 
 def delete_preset(name: str) -> list[dict[str, Any]]:
-    presets = [p for p in load_presets() if p["name"] != name]
-    set_kv(PRESETS_KEY, presets)
-    return presets
+    # Same lock as save_preset: a delete is a read-modify-write too.
+    with _save_lock:
+        presets = [p for p in load_presets() if p["name"] != name]
+        set_kv(PRESETS_KEY, presets)
+        return presets
 
 
 # ── Update-check state ────────────────────────────────────────────────────

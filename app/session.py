@@ -27,12 +27,14 @@ dies the app asks the user to log in, opens a visible window, and waits.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Iterator
 
 from app import dpapi
@@ -239,11 +241,31 @@ def _save_cookies(ctx: Any) -> None:
                 "and anything that can read it can read the LSM portal"
             )
             return
-        SESSION_FILE.write_bytes(dpapi.protect(blob))
+        _write_atomic(SESSION_FILE, dpapi.protect(blob))
         log.info("session snapshot saved (%d cookies, %d shibboleth)",
                  len(cookies), len(shib))
     except Exception as exc:
         log.warning("could not save session snapshot: %s", exc)
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Replace `path` with `data` all at once, or not at all.
+
+    write_bytes truncates first, so a power cut mid-write left a session.bin
+    DPAPI cannot decrypt — and the good snapshot it replaced gone with it.
+    A temp file beside it, flushed to disk, then os.replace: the old file or
+    the new one, never half of either.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _load_cookies() -> list[dict[str, Any]]:
@@ -252,7 +274,13 @@ def _load_cookies() -> list[dict[str, Any]]:
     try:
         raw = dpapi.unprotect(SESSION_FILE.read_bytes())
         data = json.loads(raw.decode("utf-8"))
-        return data.get("cookies") or []
+        # Valid JSON is not necessarily the snapshot's shape. Anything but
+        # {"cookies": [...]} is no snapshot, not an AttributeError.
+        if not isinstance(data, dict):
+            log.warning("session snapshot is not an object — ignoring")
+            return []
+        cookies = data.get("cookies") or []
+        return cookies if isinstance(cookies, list) else []
     except OSError as exc:
         log.warning("session snapshot undecryptable (%s) — ignoring", exc)
         return []

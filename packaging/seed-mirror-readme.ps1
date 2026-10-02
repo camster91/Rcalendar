@@ -25,7 +25,17 @@ $Src = Join-Path $PSScriptRoot "mirror-readme.md"
 if (-not (Test-Path $Src)) { throw "packaging\mirror-readme.md not found" }
 
 # Does the README already exist? A 200 means yes; anything else means no.
-$existing = gh api "repos/$Mirror/contents/README.md" --jq ".sha" 2>$null
+# 'Continue' around this one call: under 'Stop', PowerShell 5.1 turns a
+# native command's redirected stderr into a terminating error, so the 404
+# for a missing README - the very case this script exists for - threw
+# here instead of reaching the seeding below. $LASTEXITCODE is the verdict.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    $existing = gh api "repos/$Mirror/contents/README.md" --jq ".sha" 2>$null
+} finally {
+    $ErrorActionPreference = $prevEap
+}
 if ($LASTEXITCODE -eq 0 -and $existing) {
     Write-Host "mirror README already seeded (sha $existing) - nothing to do"
     exit 0

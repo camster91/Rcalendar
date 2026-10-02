@@ -254,8 +254,12 @@ a.vtab{display:inline-flex;align-items:center}
 .evcard .eroom{font-size:.88rem;color:var(--tx2);display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .evcard .eroom .rd{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .evcard .edesc{font-size:.85rem;color:var(--tx3);margin-top:5px;line-height:1.4;word-break:break-word}
-.evcard .ecopy{position:absolute;top:10px;right:10px;cursor:pointer;font-size:.88rem;color:var(--tx3);opacity:0;transition:.15s;padding:4px 8px;border-radius:4px;background:var(--sf2)}
+/* A real button, so Tab reaches it; border/font/line-height undo the UA
+   button chrome so it looks as the span did. Hover-only visibility hid it
+   from the keyboard that could now reach it, so focus shows it too. */
+.evcard .ecopy{position:absolute;top:10px;right:10px;cursor:pointer;font-size:.88rem;color:var(--tx3);opacity:0;transition:.15s;padding:4px 8px;border-radius:4px;background:var(--sf2);border:0;font-family:inherit;line-height:inherit}
 .evcard:hover .ecopy{opacity:.6}.evcard .ecopy:hover{opacity:1!important}
+.evcard:focus-within .ecopy,.evcard .ecopy:focus-visible{opacity:1}
 
 /* Tooltip — don't close when selecting text */
 .tip{position:fixed;z-index:9999;background:var(--sf);border:1px solid var(--bd2);border-radius:var(--r);padding:14px 18px;max-width:340px;box-shadow:var(--sh2);display:none;user-select:text}
@@ -679,7 +683,11 @@ let debounce;
 // the calendar, the URL's q= and the List link stayed filtered by a box that
 // read empty. Only an edit clears it: a picked event title empties the box and
 // keeps the term as a chip, and focusing the box again must not drop that.
-function onSearch(typed){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('q').value.trim();if(v.length<1){if(typed)searchQ='';closeDrop();applyFilters();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));searchQ=v.toLowerCase();applyFilters();},200);}
+// acSeq: only the newest request may draw the list. A slow answer for "1" used
+// to land after the one for "14" and replace it, or reopen a list the emptied
+// box had closed; an error body ({} has no .groups) threw inside showDrop.
+let acSeq=0;
+function onSearch(typed){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('q').value.trim();const n=++acSeq;if(v.length<1){if(typed)searchQ='';closeDrop();applyFilters();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>{keyed(r);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(d=>{if(n===acSeq)showDrop(d);}).catch(()=>{if(n===acSeq)closeDrop();});searchQ=v.toLowerCase();applyFilters();},200);}
 // Built as elements with textContent. The old version interpolated each value
 // straight into an onmousedown attribute, so a group name or event title
 // containing an apostrophe broke out of the string and injected markup — and
@@ -715,7 +723,8 @@ function showDrop(d){
   if(d.titles.length){section('Events');d.titles.forEach(t=>item('query',t));}
   box.classList.add('show');
 }
-function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
+// Bumps acSeq so an answer still in flight cannot reopen a list that was shut.
+function closeDrop(){acSeq++;document.getElementById('sdrop').classList.remove('show');}
 // The blur close fires only when focus has left both the box and the list.
 // Tab moves focus into the list's buttons, and the old unconditional timer
 // closed the list under that keypress — the dropdown invited a keyboard
@@ -856,7 +865,7 @@ function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc
   // An all-day block has no meaningful clock time — its start is just midnight.
   // Printing "12:00 a.m. → 11:00 p.m. (23h)" reads as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy">📋</span><div class="etitle">'+titleHTML(ev)+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><button type="button" class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy" aria-label="Copy booking">📋</button><div class="etitle">'+titleHTML(ev)+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+(ev.description?' <span style="color:var(--tx3)">• '+esc(ev.description)+'</span>':'')+'</div></div>';}
 
 // The copy button's payload is data, so it is read back as data: see evAttr
 // in /filters.js for what the old inline handler let through. One delegate
@@ -1680,6 +1689,10 @@ async function saveGroups(){
 // Asked of /api/today, the same route and the same predicate that answer Free
 // Right Now. A JS reimplementation would be a second answer to one question.
 let FREE_KEY='';
+// Why the last check failed, or ''. Kept so the panel, which rebuilds its
+// note from freeNoteText() on every open, says so rather than "checking…"
+// for a request that has already given up.
+let FREE_ERR='';
 // The days the current view draws bookings from. A month cell is a whole grid,
 // so the first and last cells can fall in the neighbouring month — asking for
 // the grid is simpler than trimming it, and 42 days is well inside the
@@ -1725,6 +1738,7 @@ function freeOn(e){
 }
 function freeNoteText(){
   if(!advFreeAt)return 'Off. Checked against the day on screen, not today.';
+  if(FREE_ERR)return FREE_ERR;
   if(!FREE_DAYS||FREE_KEY!==freeKey())return 'checking…';
   const days=viewDays();
   if(days.length<=1){
@@ -1768,12 +1782,17 @@ async function loadFreeRooms(){
   if(!advFreeAt){FREE_DAYS=null;applyFilters();return;}
   const days=viewDays();
   if(!days.length){FREE_DAYS=null;applyFilters();return;}
-  setFreeNote('checking…');
+  FREE_ERR='';setFreeNote('checking…');
   try{
     // One request for the whole span. Asking per visible day would work and
     // would be 42 round trips, each a full read of the events table.
-    const d=await (await fetch('/api/today?dates='+days.join(',')
-      +'&at='+encodeURIComponent(advFreeAt)+'&for='+advFreeMins)).json();
+    // keyed() and r.ok, because an error body parses too: {} has no .days,
+    // so it became an empty map and read as "no room is free" — the very
+    // answer the catch below exists to avoid.
+    const r=keyed(await fetch('/api/today?dates='+days.join(',')
+      +'&at='+encodeURIComponent(advFreeAt)+'&for='+advFreeMins));
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const d=await r.json();
     const m=new Map();
     Object.keys(d.days||{}).forEach(k=>m.set(k,new Set((d.days[k].free||[]))));
     FREE_DAYS=m;
@@ -1785,7 +1804,8 @@ async function loadFreeRooms(){
     // changed key, refetch immediately, fail again, and spin. A failed check
     // is retried when the day, time or length changes, not on every paint.
     FREE_DAYS=null;
-    setFreeNote('Could not check availability: '+e.message);
+    FREE_ERR='Could not check availability: '+e.message;
+    setFreeNote(FREE_ERR);
   }
   applyFilters();
 }
@@ -2548,6 +2568,12 @@ async function refreshEvents(){
     activeRooms=hadAll?new Set(ROOMS):new Set([...prev].filter(rm=>ROOMS.includes(rm)));
     document.getElementById('roomcnt').textContent=ROOMS.length+' rooms';
     buildChips();buildGroupBtns();
+    // The change feed and the free-at answer are snapshots of the store too,
+    // and this is the moment they went stale: a kept memo repainted the old
+    // Changes feed under a new scrape. Cleared keys refetch on the render
+    // below; FREE_DAYS stays until its answer lands, so the grid filters by
+    // the last answer rather than flashing every booking in between.
+    CHANGES=null;CHANGE_KEY='';FREE_KEY='';
     applyFilters();
   }catch(e){}
 }

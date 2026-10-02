@@ -290,17 +290,27 @@ try {
         $watcher.Dispose()
     }
 
-    if ($proc -and -not $proc.HasExited) {
-        # /T so anything the app spawned goes with it. In onedir the bootloader
-        # loads python in-process, so the process to worry about is Playwright's
-        # bundled node.exe and the Chromium it drives.
-        & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
-    }
+    # taskkill writes to stderr when a process has already gone, and under
+    # Windows PowerShell 5.1 a redirected native stderr line is a terminating
+    # error when the preference is Stop -- so a race with a process exiting on
+    # its own would abort the cleanup. The kill is checked below, not here.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if ($proc -and -not $proc.HasExited) {
+            # /T so anything the app spawned goes with it. In onedir the bootloader
+            # loads python in-process, so the process to worry about is Playwright's
+            # bundled node.exe and the Chromium it drives.
+            & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
+        }
 
-    # Belt and braces: anything still running out of the dist folder.
-    Get-Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($DistDir, [StringComparison]::OrdinalIgnoreCase) } |
-        ForEach-Object { & taskkill /PID $_.Id /T /F 2>&1 | Out-Null }
+        # Belt and braces: anything still running out of the dist folder.
+        Get-Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and $_.Path.StartsWith($DistDir, [StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object { & taskkill /PID $_.Id /T /F 2>&1 | Out-Null }
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
 
     # A kill that failed silently would leave a process running out of the
     # folder being verified, and the next build would then fail on a

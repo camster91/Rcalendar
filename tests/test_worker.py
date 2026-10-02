@@ -1065,6 +1065,60 @@ def test_a_partial_scrape_does_not_delete_stored_bookings() -> None:
         _session.shutdown = real["shutdown"]
 
 
+def test_a_cancellation_on_a_partial_scrape_is_removed() -> None:
+    """The other wire: a CANCLD row has to reach the store as a cancellation.
+
+    `_do_scrape` drops cancelled rows from what it stores; if it drops them
+    silently, a page-read report (no deletes) leaves the cancelled booking
+    on the calendar. It must name them to replace_events instead.
+    """
+    print("\ncancellation on a partial scrape")
+
+    from datetime import date as _date
+
+    from app import session as _session
+
+    scheduler.store.init_db()
+    room = "P51CANC"
+    d1 = _date.today().isoformat()
+    window = (f"{_date.today():%d/%m/%Y}",) * 2
+
+    def booking(title: str, cancelled: bool = False) -> dict:
+        return {"title": title, "room": room,
+                "start": f"{d1}T09:00:00", "end": f"{d1}T11:00:00",
+                "description": "Lecture", "class_code": "A",
+                "cancelled": cancelled}
+
+    scheduler.store.replace_events([booking("Canc Kept"),
+                                    booking("Canc Gone"),
+                                    booking("Canc Omitted")],
+                                   *window, run_id=710)
+
+    real = {"probe": _session.probe, "scrape": scheduler.scrape,
+            "shutdown": _session.shutdown}
+    try:
+        _session.probe = lambda headless=True: _session.SessionState("ok")
+        _session.shutdown = lambda: None
+        scheduler.scrape = lambda **kw: scrape.ScrapeResult(  # type: ignore[assignment]
+            "ok", events=[booking("Canc Kept"),
+                          booking("Canc Gone", cancelled=True)],
+            date_from=window[0], date_to=window[1],
+            rooms=[room], complete=False,
+        )
+        scheduler.Orchestrator()._do_scrape(trigger="manual")
+
+        check("the cancelled booking is gone, the omitted one survives",
+              sorted(e["title"] for e in scheduler.store.get_events(room=room)),
+              ["Canc Kept", "Canc Omitted"])
+        check("...and the cancellation is in the feed",
+              [r["title"] for r in scheduler.store.get_changes(
+                  kind="removed", room=room, limit=100)], ["Canc Gone"])
+    finally:
+        _session.probe = real["probe"]
+        scheduler.scrape = real["scrape"]
+        _session.shutdown = real["shutdown"]
+
+
 def test_a_page_read_backfill_does_not_retire_the_history_fill() -> None:
     """A fill that could only read page one of a month is still owed.
 
@@ -1390,6 +1444,201 @@ def test_an_account_without_access_is_told_so() -> None:
         _session.probe = real["probe"]
         scheduler.scrape = real["scrape"]
 
+def test_quit_jumps_the_queue() -> None:
+    """Quit stops the worker after the command in hand, not after the queue.
+
+    CMD_STOP used to go to the back of the queue. With a first-run backfill
+    queued behind the running command, stop() waited out its 10 s join and the
+    process exited with the worker still inside Playwright — session.shutdown()
+    never ran. The stop flag is read before every command, and between
+    backfill months, so what is already queued is skipped.
+    """
+    print("\nquit jumps the queue")
+    import threading
+
+    orch = scheduler.Orchestrator()
+    entered, release = threading.Event(), threading.Event()
+    seen: list[str] = []
+    real = {"shutdown": scheduler.session.shutdown}
+    try:
+        orch._bootstrap_session = lambda: None          # type: ignore[method-assign]
+
+        def slow_probe() -> None:
+            entered.set()
+            release.wait(10)
+            seen.append("probe")
+
+        orch._do_probe = slow_probe                     # type: ignore[method-assign]
+        orch._do_backfill = (lambda **kw: seen.append("backfill"))  # type: ignore[method-assign]
+        scheduler.session.shutdown = lambda: seen.append("shutdown")
+
+        orch.start()
+        orch.request_probe()
+        orch.request_backfill(auto=True)
+        ok("the worker is inside the first command", entered.wait(5))
+
+        stopper = threading.Thread(target=orch.stop)
+        t0 = time.monotonic()
+        stopper.start()
+        deadline = time.monotonic() + 5
+        while not orch._stop.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        release.set()
+        stopper.join(15)
+        check("the command in hand finishes, the queued backfill never runs",
+              seen, ["probe", "shutdown"])
+        ok("...and stop() returned without waiting out its join",
+           time.monotonic() - t0 < 5)
+        ok("...with the worker thread gone",
+           orch._thread is not None and not orch._thread.is_alive())
+    finally:
+        release.set()
+        scheduler.session.shutdown = real["shutdown"]
+
+    # Between months, too: the backfill is a dozen report runs, each one a
+    # browser session, and none of them needs to happen once Quit is asked.
+    from app import session as _session
+
+    scheduler.store.init_db()
+    real2 = {"probe": _session.probe, "scrape": scheduler.scrape}
+    try:
+        _session.probe = lambda headless=True: _session.SessionState("ok")
+        orch = scheduler.Orchestrator()
+        months: list[str] = []
+
+        def quit_after_one(date_from=None, date_to=None, **kwargs):
+            months.append(date_from)
+            orch._stop.set()        # what stop() does from the tray's thread
+            return scrape.ScrapeResult("empty", date_from=date_from,
+                                       date_to=date_to, complete=True)
+
+        scheduler.scrape = quit_after_one  # type: ignore[assignment]
+        orch._do_backfill(months=4)
+        bf = orch.status()["backfill"]
+        check("a stop between months ends the backfill after the month in hand",
+              len(months), 1)
+        check("...counting the unfetched months as failed", bf["failed"],
+              bf["total"] - 1)
+        check("...and not left running", bf["running"], False)
+        check("...nor the worker left busy", orch.status()["busy"], False)
+        check("...and the run is filed as error, so the fill stays owed",
+              (scheduler.store.last_backfill() or {}).get("status"), "error")
+    finally:
+        _session.probe = real2["probe"]
+        scheduler.scrape = real2["scrape"]
+
+
+def test_a_clock_set_ahead_does_not_stop_the_clocks() -> None:
+    """A stamp from the future is due, not "due in three weeks".
+
+    If the clock was set ahead when a check or heartbeat was stamped and then
+    corrected, now - last is negative, and `>= 24 h` stayed false until the
+    clock caught up with the stamp — no update checks, no keep-alive.
+    """
+    print("\na clock set ahead")
+    scheduler.store.init_db()
+    now = datetime(2026, 9, 21, 12, 0)
+    orch = scheduler.Orchestrator()
+
+    state = scheduler.store.load_update_state()
+    real_last = state.get("last_check")
+    try:
+        state["last_check"] = (now + timedelta(days=20)).isoformat()
+        scheduler.store.save_update_state(state)
+        check("an update check stamped in the future is due",
+              orch._due_for_update_check(now), True)
+        state["last_check"] = (now - timedelta(hours=1)).isoformat()
+        scheduler.store.save_update_state(state)
+        check("...while one an hour ago is still not",
+              orch._due_for_update_check(now), False)
+    finally:
+        state["last_check"] = real_last
+        scheduler.store.save_update_state(state)
+
+    orch._last_heartbeat = now + timedelta(days=20)
+    check("a heartbeat stamped in the future is due",
+          orch._due_for_heartbeat(now), True)
+    orch._last_heartbeat = now - timedelta(hours=1)
+    check("...while one an hour ago is still not",
+          orch._due_for_heartbeat(now), False)
+
+
+def test_a_staged_installer_is_checked_again_at_the_click() -> None:
+    """The click re-verifies the installer the check staged, then closes Playwright.
+
+    The pre-stage verifies at check time, and the file then sits in a
+    user-writable directory until the click — hours later, sometimes. The
+    click used to check only that the path existed before running it. And the
+    quit hook ends the process from this worker's own thread, so the CMD_STOP
+    it queues is never handled: the browser driver has to be shut down here.
+    """
+    print("\na staged installer is re-verified at the click")
+    import hashlib
+
+    from app import updater
+
+    good = b"MZ the installer the release published"
+    stage = Path(os.environ["LSM_DATA_DIR"]) / "update-test"
+    stage.mkdir(exist_ok=True)
+    setup = stage / "RotmanLSMCalendar-Setup-99.0.0.exe"
+    order: list[str] = []
+    sig: list[str | None] = [None]
+
+    real = {name: getattr(updater, name) for name in (
+        "select_setup", "fetch_sha256", "download_setup", "verify_signature",
+        "launch_installer")}
+    real_shutdown = scheduler.session.shutdown
+
+    def staged_orch() -> "scheduler.Orchestrator":
+        orch = scheduler.Orchestrator()
+        orch.set_update_hooks(quit=lambda: order.append("quit"))
+        staged = orch._stage_update({"tag": "v99.0.0"}, None)
+        orch._set_update(state="ready", staged=staged)
+        order.clear()
+        return orch
+
+    try:
+        updater.select_setup = lambda release: {"name": setup.name}
+        updater.fetch_sha256 = (
+            lambda release, token, name: hashlib.sha256(good).hexdigest())
+
+        def download(release, token, on_progress):
+            setup.write_bytes(good)
+            return setup
+
+        updater.download_setup = download
+        updater.verify_signature = lambda path: sig[0]
+        updater.launch_installer = lambda path: order.append("launch")
+        scheduler.session.shutdown = lambda: order.append("shutdown")
+
+        orch = staged_orch()
+        orch._do_install_update()
+        check("an untouched staged installer is launched, the driver closed, "
+              "then the app quits", order, ["launch", "shutdown", "quit"])
+
+        orch = staged_orch()
+        setup.write_bytes(b"MZ something else entirely")
+        orch._do_install_update()
+        st = orch.status()["update"]
+        check("a staged installer changed since the check is not launched",
+              order, [])
+        check("...the install is 'failed'", st["state"], "failed")
+        ok("...saying it changed", "changed since it was verified" in st["message"])
+        check("...and the next click downloads afresh", st["staged"], "")
+
+        orch = staged_orch()
+        sig[0] = "The downloaded installer is not signed by this app's publisher"
+        orch._do_install_update()
+        st = orch.status()["update"]
+        check("a staged installer whose signature now fails is not launched",
+              order, [])
+        check("...with the signature's own sentence", st["message"], sig[0])
+    finally:
+        for name, fn in real.items():
+            setattr(updater, name, fn)
+        scheduler.session.shutdown = real_shutdown
+
+
 def test_parse_time() -> None:
     """A SCRAPE_TIME nobody can read must not mean "scrape constantly"."""
     print("\nscrape time")
@@ -1463,11 +1712,15 @@ def main() -> int:
     test_a_failed_command_does_not_kill_the_worker()
     test_a_report_read_off_the_page_is_marked_incomplete()
     test_a_partial_scrape_does_not_delete_stored_bookings()
+    test_a_cancellation_on_a_partial_scrape_is_removed()
     test_a_page_read_backfill_does_not_retire_the_history_fill()
     test_an_empty_report_has_to_be_the_report()
     test_the_no_data_probe_reads_the_message_not_the_phrase()
     test_an_unproven_empty_month_keeps_the_fill_owed()
     test_an_account_without_access_is_told_so()
+    test_quit_jumps_the_queue()
+    test_a_clock_set_ahead_does_not_stop_the_clocks()
+    test_a_staged_installer_is_checked_again_at_the_click()
     test_exclusions()
     test_parse_time()
 

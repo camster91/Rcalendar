@@ -7,8 +7,9 @@ This IS the release path - not a stand-in for .github/workflows/release.yml
 but its replacement. A release has to ship binaries signed with the
 project's code-signing certificate, and that certificate is a per-user,
 self-signed one in this machine's user store (packaging/sign.ps1): a
-runner cannot hold it, and what a runner build signs with is an ephemeral
-certificate build.ps1 mints for it, which dies with the runner (measured
+runner cannot hold it - a runner build now stops at sign.ps1, which refuses
+any unpinned certificate; before that it signed with an ephemeral
+certificate minted for it, which died with the runner (measured
 2026-09-25 - the runner build that overwrote the first v1.1.2 publish was
 signed by a certificate that no longer exists). The workflow is kept as a
 manual/diagnostic path with a workflow_dispatch-only trigger; releases

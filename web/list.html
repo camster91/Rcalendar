@@ -81,8 +81,10 @@ select.fsel{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border
 .evcard .eroom{font-size:.88rem;color:var(--tx2);display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .evcard .eroom .rd{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .evcard .edesc{font-size:.85rem;color:var(--tx3);margin-top:5px;line-height:1.4;word-break:break-word}
-.evcard .ecopy{position:absolute;top:10px;right:10px;cursor:pointer;font-size:.88rem;color:var(--tx3);opacity:0;transition:.15s;padding:4px 8px;border-radius:4px;background:var(--sf2)}
+/* A real button, as on the calendar: see the note there. */
+.evcard .ecopy{position:absolute;top:10px;right:10px;cursor:pointer;font-size:.88rem;color:var(--tx3);opacity:0;transition:.15s;padding:4px 8px;border-radius:4px;background:var(--sf2);border:0;font-family:inherit;line-height:inherit}
 .evcard:hover .ecopy{opacity:.6}.evcard .ecopy:hover{opacity:1!important}
+.evcard:focus-within .ecopy,.evcard .ecopy:focus-visible{opacity:1}
 
 .pgn{display:flex;align-items:center;justify-content:center;gap:8px;padding:16px}
 .pb{padding:7px 12px;border-radius:var(--rs);background:var(--sf);border:1px solid var(--bd);color:var(--tx2);font-size:.82rem;cursor:pointer}
@@ -219,7 +221,7 @@ function cardHTML(ev){const c=rcol(ev.rooms?ev.rooms[0]:ev.room, ROOMS);const bc
   // Without this branch it printed "12:00 a.m. → 11:00 p.m. (23h)", which reads
   // as a real 23-hour booking.
   const when=ev.all_day?'<em>All day</em>':fmtT(ev.start)+(ev.end?' → '+fmtT(ev.end):'')+(fmtDur(ev.start,ev.end)?' <span style="color:var(--tx3);font-size:.78rem">('+fmtDur(ev.start,ev.end)+')</span>':'');
-  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><span class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy">📋</span><div class="etitle">'+titleHTML(ev)+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+'</div>'+(ev.description?'<div class="edesc">'+esc(ev.description)+'</div>':'')+'</div>';}
+  return '<div class="evcard'+(ev.all_day?' allday':'')+'" style="border-left-color:'+bc+'"><button type="button" class="ecopy" data-ev="'+evAttr(ev)+'" title="Copy" aria-label="Copy booking">📋</button><div class="etitle">'+titleHTML(ev)+'</div><div class="etime">'+when+'</div><div class="eroom">'+(ev.rooms||[ev.room]).map(r=>'<span class="rd" style="background:'+rcol(r, ROOMS)+'"></span>'+esc(r)).join(' ')+'</div>'+(ev.description?'<div class="edesc">'+esc(ev.description)+'</div>':'')+'</div>';}
 
 // The same delegate as the calendar's, for the same reason: what the copy
 // button carries is data, and an onclick attribute is where data stops being
@@ -298,7 +300,10 @@ let debounce;
 // A new term goes back to the first page, as every other filter change does
 // (commitFilterChange): page 7 of the old search can be past the end of the
 // new one. Only a change, because focusing the box runs this too.
-function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('search').value.trim();const q=v.toLowerCase();if(q!==searchQ){searchQ=q;page=0;renderTags();}if(v.length<1){closeDrop();render();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>r.json()).then(d=>showDrop(d));render();},200);}
+// acSeq: only the newest request draws the list, and a failed one closes it
+// rather than throwing in showDrop. See the calendar's onSearch.
+let acSeq=0;
+function onSearch(){clearTimeout(debounce);debounce=setTimeout(()=>{const v=document.getElementById('search').value.trim();const q=v.toLowerCase();const n=++acSeq;if(q!==searchQ){searchQ=q;page=0;renderTags();}if(v.length<1){closeDrop();render();return;}fetch('/api/autocomplete?q='+encodeURIComponent(v)).then(r=>{keyed(r);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(d=>{if(n===acSeq)showDrop(d);}).catch(()=>{if(n===acSeq)closeDrop();});render();},200);}
 function showDrop(d){
   const box=document.getElementById('sdrop');
   box.innerHTML='';
@@ -322,7 +327,8 @@ function showDrop(d){
   if(d.titles.length){section('Events');d.titles.forEach(t=>item('query',t));}
   box.classList.add('show');
 }
-function closeDrop(){document.getElementById('sdrop').classList.remove('show');}
+// Bumps acSeq so an answer still in flight cannot reopen a list that was shut.
+function closeDrop(){acSeq++;document.getElementById('sdrop').classList.remove('show');}
 // The blur close fires only when focus has left both the box and the list.
 // Tab moves focus into the list's buttons, and an unconditional timer closed
 // the list under that keypress. The delay stays for the mouse's sake: a
@@ -423,9 +429,12 @@ function render(){
     return true;
   });
   document.getElementById('evcnt').textContent=evts.length+' events';
-  const tp=Math.ceil(evts.length/PER);if(page>=tp)page=Math.max(0,tp-1);
-  const pe=evts.slice(page*PER,(page+1)*PER);
-  const merged=mergeEvts(pe);
+  // Merged before it is paged, not after: paging raw rows split one class
+  // held in three rooms across two pages as two cards, and a page held fewer
+  // than PER cards whenever rows merged. #evcnt still counts bookings.
+  const all=mergeEvts(evts);
+  const tp=Math.ceil(all.length/PER);if(page>=tp)page=Math.max(0,tp-1);
+  const merged=all.slice(page*PER,(page+1)*PER);
   const listEl=document.getElementById('list');
   if(!evts.length){listEl.innerHTML='<div class="empty" style="font-size:1.1rem">📭 No events match your filters</div>';document.getElementById('pgn').innerHTML='';return;}
   let html='',lastDay='';
@@ -434,8 +443,10 @@ function render(){
     // This was two passes over the same page — every separator first, then
     // every card — which stacked all the headings at the top of the list,
     // decoupled from the bookings they name.
+    // Counted over every page, so a day that runs onto the next page is not
+    // headed with only the part of it this page holds.
     const dc={};
-    merged.forEach(ev=>{const d=(ev.start||'').slice(0,10);if(d)dc[d]=(dc[d]||0)+1;});
+    all.forEach(ev=>{const d=(ev.start||'').slice(0,10);if(d)dc[d]=(dc[d]||0)+1;});
     merged.forEach(ev=>{
       const d=(ev.start||'').slice(0,10);
       if(d&&d!==lastDay){

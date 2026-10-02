@@ -160,7 +160,10 @@ signature** is the project's own (Windows' `WinVerifyTrust` finds the
 signature intact, with at most an untrusted self-signed root to complain of;
 signer thumbprint pinned in `app/config.py` `SIGNING_THUMBPRINTS`; timestamp
 present), and only then runs
-it — a download that fails either check is never run. The checksum proves the
+it — a download that fails either check is never run. A pre-downloaded
+installer is checked **again** at the click, since it has sat in a folder
+your account can write to since the check; if it no longer passes, it is not
+run and the next click downloads it afresh. The checksum proves the
 file is what was published; the signature proves who published it. Neither
 says *which version* it is, so that is checked too: the release's installer
 must be named `RotmanLSMCalendar-Setup-<tag's version>.exe`, and the version
@@ -205,7 +208,8 @@ browser profile, so **do not delete one assuming it is the other**.
 
 The web UI is served on loopback only — there is deliberately no host
 override, because the process holds a live LSM session. It prefers port 8765
-(`LSM_PORT` changes that) and, when that port is taken — another Windows
+(`LSM_PORT` changes that; a value that is not a port in 0–65535 is logged and
+ignored) and, when that port is taken — another Windows
 user's copy on a shared PC, most often — takes a free one instead. Each launch
 also mints a **key**: the window and the tray open the UI through a URL
 carrying it, and without it every page and API answers 401. Loopback is shared
@@ -223,7 +227,7 @@ the key never leaves the machine.
 | `github-token.bin` | DPAPI-encrypted optional GitHub token (updater) |
 | `update-staged/` | Half-downloaded installers; cleared on every check |
 | `room_groups.json` | Editable room groupings shown as filter chips |
-| `app.log` | Rolling log |
+| `app.log` | Rolling log (1 MB, plus three older `app.log.1`–`.3`) |
 
 ## Project layout
 
@@ -304,7 +308,10 @@ reading the page as if it were the report would erase everything past the first
 page and file it as a cancellation. `scrape()` therefore marks a page-read
 result incomplete, and an incomplete report adds and updates but deletes
 nothing — seeing a booking is evidence it exists, whereas not seeing one says
-nothing at all. The export path is asserted from both ends: that `scrape()`
+nothing at all. A row the report explicitly marks cancelled (CANCLD) is
+evidence too, so `_do_scrape` passes those uids through and the store removes
+and logs them even from an incomplete report, or one whose every row in the
+window is cancelled. The export path is asserted from both ends: that `scrape()`
 sets the flag, and that the flag reaches the store through `_do_scrape`.
 Verified by removal in all three places — dropping the store's guard, the
 scrape-side flag, or the scheduler's pass-through each turns the suite red.
@@ -612,14 +619,15 @@ Saved filters live in the database rather than in browser storage, so they
 follow the app rather than one browser profile. Two limits come with that: at
 most **20** are kept — saving a 21st drops the oldest — and a name must be
 **1–60 characters**, checked on the server as well as in the panel. Saving
-under a name that already exists overwrites that one rather than adding a
-second. Applying one makes the same inference a link does: a filter that names
+under a name that already exists — ignoring case, so "lab" replaces "Lab" and
+keeps the new spelling — overwrites that one rather than adding a second. Applying one makes the same inference a link does: a filter that names
 a group but no rooms selects that group's rooms, so what lands on the calendar
 is what its URL and the List tab both say it is.
 
 The groups are editable in the panel and saved to `room_groups.json` in one
-atomic write, so an interrupted save cannot leave truncated JSON behind and
-take every group with it. Saving replaces the whole set — the file is the
+atomic write (a unique temp file, fsynced, then renamed into place, one save
+at a time), so an interrupted save or a power cut cannot leave truncated JSON
+behind and take every group with it. Saving replaces the whole set — the file is the
 source of truth — so the calendar no longer synthesizes `Classroom` in the
 browser; it is seeded in `app/config.py` and the server is the single source.
 A group name cannot contain a **comma**: the shared-link vocabulary joins and
@@ -801,8 +809,10 @@ Releases are **built locally, not by Actions** — because of the certificate,
 not because of billing. A release has to ship binaries signed with the
 project's code-signing certificate, and that certificate is a per-user,
 self-signed one in the build machine's user store: a runner cannot hold
-it, and what a runner build signs with is an ephemeral certificate
-`build.ps1` mints for it, which dies with the runner — measured
+it. A runner build now stops at `sign.ps1`, which refuses any certificate
+not pinned in `SIGNING_THUMBPRINTS`, so `release.yml` cannot succeed as it
+stands; before that refusal, a runner build signed with an ephemeral
+certificate minted for it, which died with the runner — measured
 2026-09-25, when the first v1.1.2 publish fired `release.yml` (an
 API-created tag fires the push event exactly like a pushed one, a premise
 this repo had assumed the other way) and the runner overwrote the signed
