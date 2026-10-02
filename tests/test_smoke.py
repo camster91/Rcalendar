@@ -842,6 +842,64 @@ def test_the_ui_answers_only_its_own_launch() -> None:
           create_app(StubOrch()).test_client().get("/api/status").status_code, 200)
 
 
+def test_odd_input_is_a_refusal_not_a_crash() -> None:
+    """Input anyone can send gets a 4xx, never a 500 with a traceback.
+
+    hmac.compare_digest raises TypeError on a str with any non-ASCII in it,
+    so `?k=%C3%A9` from anyone on the machine was an unauthenticated 500.
+    /api/update/token called .get on whatever JSON arrived, so `[1]` was
+    another. And LSM_PORT=70000 parsed as an int that socket.bind answers
+    with OverflowError — not the OSError main.py catches.
+    """
+    print("\nodd input is refused, not a crash")
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    from app import config
+
+    key = "k" * 43
+    client = create_app(StubOrch(), access_key=key).test_client()
+    for label, kwargs in (
+            ("a non-ASCII ?k=", {"path": "/?k=%C3%A9"}),
+            ("a non-ASCII ?k= on the API", {"path": "/api/status?k=%C3%A9"}),
+            ("a non-ASCII key header",
+             {"path": "/api/status", "headers": {"X-LSM-Key": "é"}})):
+        try:
+            code = client.get(kwargs["path"],
+                              headers=kwargs.get("headers")).status_code
+        except Exception as exc:
+            code = f"raised {type(exc).__name__}"
+        check(f"{label} is a 401", code, 401)
+    client.set_cookie("lsm_key", "é", domain="localhost")
+    try:
+        code = client.get("/api/status").status_code
+    except Exception as exc:
+        code = f"raised {type(exc).__name__}"
+    check("a non-ASCII cookie is a 401", code, 401)
+    check("...and the right key still gets in",
+          client.get("/api/status", headers={"X-LSM-Key": key}).status_code,
+          200)
+
+    open_client = create_app(StubOrch()).test_client()
+    for body in ([1], "token", 7):
+        r = open_client.post("/api/update/token", json=body)
+        check(f"a token body of {body!r} is a 400", r.status_code, 400)
+        check("...with the usual sentence", (r.get_json() or {}).get("message"),
+              "No token was sent")
+
+    for raw, want in ((None, 8765), ("", 8765), ("9000", 9000), ("0", 0),
+                      ("65535", 65535), ("70000", 8765), ("65536", 8765),
+                      ("-1", 8765), ("abc", 8765)):
+        port, why = config.parse_port(raw)
+        warns = bool(raw) and want == 8765
+        check(f"LSM_PORT={raw!r} -> {want}", port, want)
+        check(f"...and {'a' if warns else 'no'} warning", why is not None, warns)
+
+    ok("app.log rotates",
+       any(isinstance(h, RotatingFileHandler) and h.maxBytes > 0
+           for h in logging.getLogger("lsm").handlers))
+
+
 def test_a_second_launch_gets_its_own_server() -> None:
     """Two people on one PC: the second bind falls back, and the handshake
     will not accept the first person's server as its own."""
@@ -1222,6 +1280,7 @@ def main() -> int:
     test_quit_can_actually_end_the_process()
     test_tray_update_item()
     test_the_ui_answers_only_its_own_launch()
+    test_odd_input_is_a_refusal_not_a_crash()
     test_a_second_launch_gets_its_own_server()
     test_single_instance()
     test_tray_flag()

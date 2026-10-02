@@ -160,7 +160,10 @@ signature** is the project's own (Windows' `WinVerifyTrust` finds the
 signature intact, with at most an untrusted self-signed root to complain of;
 signer thumbprint pinned in `app/config.py` `SIGNING_THUMBPRINTS`; timestamp
 present), and only then runs
-it — a download that fails either check is never run. The checksum proves the
+it — a download that fails either check is never run. A pre-downloaded
+installer is checked **again** at the click, since it has sat in a folder
+your account can write to since the check; if it no longer passes, it is not
+run and the next click downloads it afresh. The checksum proves the
 file is what was published; the signature proves who published it. Neither
 says *which version* it is, so that is checked too: the release's installer
 must be named `RotmanLSMCalendar-Setup-<tag's version>.exe`, and the version
@@ -205,7 +208,8 @@ browser profile, so **do not delete one assuming it is the other**.
 
 The web UI is served on loopback only — there is deliberately no host
 override, because the process holds a live LSM session. It prefers port 8765
-(`LSM_PORT` changes that) and, when that port is taken — another Windows
+(`LSM_PORT` changes that; a value that is not a port in 0–65535 is logged and
+ignored) and, when that port is taken — another Windows
 user's copy on a shared PC, most often — takes a free one instead. Each launch
 also mints a **key**: the window and the tray open the UI through a URL
 carrying it, and without it every page and API answers 401. Loopback is shared
@@ -223,7 +227,7 @@ the key never leaves the machine.
 | `github-token.bin` | DPAPI-encrypted optional GitHub token (updater) |
 | `update-staged/` | Half-downloaded installers; cleared on every check |
 | `room_groups.json` | Editable room groupings shown as filter chips |
-| `app.log` | Rolling log |
+| `app.log` | Rolling log (1 MB, plus three older `app.log.1`–`.3`) |
 
 ## Project layout
 

@@ -107,7 +107,16 @@ def create_app(orchestrator: Any, *, access_key: str | None = None,
     app.config["JSON_SORT_KEYS"] = False
 
     def _same(given: str | None) -> bool:
-        return bool(given) and hmac.compare_digest(given, access_key or "")
+        # Bytes, because compare_digest raises TypeError on a str holding
+        # anything but ASCII — and ?k=%C3%A9 is anyone's to send, which made
+        # an unauthenticated request a 500 with a traceback in the log.
+        if not given:
+            return False
+        try:
+            return hmac.compare_digest(given.encode("utf-8"),
+                                       (access_key or "").encode("utf-8"))
+        except (TypeError, ValueError):
+            return False
 
     @app.before_request
     def _require_key() -> Any:
@@ -611,7 +620,8 @@ def create_app(orchestrator: Any, *, access_key: str | None = None,
         mangle.
         """
         body = request.get_json(silent=True) or {}
-        token = body.get("token")
+        # Valid JSON is not necessarily an object; `[1]` has no .get.
+        token = body.get("token") if isinstance(body, dict) else None
         if not isinstance(token, str):
             return jsonify({"status": "error",
                             "message": "No token was sent"}), 400

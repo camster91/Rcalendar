@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 APP_NAME = "Rotman LSM Calendar"
@@ -190,10 +191,30 @@ WEB_HOST = "127.0.0.1"
 # Parsed defensively because this module is imported before logging exists: a
 # malformed value must not raise at import time, which in a windowed build is
 # an invisible dialog rather than a traceback.
-try:
-    WEB_PORT = int(os.environ.get("LSM_PORT") or 8765)   # avoid 5000 — often taken
-except ValueError:
-    WEB_PORT = 8765
+DEFAULT_WEB_PORT = 8765                                  # avoid 5000 — often taken
+
+
+def parse_port(raw: str | None) -> tuple[int, str | None]:
+    """(port, why the value was refused or None) for an LSM_PORT value.
+
+    Range-checked as well as parsed: 70000 or -1 is a perfectly good int, and
+    socket.bind answers it with OverflowError, which main's `except OSError`
+    does not catch. 0 is allowed — it means "let the OS pick", the same thing
+    main's fallback bind does.
+    """
+    if not raw:
+        return DEFAULT_WEB_PORT, None
+    try:
+        port = int(raw)
+    except ValueError:
+        return DEFAULT_WEB_PORT, f"LSM_PORT={raw!r} is not a number"
+    if not 0 <= port <= 65535:
+        return DEFAULT_WEB_PORT, f"LSM_PORT={raw!r} is outside 0-65535"
+    return port, None
+
+
+# The warning waits for the logger, at the bottom of this module.
+WEB_PORT, _port_problem = parse_port(os.environ.get("LSM_PORT"))
 WINDOW_TITLE = APP_NAME
 
 # ── Room exclusions ──────────────────────────────────────────────────────
@@ -242,8 +263,11 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
         stream.setFormatter(fmt)
         log.addHandler(stream)
 
+    # Rotating, so the log stays the bounded rolling record the docs call it:
+    # a plain FileHandler grew for as long as the app stayed installed.
     try:
-        fileh = logging.FileHandler(LOG_PATH, encoding="utf-8")
+        fileh = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000,
+                                    backupCount=3, encoding="utf-8")
         fileh.setFormatter(fmt)
         log.addHandler(fileh)
     except OSError:
@@ -254,3 +278,5 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
 
 
 log = setup_logging()
+if _port_problem:
+    log.warning("%s — using port %d", _port_problem, WEB_PORT)
